@@ -173,8 +173,15 @@ const known = (tickers) => {
   if (bad.length) throw new BrokerError(`Failed to find instruments by tickers: ${bad.join(', ')}`, { cmd: 'getHloc' })
 }
 
-/** getSecurityInfo-like flat object (subset of fields the card reads). */
+/** getSecurityInfo-like flat object (subset of fields the card reads). Indices answer like the real
+ *  broker (sup:false): zero prices and an epoch trade time; the card falls back to the candles. */
 function securityInfo(tk) {
+  if (tk.endsWith('.IDX')) {
+    return {
+      c: tk, name: `Index ${FINDER.find((f) => f[0] === tk)?.[1] || tk}`, ltp: 0, pp: 0, ClosePrice: 0, chg: 0, pcp: 0,
+      mintp: 0, maxtp: 0, vol: 0, kind: 1, x_curr: 'USD', codesub_nm: 'INDEX', ltr: MARKET, ltt: '1970-01-01T00:00:00',
+    }
+  }
   const { ltp, pp } = priceOf(tk)
   const kz = tk.endsWith('.KZ')
   const now = Date.now()

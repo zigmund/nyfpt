@@ -107,6 +107,8 @@ function closeSearch() {
   searchOpen.value = false
   nextTick(() => searchBtn.value?.focus())
 }
+// Another tab / article of this card (Back / Forward included): the sheet does not stay over it.
+watch(() => [props.tab, props.item], () => { searchOpen.value = false })
 
 const compact = ref(false)
 

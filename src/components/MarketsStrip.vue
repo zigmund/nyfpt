@@ -15,7 +15,7 @@
     <ul class="mkts__row">
       <li v-for="c in cards" :key="c.ticker" class="mcard">
         <a
-          class="mcard__name" :href="`#${positionPath(c.ticker)}`" :title="c.note ? `${c.label} ${c.note}` : c.label"
+          class="mcard__name" :href="`#${positionPath(c.ticker)}`" :title="c.title" :aria-label="c.title"
           data-test="mcard-link"
         >{{ c.label }}<small v-if="c.note">{{ c.note }}</small></a>
         <MarketSpark v-if="c.ready" :spark="c.spark" :prev="c.prev" />
@@ -70,6 +70,7 @@ const cards = computed(() => {
     const change = n(q?.pcp) ?? n(r?.change_pct)
     return {
       ...m,
+      title: m.note ? `${m.label} ${m.note}` : m.label, // label and note as two words
       ready: last !== null,
       empty: last === null && !!r,
       last,

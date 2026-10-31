@@ -22,7 +22,8 @@ const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric'
  */
 export function lastTradeTime(ltt, mc, timeZone) {
   const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(ltt || ''))
-  if (!m || Number(m[2]) > 23) return null
+  // Before 2000: no trade time (an index answers '1970-01-01T00:00:00' with zero prices).
+  if (!m || Number(m[2]) > 23 || m[1] < '2000') return null
   const wall = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4] || '00'}Z`) / 1000
   return Number.isFinite(wall) ? formatLocal(wallToUtc(wall, mc), timeZone) : null
 }
@@ -52,9 +53,15 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     return !!quote.value && !!app.isLiveFor?.(ticker)
   })
 
-  const price = computed(() => n(quote.value?.ltp) ?? posN(info.value?.ltp) ?? posN(raw.value?.mkt_price))
+  // Close of the daily candle `back` candles before the last (an index's security info has zero prices).
+  const dailyClose = (back) => {
+    const d = sec.value.daily
+    return d && d.length > back ? posN(d[d.length - 1 - back].close) : null
+  }
+  const infoPrice = computed(() => posN(info.value?.ltp))
+  const price = computed(() => n(quote.value?.ltp) ?? infoPrice.value ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
   // `pp`: the broker's day change (chg = ltp - pp) is measured from it.
-  const prevClose = computed(() => posN(quote.value?.pp) ?? posN(info.value?.pp) ?? posN(raw.value?.close_price))
+  const prevClose = computed(() => posN(quote.value?.pp) ?? posN(info.value?.pp) ?? posN(raw.value?.close_price) ?? dailyClose(1))
   const change = computed(() => (price.value !== null && prevClose.value !== null ? price.value - prevClose.value : null))
   const changePct = computed(() => (change.value === null ? null : (change.value / prevClose.value) * 100))
 
@@ -77,7 +84,8 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   })
   /** 'At close' / 'As of' time: last trade time in the user's zone, else the last daily candle's date. */
   const closedAt = computed(() => {
-    const at = lastTradeTime(info.value?.ltt, sec.value.clock)
+    // A trade time without a price is not one.
+    const at = infoPrice.value === null ? null : lastTradeTime(info.value?.ltt, sec.value.clock)
     if (at) return at
     const d = sec.value.daily
     return d && d.length ? fmtDay.format(new Date(`${d[d.length - 1].date}T00:00:00Z`)) : null

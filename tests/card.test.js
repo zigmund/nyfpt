@@ -38,8 +38,9 @@ const SECS = {
   'AAA.US': secOf(info('AAA.US', { name: 'Alpha Corporation', kind: 1, codesub_nm: 'NASDAQ', ltp: 110, pp: 100 })),
 }
 
-function makeApp({ route = '/position/DIA.US', secs = SECS, open = [], liveQuotes = new Map(), isLive = false, findTickers } = {}) {
+function makeApp({ route = '/position/DIA.US', secs = SECS, open = [], liveQuotes = new Map(), isLive = false, findTickers, histState = null } = {}) {
   window.location.hash = `#${route}`
+  window.history.replaceState(histState, '') // the entry's state as a reload would find it
   const state = {
     positions: POSITIONS, rawPs: PS, trades: [], cashflows: [], markets: null, inception: null,
     updatedAt: Date.now(), errors: {}, loading: [],
@@ -134,6 +135,43 @@ describe('card of a ticker without a position', () => {
   })
 })
 
+// Real broker, anonymous getSecurityInfo sup:false for an index: zero prices and an epoch trade time.
+const IDX_INFO = info('SP500.IDX', {
+  name: 'Index S&P 500', codesub_nm: 'INDEX', kind: 1, ltp: 0, pp: 0, ClosePrice: 0, mintp: 0, maxtp: 0, ltt: '1970-01-01T00:00:00',
+})
+const LAST_DAY = 'Jun 27, 2026' // date of the last DAILY candle
+
+describe('index card (getSecurityInfo without prices)', () => {
+  it('price and day change from the daily closes; At close from the last candle date, never the epoch', async () => {
+    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) } })
+    expect(w.get('[data-test="p-name"]').text()).toBe('Index S&P 500 (SP500.IDX)')
+    expect(w.get('[data-test="p-venue"]').text()).toBe('INDEX · USD')
+    expect(w.get('[data-test="p-price"]').text()).toBe('349.00') // last daily close
+    expect(w.get('[data-test="p-change"]').text()).toBe('+1.00 (+0.29%)') // vs the previous daily close
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: LAST_DAY }))
+    expect(w.find('[data-test="p-holdings"]').exists()).toBe(false)
+    expect(w.text()).not.toMatch(/1969|1970/)
+  })
+
+  it('market open: As of the last candle date', async () => {
+    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) }, open: ['FIX'] })
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.asOf', { at: LAST_DAY }))
+  })
+
+  it('a streamed index quote still wins over the daily closes', async () => {
+    const q = new Map([['SP500.IDX', { c: 'SP500.IDX', ltp: 6000, pp: 5900, ltr: 'FIX' }]])
+    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) }, open: ['FIX'], liveQuotes: q, isLive: true })
+    expect(w.get('[data-test="p-price"]').text()).toBe('6,000.00')
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
+  })
+
+  it('lastTradeTime ignores implausible times (before 2000)', () => {
+    expect(lastTradeTime('1970-01-01T00:00:00', MC)).toBeNull()
+    expect(lastTradeTime('1999-12-31T10:00:00', MC)).toBeNull()
+    expect(lastTradeTime('2026-10-30T15:58:00', MC)).not.toBeNull()
+  })
+})
+
 describe('status line by the security market', () => {
   const at = () => lastTradeTime('2026-10-30T15:58:00', MC)
 
@@ -178,6 +216,16 @@ describe('card header: search and Back', () => {
     expect(w.get('[data-test="p-ticker"]').text()).toBe('QQQ.US')
   })
 
+  it('the search sheet closes when the card route changes (tab, article, Back / Forward)', async () => {
+    const { w, app } = await mountApp()
+    await w.get('[data-test="p-search"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="search"]').exists()).toBe(true)
+    app.route.value = '/position/DIA.US/news'
+    await flushPromises()
+    expect(w.find('[data-test="search"]').exists()).toBe(false)
+  })
+
   it('Back after an in-app navigation goes back in history', async () => {
     const { app } = makeApp({ route: '/' })
     app.go('/position/DIA.US')
@@ -198,12 +246,38 @@ describe('card header: search and Back', () => {
     expect(back).toHaveBeenCalledTimes(1)
   })
 
-  it('Back on a deep-linked card goes to the main screen', async () => {
+  it('Back on a deep-linked card replaces it with the main screen (no card <-> main ping-pong)', async () => {
     const { app } = makeApp({ route: '/position/DIA.US' })
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     app.back()
     expect(back).not.toHaveBeenCalled()
     expect(app.route.value).toBe('/')
+    expect(window.location.hash).toBe('#/')
+    expect(window.history.state.depth).toBe(0) // the entry was replaced, not pushed
+  })
+
+  it('history traversal: an entry carrying its depth sets it; Back at depth 0 falls back to the main screen', async () => {
+    const { app } = makeApp({ route: '/' })
+    app.go('/position/DIA.US')
+    expect(window.history.state.depth).toBe(1)
+    // Back / Forward land on an entry that already has a depth (here: a first entry, depth 0)
+    window.history.pushState({ depth: 0 }, '', '#/position/QQQ.US')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    expect(app.route.value).toBe('/position/QQQ.US')
+    expect(window.history.state.depth).toBe(0)
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    app.back()
+    expect(back).not.toHaveBeenCalled()
+    expect(app.route.value).toBe('/')
+  })
+
+  it('after a reload start() reads the entry depth: Back uses the history', async () => {
+    const { app } = makeApp({ route: '/position/DIA.US', histState: { depth: 2 } })
+    expect(window.history.state.depth).toBe(2)
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    app.back()
+    expect(back).toHaveBeenCalledTimes(1)
+    expect(app.route.value).toBe('/position/DIA.US')
   })
 })
 
@@ -216,6 +290,7 @@ describe('markets strip', () => {
     expect(links.map((a) => a.attributes('href'))).toEqual([
       '#/position/SP500.IDX', '#/position/NASDAQ.IDX', '#/position/USO.US', '#/position/GLD.US', '#/position/SLV.US',
     ])
-    expect(links[2].text()).toBe('Crude OilUSO')
+    expect(links[2].attributes('aria-label')).toBe('Crude Oil USO') // label and note apart
+    expect(links[0].attributes('aria-label')).toBe('S&P 500')
   })
 })

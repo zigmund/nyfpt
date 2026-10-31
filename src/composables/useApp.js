@@ -127,7 +127,7 @@ export const parseHash = (h) => {
  *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
  *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
- *   back(fallback = '/')  previous app history entry, or `fallback` on the first entry (deep link)
+ *   back(fallback = '/')  previous app history entry, or `fallback` replacing the first entry (deep link)
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -457,10 +457,11 @@ export function createAppState(overrides = {}) {
     await open(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
   }
 
-  /** Back from a screen: the previous app entry when there is one, else `fallback` (deep link). */
+  /** Back from a screen: the previous app entry when there is one, else `fallback` (deep link) in
+   *  place of this entry, so system Back does not bounce between the two. */
   function back(fallback = '/') {
     if (depth > 0 && win?.history) win.history.back()
-    else go(fallback)
+    else go(fallback, { replace: true })
   }
 
   /** Market `name` (getSecurityInfo / quote `ltr`) is open, per the live controller's market status. */
