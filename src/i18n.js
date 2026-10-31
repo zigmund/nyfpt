@@ -164,7 +164,7 @@ const en = {
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
   'settings.hide': 'Hide amounts',
-  'settings.hideHint': 'Shows *** instead of dollar amounts. Percentages and prices stay visible.',
+  'settings.hideHint': 'Shows $*** instead of dollar amounts. Percentages and prices stay visible.',
   'settings.data': 'Data on this device',
   'settings.clearCache': 'Clear cache',
   'settings.clearCacheHint': 'Deletes the saved data for this account. It loads again from the broker.',

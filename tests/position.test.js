@@ -206,13 +206,13 @@ describe('Summary', () => {
   it('hide amounts: money and shares become ***, percents and prices stay', () => {
     setup({ prefs: { hide: true } })
     const w = mountCard()
-    expect(w.get('[data-test="ph-day"]').text()).toBe(`*** (${pct(10)})`)
-    expect(w.get('[data-test="ph-total"]').text()).toBe(`*** (${pct(37.5)})`)
+    expect(w.get('[data-test="ph-day"]').text()).toBe(`+$*** (${pct(10)})`)
+    expect(w.get('[data-test="ph-total"]').text()).toBe(`+$*** (${pct(37.5)})`)
     expect(w.get('[data-test="ph-shares"]').text()).toBe('***')
-    expect(w.get('[data-test="ph-value"]').text()).toBe('***')
+    expect(w.get('[data-test="ph-value"]').text()).toBe('$***')
     expect(w.get('[data-test="ph-avg"]').text()).toBe('80.00')
     expect(w.get('[data-test="p-price"]').text()).toBe('110.00')
-    expect(w.get('[data-test="p-holdings"]').text()).not.toContain('$')
+    expect(w.get('[data-test="p-holdings"]').text()).not.toMatch(/\$\d/)
   })
 
   it('closed position: period result instead of market value', () => {

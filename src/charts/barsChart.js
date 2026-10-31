@@ -8,7 +8,7 @@ const BH = 22
 /**
  * @param {HTMLElement} el
  * @param {Array<{ticker, pnl}>} positions computeCore positions
- * @param {{hide: boolean}} opts hide: amount labels become ***
+ * @param {{hide: boolean}} opts hide: amount labels become $***
  */
 export function drawBarsChart(el, positions, { hide = false } = {}) {
   el.replaceChildren()
