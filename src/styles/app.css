@@ -1434,8 +1434,6 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 @media (min-width: 64rem) {
   .app { --gutter: calc(var(--gap-lg) * 2); --gap: var(--gap-md); }
 
-  .big { font-size: 2rem; }
-
   .lede { max-width: 65ch; }
 
   /* Period buttons packed left on wide charts; the compare button stays at the right end. */
@@ -1456,12 +1454,14 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   .mcard__last { grid-area: last; }
   .mcard__chg { grid-area: chg; }
 
-  /* Value card: figures and Contributions in a column left of a wide chart, periods under it.
+  /* Value card: figures in a column left of a wide chart, periods right under the chart,
+     Contributions full width below both (the bars get the wide one-row layout). The flexible
+     row only takes the chart's extra height, so opening Contributions never moves the periods.
      The value block and its body are display: contents, so their children are the card's grid
      items (aria-busy is on the card; the stale dimming moves to the children). */
   .vcard {
     grid-template-columns: 18rem minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto auto auto 1fr auto auto;
     column-gap: calc(var(--gap-lg) * 2);
     row-gap: var(--gap-xs);
     align-items: start;
@@ -1473,13 +1473,13 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   .vcard .vblock__body.is-stale > * { opacity: .45; transition: opacity .3s; }
 
   .vcard .vblock__head { grid-area: 1 / 1; margin-bottom: 0; }
-  .vcard .vblock__big { grid-area: 2 / 1; }
+  .vcard .vblock__big { grid-area: 2 / 1; font-size: 2.25rem; }
   .vcard .vblock__body > .warn { grid-area: 3 / 1; }
   .vcard .vline--day { grid-area: 4 / 1; }
   .vcard .vline--period { grid-area: 5 / 1; }
   .vcard .vchart { grid-area: 1 / 2 / 7 / 3; height: 300px; margin-top: 0; }
   .vcard .periods { grid-area: 7 / 2; }
-  .vcard .contrib { grid-area: 6 / 1 / 8 / 2; margin-top: var(--gap); }
+  .vcard .contrib { grid-area: 8 / 1 / 9 / -1; margin-top: var(--gap); }
 
   /* Holdings: title, total and the Day / period switch on one row; tables grow with the page. */
   .hold { grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--gap-lg); }
@@ -1511,7 +1511,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   }
 
   .kv.flows dt { font-family: var(--font-ui); font-size: var(--fs-caption); align-self: end; }
-  .kv.flows dd { font-size: clamp(var(--fs-body), 1.1vw, var(--fs-heading)); }
+  /* Never break a number: the size steps down on narrow desktops instead. */
+  .kv.flows dd { font-size: clamp(var(--fs-caption), 1.1vw, var(--fs-heading)); white-space: nowrap; overflow-wrap: normal; }
 
   .kv.flows dt:first-of-type,
   .kv.flows dd:first-of-type { border-left: 0; padding-left: 0; }

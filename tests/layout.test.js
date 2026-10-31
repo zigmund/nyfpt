@@ -170,6 +170,28 @@ describe('stylesheet breakpoints', () => {
     expect(decls(d, '.vcard .vblock__body.is-stale > *')).toMatch(/opacity/)
   })
 
+  it('desktop value card: Contributions full width below; periods in the row right after the chart', () => {
+    const d = media(DESKTOP)
+    // grid-area "rs / cs / re / ce" (missing parts: span 1)
+    const area = (sel) => {
+      const m = /grid-area:\s*([^;]+)/.exec(decls(d, sel))
+      expect(m, sel).toBeTruthy()
+      const [rs, cs, re, ce] = m[1].trim().split('/').map((v) => v.trim())
+      return { rs: +rs, cs, re: re === undefined ? +rs + 1 : +re, ce }
+    }
+    const rows = /grid-template-rows:\s*([^;]+)/.exec(decls(d, '.vcard'))[1].trim().split(/\s+/)
+    const flex = rows.indexOf('1fr') + 1 // grid line index of the flexible row
+    const chart = area('.vcard .vchart')
+    const periods = area('.vcard .periods')
+    const contrib = area('.vcard .contrib')
+    expect(periods.rs).toBe(chart.re)
+    expect(contrib.cs).toBe('1')
+    expect(contrib.ce).toBe('-1')
+    expect(contrib.rs).toBeGreaterThan(periods.rs)
+    // nothing that can grow (Contributions) spans the flexible row
+    expect(contrib.rs > flex || contrib.re <= flex).toBe(true)
+  })
+
   it('desktop: cash flows in one row, holdings head on one row, tables not height-capped', () => {
     const d = media(DESKTOP)
     expect(decls(d, '.kv.flows')).toMatch(/grid-auto-flow:\s*column/)
