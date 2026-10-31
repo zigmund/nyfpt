@@ -138,7 +138,7 @@ import { t } from '../i18n.js'
 import { fMoney, fPct, fPrice, fQty, tone, n, PERIOD_LABELS } from '../display.js'
 import { useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
-import { nyDate } from '../data/repo.js'
+import { localDay } from '../calc/marketTime.js'
 import { PERIODS } from '../calc/periods.js'
 import { chartRows, chartSource, rangePos } from '../calc/position.js'
 import PriceChart from './PriceChart.vue'
@@ -168,8 +168,8 @@ const loadError = computed(() => !!props.pos.sec.errors?.info && !props.pos.sec.
 const intraday = computed(() => chartSource(props.period) === 'intraday')
 const rows = computed(() => {
   const s = props.pos.sec
-  const today = nyDate(Date.now())
-  const list = chartRows(props.period, s, { today, sessions: s.sessions })
+  const today = s.today || localDay(Date.now())
+  const list = chartRows(props.period, s, { today, sessions: s.sessions, clock: s.clock })
   // Live: the last bar of today's session follows the quote.
   const px = props.pos.price
   if (props.period === '1D' && props.pos.isLive && px != null && list.length && list[list.length - 1].date === today) {

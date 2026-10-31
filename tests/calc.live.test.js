@@ -5,6 +5,9 @@ import {
 } from '../src/calc/portfolio.js';
 import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows } from '../src/calc/live.js';
 
+// Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
+const SRV3 = { offset: 10800, markets: {} };
+
 const ps = {
   acc: [{ curr: 'USD', currval: 1, s: 1000 }, { curr: 'KZT', currval: 0.002, s: 500000 }],
   pos: [
@@ -115,7 +118,7 @@ describe('computeCore with a live price', () => {
     const positions = parsePositions({ answer: fx.getPositionJson }).rows;
     const trades = parseTrades({ answer: fx.getTradesHistory }).rows;
     const cashflows = parseCashflows({ answer: fx.getUserCashFlows }).rows;
-    const prices = parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }).rows;
+    const prices = parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }, SRV3).rows;
     const live = livePriceRows(prices, new Map([['AAA.US', { ltp: 112 }]]), '2026-10-13');
     const res = computeCore(positions, trades, cashflows, live);
     expect(res.summary.day_pnl).toBe(100);

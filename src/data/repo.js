@@ -1,6 +1,7 @@
 // Data repository: cache-first state, TTL refresh, incremental daily candles.
 //
 // kv keys (per account, via AccountDb):
+//   clock        {t, m, at}           getMarketStatus snapshot + local receive time (marketTime.js)
 //   positions    {rows, rawPs}        parsePositions rows + raw `ps` (holdings)
 //   cashflows    rows                 parseCashflows rows (whole history)
 //   trades       {from, rows}         parseTrades rows since `from` (beginDate watermark)
@@ -15,14 +16,14 @@ import {
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
-
-import { parseCandles, sessionBounds } from '../calc/position.js'
+import { marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
+import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { SessionExpiredError } from '../api/transport.js'
 
-const DATASETS = ['positions', 'cashflows', 'trades', 'markets', 'sparks']
+const DATASETS = ['clock', 'positions', 'cashflows', 'trades', 'markets', 'sparks']
 const TTL_OF = {
-  positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
+  clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
@@ -35,10 +36,6 @@ const SEC_INTRADAY_DAYS = 8 // 5 sessions back, weekends and a holiday included
 const SEC_MAX_FROM = '1990-01-01'
 const SESSION_INDEX = 'SP500.IDX' // its intraday bars mark the regular US session
 
-const nyFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
-/** Calendar date in New York ('YYYY-MM-DD'): candle dates are US trading dates. */
-export const nyDate = (ms) => nyFormat.format(new Date(ms))
-
 const addDays = (s, n) => {
   const d = new Date(`${s}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() + n)
@@ -48,7 +45,7 @@ const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
 
 export function createRepo({ broker, db, now = () => Date.now() }) {
-  const cache = { positions: null, cashflows: null, trades: null, markets: null, sparks: null }
+  const cache = { clock: null, positions: null, cashflows: null, trades: null, markets: null, sparks: null }
   const fetchedAt = {}
   const candles = new Map() // ticker -> [{date, close}] asc
   let cover = {}
@@ -61,18 +58,37 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   let cacheLoaded = null
   let loaded = false
 
-  const today = () => nyDate(now())
+  // Market clock (server offset, market hours) from the cached getMarketStatus snapshot.
+  let clockMemo = { src: undefined, value: null }
+  function clock() {
+    if (clockMemo.src !== cache.clock) clockMemo = { src: cache.clock, value: marketClock(cache.clock) }
+    return clockMemo.value
+  }
+  // Market of the session index (US); its trading date is the app's "today".
+  const indexMarket = () => ((cache.markets?.intraday || []).find((r) => r.ticker === SESSION_INDEX && r.mkt) || {}).mkt || null
+  const today = (ms = now()) => marketDay(marketClockFor(clock(), indexMarket()), ms)
+  /** The clock candle parsing needs: cached, else fetched now (one request shared). */
+  async function needClock() {
+    if (!clock()) await refreshOne('clock')
+    const c = clock()
+    if (!c) throw new Error('No market time')
+    return c
+  }
 
   function marketsStrip() {
     return cache.markets ? computeMarkets(cache.markets.daily, cache.markets.intraday) : null
   }
 
   // Day sparks, recomputed only when their inputs change (state() runs on every emit).
-  let sparksMemo = { src: undefined, mkts: undefined, value: null }
+  let sparksMemo = { src: undefined, mkts: undefined, clk: undefined, day: undefined, value: null }
   function sparksState() {
     if (!cache.sparks) return null
-    if (sparksMemo.src !== cache.sparks || sparksMemo.mkts !== cache.markets) {
-      sparksMemo = { src: cache.sparks, mkts: cache.markets, value: daySparks(cache.sparks.intraday, cache.markets?.intraday) }
+    const day = today()
+    if (sparksMemo.src !== cache.sparks || sparksMemo.mkts !== cache.markets || sparksMemo.clk !== cache.clock || sparksMemo.day !== day) {
+      sparksMemo = {
+        src: cache.sparks, mkts: cache.markets, clk: cache.clock, day,
+        value: daySparks(cache.sparks.intraday, cache.markets?.intraday, clock(), day),
+      }
     }
     return sparksMemo.value
   }
@@ -88,8 +104,16 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   const sec = new Map()
   function secEntry(ticker) {
     let e = sec.get(ticker)
-    if (!e) sec.set(ticker, (e = { info: null, intraday: null, daily: null, max: null, at: {}, errors: {}, inflight: new Map() }))
+    if (!e) sec.set(ticker, (e = { info: null, intraday: null, daily: null, max: null, zone: null, at: {}, errors: {}, inflight: new Map() }))
     return e
+  }
+  // Candles of a card ticker; remembers its market and the broker's zone for it (getHloc `info`).
+  async function cardCandles(tk, answerP) {
+    const c = await needClock()
+    const a = await answerP()
+    const z = candleZone(a, tk)
+    if (z.mkt) secEntry(tk).zone = z
+    return parseCandles(a, tk, c)
   }
   const secFetchers = {
     async info(tk) {
@@ -97,15 +121,17 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       if (!a || typeof a !== 'object') throw new Error('No security info')
       return a
     },
-    async intraday(tk) {
-      const t = today()
-      return parseCandles(await broker.hlocIntraday([tk], addDays(t, -SEC_INTRADAY_DAYS), addDays(t, 1), 15), tk)
+    intraday(tk) {
+      return cardCandles(tk, () => {
+        const t = today()
+        return broker.hlocIntraday([tk], addDays(t, -SEC_INTRADAY_DAYS), addDays(t, 1), 15)
+      })
     },
-    async daily(tk) {
-      return parseCandles(await broker.hlocDaily([tk], addDays(today(), -SEC_DAILY_DAYS), -1), tk)
+    daily(tk) {
+      return cardCandles(tk, () => broker.hlocDaily([tk], addDays(today(), -SEC_DAILY_DAYS), -1))
     },
-    async max(tk) {
-      return parseCandles(await broker.hlocDaily([tk], SEC_MAX_FROM, -1), tk)
+    max(tk) {
+      return cardCandles(tk, () => broker.hlocDaily([tk], SEC_MAX_FROM, -1))
     },
   }
 
@@ -134,18 +160,24 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     })).then(() => {})
   }
 
-  /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: regular US
-   *  session bounds by date (sessionBounds over SP500.IDX bars), only for US tickers. */
+  /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: index bars by
+   *  date (sessionBounds over SP500.IDX) for tickers of the index's market; `clock`: the ticker
+   *  market's clock (marketClockFor); `today`: that market's trading date. */
   function security(ticker) {
     const e = sec.get(ticker)
-    const us = String(ticker).endsWith('.US')
-    const idx = us ? (cache.markets?.intraday || []).filter((r) => r.ticker === SESSION_INDEX) : []
+    const im = indexMarket()
+    const mkt = e?.zone?.mkt || e?.info?.ltr || null
+    const anchored = mkt && im ? String(mkt).toUpperCase() === String(im).toUpperCase() : String(ticker).endsWith('.US')
+    const idx = anchored ? (cache.markets?.intraday || []).filter((r) => r.ticker === SESSION_INDEX) : []
+    const mc = marketClockFor(clock(), mkt || (anchored ? im : null), { tz: e?.zone?.tz })
     return {
       info: e?.info ?? null,
       intraday: e?.intraday ?? null,
       daily: e?.daily ?? null,
       max: e?.max ?? null,
-      sessions: us ? sessionBounds(idx) : null,
+      sessions: anchored ? sessionBounds(idx) : null,
+      clock: mc,
+      today: marketDay(mc, now()),
       errors: { ...(e?.errors || {}) },
       loading: e ? [...e.inflight.keys()] : [],
     }
@@ -228,14 +260,22 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
         throw new Error(`Cash flows incomplete: ${rows.length}${a.total != null ? ` of ${a.total}` : ''} rows`)
       }
     },
+    async clock() {
+      const a = await broker.marketStatus()
+      const m = a && a.result && a.result.markets
+      const status = { t: m && m.t, m: (m && m.m) || [], at: now() }
+      if (!marketClock(status)) throw new Error('No market status')
+      await save('clock', status)
+    },
     async markets() {
+      const c = await needClock()
       const t = today()
       const tickers = MARKET_STRIP.map((m) => m.ticker)
       const [d, i] = await Promise.all([
         broker.hlocDaily(tickers, addDays(t, -10), -1),
         broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15),
       ])
-      await save('markets', { daily: parseHloc({ answer: d }).rows, intraday: parseHloc({ answer: i }).rows })
+      await save('markets', { daily: parseHloc({ answer: d }, c).rows, intraday: parseHloc({ answer: i }, c).rows })
     },
     // One multi-ticker request for all positions; needs the positions, so waits for their fetch.
     // Nothing is saved without positions: the next refresh tries again.
@@ -243,9 +283,10 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       if (inflight.has('positions')) await inflight.get('positions')
       const tickers = positionTickers()
       if (!tickers.length) return
+      const c = await needClock()
       const t = today()
       const a = await broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15)
-      await save('sparks', { tickers, intraday: parseHloc({ answer: a }).rows })
+      await save('sparks', { tickers, intraday: parseHloc({ answer: a }, c).rows })
     },
   }
 
@@ -289,7 +330,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
 
   function fetchCandles(tickers, from) {
     return task(`candles:${from}:${tickers.join(',')}`, 'candles', async () => {
-      const rows = parseHloc({ answer: await broker.hlocDaily(tickers, from, -CLOSES_BEFORE) }).rows
+      const c = await needClock()
+      const rows = parseHloc({ answer: await broker.hlocDaily(tickers, from, -CLOSES_BEFORE) }, c).rows
       for (const t of tickers) {
         const own = rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))
         if (own.length) await db.putCandles(t, own)
@@ -394,6 +436,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     },
 
     marketsStrip,
+    /** Trading date of the session index's market at `ms` (default now). */
+    today,
     security,
     loadSecurity,
 

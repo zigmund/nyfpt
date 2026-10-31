@@ -5,6 +5,9 @@ import {
   computeNow, computeCore,
 } from '../src/calc/portfolio.js';
 
+// Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
+const SRV3 = { offset: 10800, markets: {} };
+
 /*
  * Synthetic scenario (see tests/fixtures/synthetic-api.json), window starts 2026-10-05.
  * Formulas: docs/CALCULATIONS.md. Hand-computed expectations:
@@ -33,7 +36,7 @@ const inputs = () => ({
   positions: parsePositions({ answer: fx.getPositionJson }).rows,
   trades: parseTrades({ answer: fx.getTradesHistory }).rows,
   cashflows: parseCashflows({ answer: fx.getUserCashFlows }).rows,
-  prices: parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }).rows,
+  prices: parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }, SRV3).rows,
 });
 
 describe('computeCore on the synthetic scenario', () => {
@@ -153,8 +156,8 @@ describe('parsers', () => {
 
   it('candle [H, L, O, C]: close is the 4th element', () => {
     const answer = { hloc: { 'X.US': [[12, 8, 9, 10.5]] }, xSeries: { 'X.US': [1791158400] } };
-    expect(parseHloc({ answer }).rows[0]).toMatchObject({ ticker: 'X.US', close: 10.5 });
-    expect(parsePricesForPeriod({ answer, args: { date_from: '05.10.2026 00:00' } }).rows[0])
+    expect(parseHloc({ answer }, SRV3).rows[0]).toMatchObject({ ticker: 'X.US', close: 10.5 });
+    expect(parsePricesForPeriod({ answer, args: { date_from: '05.10.2026 00:00' } }, SRV3).rows[0])
       .toMatchObject({ close: 10.5, window_start: '2026-10-05' });
   });
 

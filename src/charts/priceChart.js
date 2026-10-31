@@ -19,9 +19,9 @@ const hourLabel = (min) => {
   return `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`
 }
 
-/** Hover text of a row: time for intraday bars, the date otherwise. */
+/** Hover text of a row: local date, time and zone for intraday bars (see chartRows), the date otherwise. */
 export function whenOf(r, intraday) {
-  if (intraday) return r.min != null ? `${dateShort(r.date)}, ${clock(r.min)}` : dateShort(r.date)
+  if (intraday) return r.min != null ? `${dateShort(r.ldate || r.date)}, ${clock(r.min)}${r.zone ? ` ${r.zone}` : ''}` : dateShort(r.date)
   return dateFull(r.date)
 }
 

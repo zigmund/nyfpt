@@ -2,6 +2,8 @@
 // Чистые функции: на вход — ответы API Tradernet или строки, на выход — строки/объекты.
 // Не зависят от браузера и от среды дашборда (dash.*).
 
+import { axisDate } from './marketTime.js';
+
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
 
@@ -37,8 +39,9 @@ export const parseCashflows = ({ answer }) => {
   };
 
 /** getHloc дневные (для расчёта доходности) -> {columns, rows}: ticker, date, close, window_start.
- *  args.date_from — тот же 'DD.MM.YYYY HH:MM', что ушёл в запрос (начало периода). */
-export const parsePricesForPeriod = ({ answer, args }) => {
+ *  args.date_from — тот же 'DD.MM.YYYY HH:MM', что ушёл в запрос (начало периода).
+ *  clock — marketClock (marketTime.js): дата свечи через смещение часов сервера. */
+export const parsePricesForPeriod = ({ answer, args }, clock) => {
     const a = J(answer); brokerError(a);
     if (!a || !a.hloc) throw new Error('В ответе нет hloc');
     const [d, m, y] = String(args.date_from).slice(0, 10).split('.');
@@ -46,21 +49,23 @@ export const parsePricesForPeriod = ({ answer, args }) => {
     const rows = [];
     for (const t of Object.keys(a.hloc)) {
       const xs = (a.xSeries && a.xSeries[t]) || [];
-      a.hloc[t].forEach((c, i) => rows.push({ ticker: t, date: new Date((xs[i] + 10800) * 1000).toISOString().slice(0, 10), close: +c[3], window_start: ws }));
+      a.hloc[t].forEach((c, i) => rows.push({ ticker: t, date: axisDate(clock, xs[i]), close: +c[3], window_start: ws }));
     }
     return { columns: ['ticker', 'date', 'close', 'window_start'], rows };
   };
 
-/** getHloc любой таймфрейм (для полосы рынков) -> {columns, rows}: ticker, ts, date, close */
-export const parseHloc = ({ answer }) => {
+/** getHloc любой таймфрейм -> {columns, rows}: ticker, mkt (рынок из info), ts, date, close.
+ *  clock — marketClock (marketTime.js): дата свечи через смещение часов сервера. */
+export const parseHloc = ({ answer }, clock) => {
   const a = J(answer); brokerError(a);
   if (!a || !a.hloc) throw new Error('В ответе нет hloc');
   const rows = [];
   for (const t of Object.keys(a.hloc)) {
     const xs = (a.xSeries && a.xSeries[t]) || [];
-    a.hloc[t].forEach((c, i) => rows.push({ ticker: t, ts: xs[i], date: new Date((xs[i] + 14400) * 1000).toISOString().slice(0, 10), close: +c[3] }));
+    const mkt = (a.info && a.info[t] && a.info[t].mkt_name) || undefined;
+    a.hloc[t].forEach((c, i) => rows.push({ ticker: t, mkt, ts: xs[i], date: axisDate(clock, xs[i]), close: +c[3] }));
   }
-  return { columns: ['ticker', 'ts', 'date', 'close'], rows };
+  return { columns: ['ticker', 'mkt', 'ts', 'date', 'close'], rows };
 };
 
 // ---------- Расчёты (были dash.calc) ----------

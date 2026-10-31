@@ -5,6 +5,7 @@ import { nextTick, reactive, ref } from 'vue'
 import Holdings from '../src/components/Holdings.vue'
 import MarketSpark from '../src/components/MarketSpark.vue'
 import { daySparks, periodSpark } from '../src/calc/sparks.js'
+import { marketClock } from '../src/calc/marketTime.js'
 import { installApp } from '../src/composables/useApp.js'
 import { money, pct } from '../src/format.js'
 import { computeCore } from '../src/calc/portfolio.js'
@@ -457,6 +458,8 @@ describe('sparks calc', () => {
     bar('SP500.IDX', '2026-10-29', '09:30', 1), bar('SP500.IDX', '2026-10-29', '15:45', 1),
     bar('SP500.IDX', '2026-10-30', '09:30', 1), bar('SP500.IDX', '2026-10-30', '15:45', 1),
   ]
+  // Broker status of a server on UTC (axis = wall clock): US market opens 09:30, dt 0.
+  const CLK = marketClock({ t: '2026-10-31 12:00:00', at: Date.parse('2026-10-31T12:00:00Z'), m: [{ n: 'FIX', o: '09:30:00', c: '20:00:00', dt: '0' }] })
 
   it('US tickers: the last S&P 500 session, regular hours only', () => {
     const rows = [
@@ -467,7 +470,7 @@ describe('sparks calc', () => {
       bar('AAA.US', '2026-10-30', '17:00', 13), // post-market
       bar('AAA.US', '2026-10-31', '08:00', 14), // pre-market of a day without an index session yet
     ]
-    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-31')['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
   })
 
   it('US tickers before their first regular bar of the index session: the previous session, flagged prior', () => {
@@ -477,8 +480,8 @@ describe('sparks calc', () => {
       bar('AAA.US', '2026-10-29', '09:30', 5), bar('AAA.US', '2026-10-29', '15:45', 6),
       bar('AAA.US', '2026-10-30', '08:00', 7), // pre-market only
     ]
-    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-29', spark: [5, 6], prior: true })
-    expect(daySparks([bar('AAA.US', '2026-10-30', '08:00', 7)], IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-30')['AAA.US']).toEqual({ date: '2026-10-29', spark: [5, 6], prior: true })
+    expect(daySparks([bar('AAA.US', '2026-10-30', '08:00', 7)], IDX, CLK, '2026-10-30')['AAA.US']).toEqual({ date: '2026-10-30', spark: [] })
   })
 
   it('other markets (KZ): their own last session', () => {
@@ -486,12 +489,12 @@ describe('sparks calc', () => {
       bar('CCC_KZ.KZ', '2026-10-30', '11:30', 3),
       bar('CCC_KZ.KZ', '2026-10-31', '11:30', 4), bar('CCC_KZ.KZ', '2026-10-31', '12:00', 5),
     ]
-    expect(daySparks(rows, IDX)['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-31')['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
   })
 
   it('US tickers without index candles: their own last date', () => {
     const rows = [bar('AAA.US', '2026-10-29', '10:00', 5), bar('AAA.US', '2026-10-30', '10:00', 6), bar('AAA.US', '2026-10-30', '10:15', 7)]
-    expect(daySparks(rows, [])['AAA.US']).toEqual({ date: '2026-10-30', spark: [6, 7] })
+    expect(daySparks(rows, [], CLK, '2026-10-31')['AAA.US']).toEqual({ date: '2026-10-30', spark: [6, 7] })
   })
 
   it('periodSpark: start price, closes strictly inside (from, to), end price', () => {
@@ -590,10 +593,13 @@ describe('dev mock (?mock)', () => {
     const today = new Date().toISOString().slice(0, 10)
     const from = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10)
     const to = new Date(Date.now() + 864e5).toISOString().slice(0, 10)
-    const pending = Promise.all([b.hlocIntraday(tickers, from, to, 15), b.hlocIntraday(['SP500.IDX'], from, to, 15)])
+    const { marketClock, marketClockFor, marketDay } = await import('../src/calc/marketTime.js')
+    const pending = Promise.all([b.hlocIntraday(tickers, from, to, 15), b.hlocIntraday(['SP500.IDX'], from, to, 15), b.marketStatus()])
     await vi.advanceTimersByTimeAsync(1000)
-    const [pos, idx] = (await pending).map((a) => parseHloc({ answer: a }).rows)
-    const sp = daySparks(pos, idx)
+    const [ai, ax, st] = await pending
+    const clock = marketClock({ ...st.result.markets, at: Date.now() })
+    const [pos, idx] = [ai, ax].map((a) => parseHloc({ answer: a }, clock).rows)
+    const sp = daySparks(pos, idx, clock, marketDay(marketClockFor(clock, 'FIX'), Date.now()))
     for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
   })
 
