@@ -841,3 +841,52 @@ POST https://tradernet.kz/api/getHloc
     - отчёты — `YYYY-MM-DD`;
     - `getSecurityInfo.firstDate` — `MM.DD.YYYY`;
     - формат дат в фильтрах cashflows — не указан.
+
+---
+
+## 8. Данные о бумаге для карточки (спайк Task 22, 2026-10-31)
+
+Проверено анонимным form POST `q=` на `tradernet.global` с `Origin: https://portfolio.zigmund.xyz`: все ответы 200 с `access-control-allow-origin`, то есть читаются из браузера без SID. Тикеры: AAPL.US, MSFT.US, SPY.US, QQQ.US, KZTO.KZ, KSPI.KZ. WS-поля и SID-варианты не проверялись (нужен вход владельца).
+
+### 8.1. `getSecurityInfo {ticker, sup:false}` — одна бумага, 150 полей, плоский объект (без обёртки `result`)
+Числа — настоящие числа. Живое состояние на момент запроса, обновляется с биржей.
+
+| Что нужно | Поле | Заметки |
+|---|---|---|
+| последняя цена, время | `ltp`, `ltt` | `ltt` без TZ |
+| предыдущее закрытие | `ClosePrice` (= `quotes.prev_close_a`) | `pp` — закрытие на день раньше (`old_close_a`), не использовать как prev close |
+| изменение за день | `chg` (абс.), `pcp` (%) | считаются от `ClosePrice` |
+| диапазон дня | `mintp`, `maxtp` | |
+| объём дня | `vol` (шт., включая пре/пост), `vlt` (сумма) | |
+| bid/ask | `bbp`, `bap` | на закрытом рынке может быть 0 |
+| доходность периодов | `chg1w/1m/6m/1y` (%), цены `p1w/p1m/p6m/p1y` | |
+| волатильность | `volatility7/30/90/180/365` (%) | это не beta |
+| прогнозные квантили | `target{7,30,90,180,365}_p{0.05..0.95}` | вероятностные коридоры в % к цене, не цели аналитиков |
+| тип | `kind`: 1 акция, 7 ETF/фонд | `type` всегда 1 |
+| валюта, рынок | `x_curr`, `ltr` (FIX/KASE), `codesub_nm` (NASDAQ/ARCA/KASE) | |
+| статус | `marketStatus` (`TECH`, `CLOSE`, …) | |
+| ISIN, описание | `issue_nb`, `x_descr` (русский текст) | |
+
+Ненадёжные поля: `op` (AAPL 140.98, SPY 393.1 — не дневное открытие; открытие брать из дневной свечи `getHloc`), `x_min`/`x_max` (у US-бумаг похожи на 52-недельный диапазон (AAPL 246.85/352.06 против 245.72/352.6 по свечам), у KZTO явно мусор 797/898.95 при цене 1386; считать 52w из `getHloc`), `mtd`, `ncd`.
+Нет: P/E, beta, market cap, дивидендная доходность, EPS, NAV, чистые активы, пре/пост-цена.
+
+`sup:true` — 11 полей (`id, short_name, currency, lot, mkt_name, firstDate` и `mrkt`). `mrkt` для US: `{p:"14:10:00" (пре-маркет с), o:"16:30:00" (open), c:"03:00:00", post:"23:00:00", dayoff, tz:"America/New_York", dt:420}`. Часы в серверной зоне, зависят от перевода часов (DST), использовать только справочно.
+
+### 8.2. `getStockData {ticker}` — «витрина» (shop), ~90 полей, ответ плоский
+Анонимно доступен, но данные витрины **устаревшие и точечные**: `market_cap` AAPL 2.46T (реально >5T), `investbank_recommendations` датированы 2023 (Goldman, Morgan Stanley… `{date,name,target,recommendation}`), `revenue`/`gross_profit` не соответствуют TTM, `dividend_income` строкой `"0,57%"`, `points[]`, `potential` (число-цель). Для KZTO/QQQ эти поля пустые, для KSPI.KZ `null`. Есть `attributes` (CUSIP, LEI, `CFICode`, `appropriateness_type: etf_regular`, `tradestart_date_EU`), `quotes` (строки, в том числе `limit_up/limit_down`, `volume_q`), `nrd_data` (справочник НРД: эмитент, управляющая компания и сайт фонда, размещённый объём), `text` (HTML, v-html запрещён), `logo` (путь на tradernet).
+Вывод: не годится как источник Key statistics и Analysis (stale, пустые для KZ и ETF). Можно брать: `nrd_data.issuer.name_full_en`, `issuesize` (число акций, для оценки капитализации умножением на `ltp`, при условии актуальности), `x_descr`/`text` как описание (только текстом).
+
+### 8.3. `getHloc` — свечи (CORS ок)
+- `timeframe:1440`, `count:-400`, `date_from:"01.01.2026 00:00"`, `date_to:"31.10.2026 00:00"` вернул 609 дневных свечей (с 2024-05, то есть `count` не ограничивает окно жёстко). Свеча `[high, low, open, close]`, `vl` — объём шт., `xSeries` — unix сек (дневная свеча = 21:00 UTC предыдущих суток).
+- 52-недельный диапазон: max high / min low по последним ~252 свечам (AAPL 352.6 / 245.72). Средний объём: среднее `vl` по последним 63 свечам (AAPL ~19.6M, но свеча последнего дня включает пре/пост).
+- Дневное открытие: `[2]` последней дневной свечи.
+- `timeframe:5` за сутки: 192 свечи, покрывают пре-маркет, основную сессию и пост-маркет (сумма объёмов 68.95M = `quotes.volume_q`). Объём пре/пост-баров мал (единицы тысяч за 5 минут). Ось `xSeries` сдвинута относительно UTC (04:00-20:00 по Нью-Йорку выглядит как 01:00-16:55), точный сдвиг проверить в браузере.
+
+### 8.4. `GET /securities/export?tickers=A+B&params=f1+f2` (CORS ок)
+Отдаёт только поля из `getSecurityInfo` (проверено `c ltp pp x_min x_max vol name kind type x_descr`). Несуществующие поля (`market_cap`, `trailing_pe`, `beta`, `eps`, `dividend_yield`) молча отбрасываются. Фундаментала нет.
+
+### 8.5. Что отсутствует
+- Команды `getCorpActions, getDividends, getNews, getAnalytics, getFinancials, getEarnings, getFundamentals, getRecommendations, getIdeas, getFundComposition, getEtfHoldings` — `Command not found` (code 5). Отчётности, EPS, прогнозов, состава ETF нет.
+- `getReadyList` — `Command not found` анонимно.
+- `getNewsList` анонимно: `Invalid credentials` (code 12), нужен SID (Task 15).
+- `getPlannedCorpActions {reception:35}` анонимно работает, но отдаёт **весь корпоративный календарь одним ответом: 254 474 записи, ~150 МБ, 504 по таймауту при повторных вызовах**. Фильтры `ticker`, `tickers`, `date_from/to`, `from/till`, `take` не сработали (ответ пустой по таймауту или `Incorrect request parameters`). Запись: `{type: dividend|split|coupon|maturity|stock_dividend|spin_off|…, ticker, ex_date, pay_date, currency, amount_per_one (строка), …}`. Для браузера непригодно. Повторно не вызывать без идеи фильтра.
