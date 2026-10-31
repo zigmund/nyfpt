@@ -1,0 +1,19 @@
+# AI assistant instructions and local state
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+AGENTS.md
+GEMINI.md
+.gemini/
+.cursor/
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md
+.aider*
+.codex/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
