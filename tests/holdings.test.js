@@ -741,6 +741,15 @@ describe('Holdings column stability (Task 32)', () => {
     expect(room(['qty', 'price', 'value'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
   })
 
+  it('mobile Cash row keeps Value in column 2 and Weight in the right column (same grid as positions)', () => {
+    const m = mediaBody('(max-width: 47.99rem)')
+    expect(m).toMatch(/\.hc-weight\s*\{[^}]*grid-column:\s*4/)
+    // column 4 floors at the pill's min width, otherwise a pill-less Cash row gets a narrower column 4
+    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:[^;]*minmax\(var\(--pill-min, 8ch\), auto\)/)
+    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*var\(--pill-min, 8ch\)/)
+    expect(m).toMatch(/\.hrow--cash \.hc-meta:not\(\.hc-weight\)\s*\{[^}]*grid-column:\s*2/)
+  })
+
   it('mobile total line is a grid: placement does not depend on the figures', () => {
     const m = mediaBody('(max-width: 47.99rem)')
     expect(m).toMatch(/\.hold__total\s*\{[^}]*display:\s*grid/)

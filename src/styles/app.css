@@ -1248,7 +1248,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .pill {
   display: inline-block;
-  min-width: 8ch;
+  min-width: var(--pill-min, 8ch);
   padding: .0625rem .375rem;
   border-radius: 5px;
   text-align: right;
@@ -1313,7 +1313,10 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .ptable.htable tbody tr {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+    /* The last track floors at the pill's min width (the same --pill-min; the row and the pill share
+       the table's font, so ch matches). A row without a pill (Cash) then gets the usual column 4;
+       rows are independent grids, so a position row with a wider price still has a wider column 4. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(var(--pill-min, 8ch), auto);
     align-items: center;
     column-gap: var(--gap-md);
     padding: var(--gap) var(--pad);
@@ -1353,7 +1356,9 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   }
 
   .ptable.htable .hc-qty { order: 1; }
-  .ptable.htable .hc-weight { order: 2; text-align: right; }
+  .ptable.htable .hc-weight { order: 2; grid-column: 4; text-align: right; }
+  /* Cash has only Value + Weight: Value keeps the position's Value column (2), Weight the right one. */
+  .ptable.htable .hrow--cash .hc-meta:not(.hc-weight) { grid-column: 2; }
 
   /* Closed / current tables stay real tables: tighter cells and narrower columns keep the
      symbol column readable at 375px (the widths still hold 6-digit quantities and $9,999,999.99). */
