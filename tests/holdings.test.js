@@ -527,6 +527,25 @@ describe('Holdings cash row', () => {
     expect(trs2[trs2.length - 1].attributes('data-test')).toBe('h-cash-row')
   })
 
+  it('Day: position + cash weights sum to 100% (also after a live tick)', () => {
+    const { push } = setup({ isLive: true })
+    const w = mountH()
+    const sum = () => [...w.findAll('[data-test="h-weight"]'), ...w.findAll('[data-test="h-cash-weight"]')]
+      .reduce((s, e) => s + parseFloat(e.text()), 0)
+    expect(sum()).toBeCloseTo(100, 0)
+    push('AAA.US', 130)
+    return w.vm.$nextTick().then(() => expect(sum()).toBeCloseTo(100, 0))
+  })
+
+  it('Day: unknown day change gives a null change and % (dashes), total still incl. cash', () => {
+    const { app } = setup()
+    app.state.value = { ...app.state.value, rawPs: { ...PS, pos: PS.pos.map((p) => ({ ...p, close_price: null })) } }
+    const w = mountH()
+    const total = w.get('[data-test="h-total"]').text()
+    expect(total).toContain(money(4500))
+    expect(total).not.toMatch(/\d%/)
+  })
+
   it('Day: hidden amounts mask the cash value', () => {
     setup({ prefs: { hide: true } })
     const w = mountH()
