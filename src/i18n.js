@@ -139,7 +139,7 @@ const en = {
   'settings.clearCacheHint': 'Deletes the saved data for this account. It loads again from the broker.',
   'settings.cleared': 'Cache cleared',
   'settings.logout': 'Log out',
-  'settings.logoutHint': 'Forgets the broker session on this device. Saved data stays until you clear the cache.',
+  'settings.logoutHint': "Forgets the broker session and deletes this account's saved data on this device.",
   'settings.version': 'Version {v}',
 }
 

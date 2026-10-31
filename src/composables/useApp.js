@@ -75,7 +75,7 @@ export const parseHash = (h) => {
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout(), clearCache(), retry(), go(path), start(), stop()
+ *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path), start(), stop()
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -159,7 +159,7 @@ export function createAppState(overrides = {}) {
   }
 
   function closeDb() {
-    db?.close()
+    try { db?.close() } catch { /* already closed */ }
     db = null
     accountKey = null
   }
@@ -274,9 +274,18 @@ export function createAppState(overrides = {}) {
     setRoute('/')
   }
 
+  /** Forget the SID and erase this account's cache (spec §8). Resolves when the erase is done;
+   *  storage errors are swallowed. Expiry never gets here: it keeps the cache. */
   function logout() {
     gen++
     detach()
+    const d = db
+    let erased = Promise.resolve()
+    if (d) {
+      // clear() opens its transaction synchronously, so it is queued before close().
+      try { erased = Promise.resolve(d.clear()) } catch (e) { erased = Promise.reject(e) }
+      erased = erased.catch(() => {})
+    }
     closeDb()
     deps.sessionStore.clear()
     session.value = null
@@ -285,6 +294,7 @@ export function createAppState(overrides = {}) {
     state.value = null
     bump()
     setRoute('/login')
+    return erased.then(() => {})
   }
 
   async function clearCache() {

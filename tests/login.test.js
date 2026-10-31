@@ -239,6 +239,33 @@ describe('useApp login flow', () => {
     expect(db.close).not.toHaveBeenCalled()
   })
 
+  it('logout erases the account cache, then closes it; the session is gone', async () => {
+    const { deps, app } = setup()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const db = await deps.openAccountDb.mock.results[0].value
+    await app.logout()
+    expect(db.clear).toHaveBeenCalledTimes(1)
+    expect(db.close).toHaveBeenCalled()
+    // The clear is queued before the connection closes.
+    expect(db.clear.mock.invocationCallOrder[0]).toBeLessThan(db.close.mock.invocationCallOrder[0])
+    expect(deps.sessionStore.clear).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.route.value).toBe('/login')
+  })
+
+  it('logout swallows storage errors while erasing the cache', async () => {
+    const { deps, app } = setup()
+    deps.openAccountDb.mockImplementationOnce(async (key) => ({
+      key, clear: vi.fn(async () => { throw new Error('QuotaExceededError') }), close: vi.fn(),
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const db = await deps.openAccountDb.mock.results[0].value
+    await expect(app.logout()).resolves.toBeUndefined()
+    expect(db.clear).toHaveBeenCalled()
+    expect(db.close).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+  })
+
   it('uses a different partition for a different user', async () => {
     const { deps, app } = setup()
     await app.login('global', { login: 'me', password: 'pw' })
