@@ -1,6 +1,6 @@
 // Cumulative return chart: portfolio vs S&P 500 vs Nasdaq 100, with a 3-value tooltip.
-import { select, scaleLinear, scalePoint, line, pointer, minIndex, min, max } from 'd3'
-import { svgIn, measure, widthOf, onOutsidePointer } from './util.js'
+import { select, scaleLinear, scalePoint, line, minIndex, min, max } from 'd3'
+import { svgIn, measure, widthOf, onOutsidePointer, pointerX } from './util.js'
 import { dateShort } from '../format.js'
 import { fMoney, fPct } from '../display.js'
 
@@ -16,9 +16,10 @@ const tickText = (v) => `${v > 0 ? '+' : v < 0 ? '\u2212' : ''}${+Math.abs(v).to
 /**
  * @param {HTMLElement} el
  * @param {Array} series computeCore series
- * @param {{labels: string[], hide: () => boolean}} opts labels per SERIES entry
+ * @param {{labels: string[], hide: () => boolean, hoverDate?: string|null, onHover?: (date|null) => void}} opts
+ *   labels per SERIES entry; hoverDate: date hovered before a redraw, shown again when present.
  */
-export function drawCompareChart(el, series, { labels, hide = () => false }) {
+export function drawCompareChart(el, series, { labels, hide = () => false, hoverDate = null, onHover = () => {} }) {
   el.replaceChildren()
   const rows = series || []
   if (!rows.length) return () => el.replaceChildren()
@@ -57,9 +58,7 @@ export function drawCompareChart(el, series, { labels, hide = () => false }) {
   const dots = SERIES.map((s) => svg.append('circle').attr('class', `chart-dot cmp-dot ${s.cls}`).attr('r', 4).style('opacity', 0))
   const tip = select(el).append('div').attr('class', 'chart-tip num').attr('aria-hidden', 'true').style('opacity', 0)
 
-  const show = (ev) => {
-    const [mx] = pointer(ev, svg.node())
-    const r = rows[minIndex(rows, (d) => Math.abs(x(d.date) - mx))]
+  const showRow = (r) => {
     const px = x(r.date)
     rule.attr('x1', px).attr('x2', px).style('opacity', 1)
     SERIES.forEach((s, i) => dots[i].attr('cx', px).attr('cy', y(r[s.key] ?? 0)).style('opacity', r[s.key] == null ? 0 : 1))
@@ -76,8 +75,14 @@ export function drawCompareChart(el, series, { labels, hide = () => false }) {
     let left = px * scale + 12
     if (left + tw > cw) left = px * scale - tw - 12
     tip.style('left', `${Math.max(0, left)}px`).style('top', '8px').style('opacity', 1)
+    onHover(r.date)
+  }
+  const show = (ev) => {
+    const mx = pointerX(ev, svg.node(), W)
+    showRow(rows[minIndex(rows, (d) => Math.abs(x(d.date) - mx))])
   }
   const hideTip = () => {
+    onHover(null)
     rule.style('opacity', 0)
     for (const d of dots) d.style('opacity', 0)
     tip.style('opacity', 0)
@@ -85,6 +90,10 @@ export function drawCompareChart(el, series, { labels, hide = () => false }) {
   svg.append('rect').attr('class', 'chart-hit').attr('x', m.l).attr('y', 0).attr('width', Math.max(0, W - m.l - m.r)).attr('height', H)
     .on('pointerdown', show).on('pointermove', show).on('pointercancel', hideTip)
     .on('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hideTip() })
+
+  const kept = hoverDate && rows.find((r) => r.date === hoverDate)
+  if (kept) showRow(kept)
+  else if (hoverDate) onHover(null)
 
   const ac = new AbortController()
   onOutsidePointer(el, hideTip, ac.signal)

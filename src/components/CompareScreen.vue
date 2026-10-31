@@ -90,5 +90,12 @@ const tiles = computed(() => {
 })
 
 const el = ref(null)
-useChart(el, () => seriesKey(core.value?.series), (node) => drawCompareChart(node, core.value?.series, { labels: LABELS, hide: () => prefs.hide }))
+// The tooltip's date survives redraws on live recalcs (shown again while the date exists).
+let hoverDate = null
+useChart(el, () => seriesKey(core.value?.series), (node) => drawCompareChart(node, core.value?.series, {
+  labels: LABELS,
+  hide: () => prefs.hide,
+  hoverDate,
+  onHover: (d) => { hoverDate = d },
+}))
 </script>

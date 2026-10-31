@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { fPrice, fWeight, fPct } from '../src/display.js'
 import { nextTick } from 'vue'
 import ValueBlock from '../src/components/ValueBlock.vue'
 import PeriodPicker from '../src/components/PeriodPicker.vue'
@@ -42,8 +43,9 @@ const STATE = {
 
 function makeApp({ core = CORE, prefs = {} } = {}) {
   const saved = []
+  let sub = null
   const repo = {
-    subscribe: (fn) => { fn(STATE); return () => {} },
+    subscribe: (fn) => { sub = fn; fn(STATE); return () => {} },
     onSessionExpired: () => () => {},
     load: async () => {},
     coreFor: vi.fn(() => core),
@@ -64,7 +66,7 @@ function makeApp({ core = CORE, prefs = {} } = {}) {
   }
   const app = installApp(createAppState(deps))
   app.start()
-  return { app, repo, saved }
+  return { app, repo, saved, emit: (st) => sub(st) }
 }
 
 beforeEach(() => { window.location.hash = '' })
@@ -218,5 +220,150 @@ describe('CompareScreen', () => {
     expect(w2.find('[data-test="lede"]').exists()).toBe(false)
     expect(w2.text()).not.toContain('$0.00')
     w2.unmount()
+  })
+})
+
+describe('usePeriodCore: when prices are fetched again', () => {
+  const calls = (repo) => repo.ensurePrices.mock.calls.length
+
+  it('a new priced ticker re-ensures prices; repeated emits/ticks do not', async () => {
+    const { repo, emit } = makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    const base = calls(repo)
+    for (let i = 0; i < 3; i++) emit({ ...STATE, updatedAt: Date.now() })
+    await flushPromises()
+    expect(calls(repo)).toBe(base)
+
+    emit({ ...STATE, positions: [...STATE.positions, { ticker: 'NEW.US', name: 'New', kind: 'position', qty: 1, price: 5, value: 5 }] })
+    await flushPromises()
+    expect(calls(repo)).toBe(base + 1)
+    expect(repo.ensurePrices.mock.calls.at(-1)[0]).toBe('YTD')
+
+    emit({ ...STATE, trades: [{ ticker: 'OLD.US', date: '2026-10-01' }, { ticker: 'EUR/USD', date: '2026-10-02' }] })
+    await flushPromises()
+    expect(calls(repo)).toBe(base + 2)
+    w.unmount()
+  })
+
+  it('a new NY trading date (clock or visibility resume) re-ensures prices', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-30T20:00:00Z'))
+      const { repo } = makeApp()
+      const w = mount(MainScreen)
+      await flushPromises()
+      const base = calls(repo)
+
+      vi.advanceTimersByTime(60e3) // same NY date
+      await flushPromises()
+      expect(calls(repo)).toBe(base)
+
+      vi.setSystemTime(new Date('2026-10-31T14:00:00Z'))
+      vi.advanceTimersByTime(60e3)
+      await flushPromises()
+      expect(calls(repo)).toBe(base + 1)
+
+      vi.setSystemTime(new Date('2026-11-01T14:00:00Z')) // resumed from background
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flushPromises()
+      expect(calls(repo)).toBe(base + 2)
+      w.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('covered -> not covered for the same period fetches once', async () => {
+    let core = CORE
+    const { repo, emit } = makeApp()
+    repo.coreFor.mockImplementation(() => core)
+    const w = mount(MainScreen)
+    await flushPromises()
+    const base = calls(repo)
+    core = null
+    emit({ ...STATE })
+    await flushPromises()
+    expect(calls(repo)).toBe(base + 1)
+    emit({ ...STATE }) // still null: no retry loop
+    await flushPromises()
+    expect(calls(repo)).toBe(base + 1)
+    w.unmount()
+  })
+})
+
+describe('chart hover across live redraws', () => {
+  const live = (core, value) => ({
+    ...core,
+    series: core.series.map((r, i) => (i === core.series.length - 1 ? { ...r, value, portfolio: r.portfolio + 0.1 } : r)),
+    summary: { ...core.summary, value_end: value },
+  })
+  const hoverAt = async (w, sel, clientX) => {
+    await w.get(sel).trigger('pointermove', { clientX, clientY: 50, pointerType: 'mouse' })
+  }
+
+  it('ValueBlock keeps the hovered date and its values after a recalc', async () => {
+    makeApp()
+    const w = mount(ValueBlock, { props: { core: CORE, period: 'YTD' }, attachTo: document.body })
+    await flushPromises()
+    // 280px fallback width, 3 points at x = 4, 140, 276 -> the middle one (Oct 27)
+    await hoverAt(w, '.vchart .chart-hit', 140)
+    expect(w.get('[data-test="v-big"]').text()).toBe(money(10120))
+    expect(w.get('[data-test="v-period"]').text()).toContain('Oct 26 – Oct 27')
+
+    await w.setProps({ core: live(CORE, 10600) })
+    await flushPromises()
+    expect(w.get('.chart-pill').text()).toBe('Oct 27, 2026')
+    expect(w.get('[data-test="v-big"]').text()).toBe(money(10120))
+    expect(w.get('[data-test="v-period"]').text()).toContain('Oct 26 – Oct 27')
+
+    // hovering the last point: the recalculated value is shown
+    await hoverAt(w, '.vchart .chart-hit', 276)
+    await w.setProps({ core: live(CORE, 10650) })
+    await flushPromises()
+    expect(w.get('[data-test="v-big"]').text()).toBe(money(10650))
+    w.unmount()
+  })
+
+  it('CompareScreen keeps the tooltip date after a recalc', async () => {
+    let core = CORE
+    const { repo, emit } = makeApp()
+    repo.coreFor.mockImplementation(() => core)
+    const w = mount(CompareScreen, { attachTo: document.body })
+    await flushPromises()
+    const hit = w.get('.cchart .chart-hit')
+    const x = Number(hit.attributes('x')) + Number(hit.attributes('width')) / 2
+    await hoverAt(w, '.cchart .chart-hit', x)
+    const before = w.get('.chart-tip').text()
+    expect(before).toContain('Oct 27')
+
+    core = live(CORE, 10600)
+    emit({ ...STATE })
+    await flushPromises()
+    expect(w.get('.chart-tip').text()).toContain('Oct 27')
+    expect(w.get('.chart-tip').element.style.opacity).toBe('1')
+    w.unmount()
+  })
+})
+
+describe('display helpers', () => {
+  it('negative prices, weights and percents use U+2212', () => {
+    expect(fPrice(-1234.5)).toBe('\u22121,234.50')
+    expect(fPrice(-0.1234)).toBe('\u22120.1234')
+    expect(fWeight(-2.34)).toBe('\u22122.3%')
+    expect(fPct(-1.5)).toBe('\u22121.50%')
+    for (const s of [fPrice(-5), fWeight(-5), fPct(-5)]) expect(s).not.toContain('-')
+  })
+})
+
+describe('MainScreen top bar', () => {
+  it('settings link uses a gear icon and keeps its label', async () => {
+    makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    const a = w.get('a[href="#/settings"]')
+    expect(a.attributes('aria-label')).toBe(t('nav.settings'))
+    expect(a.find('[data-test="gear"]').exists()).toBe(true)
+    w.unmount()
   })
 })

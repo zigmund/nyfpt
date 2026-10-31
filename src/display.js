@@ -2,6 +2,8 @@
 import { money, pct, num } from './format.js'
 
 export const DASH = '—'
+const MINUS = '\u2212'
+const minus = (s) => s.replace('-', MINUS) // en-US numbers use U+2212 for negatives
 export const HIDDEN = '***'
 
 /** Finite number or null (broker fields may be null, '', strings or NaN). */
@@ -32,7 +34,7 @@ const px2 = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFr
 export const fPrice = (v) => {
   const x = n(v)
   if (x === null) return DASH
-  return Math.abs(x) < 1 ? x.toFixed(4) : px2.format(x)
+  return minus(Math.abs(x) < 1 ? x.toFixed(4) : px2.format(x))
 }
 
 export const fQty = (v, hide = false) => {
@@ -43,7 +45,7 @@ export const fQty = (v, hide = false) => {
 
 export const fWeight = (v) => {
   const x = n(v)
-  return x === null ? DASH : `${x.toFixed(1)}%`
+  return x === null ? DASH : minus(`${x.toFixed(1)}%`)
 }
 
 /** 'pos' | 'neg' | '' by sign; kept for hidden amounts too. */

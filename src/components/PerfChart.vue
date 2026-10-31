@@ -16,9 +16,14 @@ const props = defineProps({
 const emit = defineEmits(['hover'])
 
 const el = ref(null)
+// The hovered date survives redraws (live recalcs every few seconds): the chart shows it again
+// and reports the recomputed row; it is dropped only when the date left the series.
+let hoverDate = null
+const onHover = (r) => {
+  hoverDate = r ? r.date : null
+  emit('hover', r)
+}
 // Redraw only when what is drawn changes (live recalcs produce new but often equal series).
-useChart(el, () => `${props.mode}|${seriesKey(props.series)}`, (node) => {
-  emit('hover', null)
-  return drawValueChart(node, props.series, { mode: props.mode, onHover: (r) => emit('hover', r) })
-})
+useChart(el, () => `${props.mode}|${seriesKey(props.series)}`, (node) =>
+  drawValueChart(node, props.series, { mode: props.mode, hoverDate, onHover }))
 </script>

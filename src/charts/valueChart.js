@@ -1,6 +1,6 @@
 // Value block chart: TWR % (perf) or value $ (value) with hover rule, dot and a date pill.
-import { select, scaleLinear, scalePoint, line, area, pointer, minIndex, min, max } from 'd3'
-import { svgIn, xLabels, widthOf, nextId, dateFull, onOutsidePointer } from './util.js'
+import { select, scaleLinear, scalePoint, line, area, minIndex, min, max } from 'd3'
+import { svgIn, xLabels, widthOf, nextId, dateFull, onOutsidePointer, pointerX } from './util.js'
 
 const H = 220
 
@@ -8,9 +8,10 @@ const H = 220
  * Draws into `el` and returns a cleanup function.
  * @param {HTMLElement} el
  * @param {Array<{date, value, portfolio, pnl}>} series computeCore series
- * @param {{mode: 'perf'|'value', onHover?: (row|null) => void}} opts
+ * @param {{mode: 'perf'|'value', onHover?: (row|null) => void, hoverDate?: string|null}} opts
+ *   hoverDate: date hovered before a redraw (live recalc); shown again when still present.
  */
-export function drawValueChart(el, series, { mode = 'perf', onHover = () => {} } = {}) {
+export function drawValueChart(el, series, { mode = 'perf', onHover = () => {}, hoverDate = null } = {}) {
   el.replaceChildren()
   const val = mode === 'value' ? (r) => r.value : (r) => r.portfolio
   const rows = (series || []).filter((r) => val(r) != null && Number.isFinite(+val(r)))
@@ -52,9 +53,7 @@ export function drawValueChart(el, series, { mode = 'perf', onHover = () => {} }
   const pill = select(el).append('div').attr('class', 'chart-pill num').attr('aria-hidden', 'true').style('opacity', 0)
 
   let active = false
-  const show = (ev) => {
-    const [mx] = pointer(ev, svg.node()) // viewBox units
-    const r = rows[minIndex(rows, (d) => Math.abs(x(d.date) - mx))]
+  const showRow = (r) => {
     const px = x(r.date)
     rule.attr('x1', px).attr('x2', px).style('opacity', 0.5)
     dot.attr('cx', px).attr('cy', y(val(r))).style('opacity', 1)
@@ -66,6 +65,10 @@ export function drawValueChart(el, series, { mode = 'perf', onHover = () => {} }
     pill.style('left', `${left}px`).style('opacity', 1)
     active = true
     onHover(r)
+  }
+  const show = (ev) => {
+    const mx = pointerX(ev, svg.node(), W)
+    showRow(rows[minIndex(rows, (d) => Math.abs(x(d.date) - mx))])
   }
   const hide = () => {
     if (!active) return
@@ -79,6 +82,10 @@ export function drawValueChart(el, series, { mode = 'perf', onHover = () => {} }
   svg.append('rect').attr('class', 'chart-hit').attr('x', 0).attr('y', 0).attr('width', W).attr('height', H)
     .on('pointerdown', show).on('pointermove', show).on('pointercancel', hide)
     .on('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hide() })
+
+  const kept = hoverDate && rows.find((r) => r.date === hoverDate)
+  if (kept) showRow(kept)
+  else if (hoverDate) onHover(null)
 
   const ac = new AbortController()
   onOutsidePointer(el, hide, ac.signal)

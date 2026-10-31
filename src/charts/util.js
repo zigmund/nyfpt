@@ -62,6 +62,13 @@ export function xLabels(svg, rows, x, { W, left, right }) {
   return { long, labels: xl }
 }
 
+/** Pointer x in viewBox units of an SVG drawn `W` wide and scaled to its box. */
+export function pointerX(ev, svgNode, W) {
+  const r = svgNode.getBoundingClientRect()
+  const scale = r.width ? W / r.width : 1
+  return (ev.clientX - r.left) * scale
+}
+
 /** Hide on a pointerdown outside `el` (touch: the hover stays until tapping elsewhere). */
 export function onOutsidePointer(el, fn, signal) {
   globalThis.document?.addEventListener('pointerdown', (ev) => {
