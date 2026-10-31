@@ -59,6 +59,12 @@ export async function openAccountDb(accountKey, idb = globalThis.indexedDB) {
       await txDone(tx)
     },
 
+    async deleteKv(name) {
+      const tx = db.transaction('kv', 'readwrite')
+      tx.objectStore('kv').delete([accountKey, name])
+      await txDone(tx)
+    },
+
     async getCandles(ticker) {
       const tx = db.transaction('candles', 'readonly')
       const rows = await promisify(
