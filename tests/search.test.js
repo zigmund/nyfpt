@@ -111,7 +111,7 @@ const STATE = {
   trades: [], cashflows: [], markets: null, inception: null, updatedAt: Date.now(), errors: {}, loading: [],
 }
 
-function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuotes = new Map() } = {}) {
+function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuotes = new Map(), auth } = {}) {
   const saved = []
   const recentSaved = []
   const repo = {
@@ -126,7 +126,8 @@ function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuote
     searchQuotes: searchQuotes || vi.fn(async (ts) => Object.fromEntries(ts.map((x) => [x, { last: 240.35, change: -1.41 }]))),
   }
   const app = installApp(createAppState({
-    createBroker: () => ({}),
+    createBroker: () => ({ positions: async () => ({ result: { ps: { acc: [{ curr: 'USD', s: 1 }], pos: [] } } }) }),
+    auth,
     openAccountDb: async () => ({ close() {}, clear: async () => {} }),
     createRepo: () => repo,
     createLive: () => ({
@@ -442,6 +443,18 @@ describe('fix round 1', () => {
   it('logout clears Recent (it lists the account’s activity)', async () => {
     const { app, recentSaved } = makeApp({ recent: [recentOf(AMZN), recentOf(HELD)] })
     await app.logout()
+    expect(app.recent.value).toEqual([])
+    expect(recentSaved.at(-1)).toEqual([])
+  })
+
+  it('a login as another account (e.g. after an expiry) clears Recent; the same account keeps it', async () => {
+    const auth = { loginByPassword: vi.fn(async () => ({ sid: 's2', userId: 1 })) }
+    const { app, recentSaved } = makeApp({ recent: [recentOf(AMZN), recentOf(HELD)], auth })
+    await flushPromises()
+    await app.login('global', { login: 'u', password: 'p' }) // same cabinet:user as the stored session
+    expect(app.recent.value.map((r) => r.ticker)).toEqual([AMZN.ticker, HELD.ticker])
+    auth.loginByPassword.mockResolvedValue({ sid: 's3', userId: 2 }) // another user on this device
+    await app.login('global', { login: 'v', password: 'p' })
     expect(app.recent.value).toEqual([])
     expect(recentSaved.at(-1)).toEqual([])
   })

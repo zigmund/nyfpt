@@ -21,7 +21,7 @@ import {
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
-import { dailyOffset, hlocMarkets, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
+import { dailyOffset, dailyThroughSession, hlocMarkets, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
 import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { BrokerError, SessionExpiredError } from '../api/transport.js'
@@ -33,7 +33,7 @@ export const DATASET = Object.freeze({
 })
 const DATASETS = Object.values(DATASET).filter((n) => n !== DATASET.candles) // kv datasets
 const TTL_OF = {
-  clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
+  clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.markets, sparks: TTL.sparks,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
@@ -301,9 +301,22 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     })).then(() => {})
   }
 
+  // Daily / max candles of a card ticker on the index's market, up to the last index session
+  // (dailyThroughSession), memoized per source array and markets cache (no new array per read).
+  function anchoredCandles(e, part, idx) {
+    const src = e?.[part] ?? null
+    if (!src) return null
+    const m = e.anchored?.[part]
+    if (m && m.src === src && m.mkts === cache.markets) return m.value
+    const value = dailyThroughSession(src, idx)
+    e.anchored = { ...e.anchored, [part]: { src, mkts: cache.markets, value } }
+    return value
+  }
+
   /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: index bars by
    *  date (sessionBounds over SP500.IDX) for tickers of the index's market; `clock`: the ticker
-   *  market's clock (marketClockFor); `today`: that market's trading date. */
+   *  market's clock (marketClockFor); `today`: that market's trading date. `daily` / `max` of
+   *  such tickers end at the last index session (no weekend single-print bar). */
   function security(ticker) {
     const e = sec.get(ticker)
     const im = indexMarket()
@@ -314,8 +327,8 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     return {
       info: e?.info ?? null,
       intraday: e?.intraday ?? null,
-      daily: e?.daily ?? null,
-      max: e?.max ?? null,
+      daily: anchored ? anchoredCandles(e, 'daily', idx) : e?.daily ?? null,
+      max: anchored ? anchoredCandles(e, 'max', idx) : e?.max ?? null,
       sessions: anchored ? sessionBounds(idx) : null,
       clock: mc,
       today: marketDay(mc, now()),
@@ -472,13 +485,14 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       })
     },
     // One multi-ticker request for all positions; needs the positions, so waits for their fetch.
-    // Nothing is saved without positions: the next refresh tries again.
+    // Nothing is saved without positions: the next refresh tries again. An unknown ticker is
+    // dropped (hlocTolerant) and simply has no spark.
     async sparks() {
       if (inflight.has('positions')) await inflight.get('positions')
       const tickers = positionTickers()
       if (!tickers.length) return
       const t = today()
-      const a = await broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15)
+      const a = await hlocTolerant((ts) => broker.hlocIntraday(ts, addDays(t, -6), addDays(t, 1), 15), tickers)
       await learn(a, false)
       await save('sparks', { tickers, intraday: parseHloc({ answer: a }, await intradayClock()).rows })
     },
@@ -529,8 +543,9 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   ])].filter((t) => !String(t).includes('/')).sort()
 
   // Daily closes of `tickers` from `from` (plus CLOSES_BEFORE - 1 earlier bars), per ticker.
+  // An unknown ticker is dropped (hlocTolerant): it gets no closes.
   async function dailyCloses(tickers, from) {
-    const a = await broker.hlocDaily(tickers, from, -CLOSES_BEFORE)
+    const a = await hlocTolerant((ts) => broker.hlocDaily(ts, from, -CLOSES_BEFORE), tickers)
     await learn(a, true)
     const rows = parseHloc({ answer: a }, dailyClock(a)).rows
     return new Map(tickers.map((t) => [t, rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))]))
@@ -547,6 +562,11 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       const again = new Map() // old cover -> tickers whose adjusted history starts before `from`
       for (const t of tickers) {
         const own = got.get(t)
+        // No closes for a ticker with a stored history: skipped for now (hlocTolerant), so its
+        // history and cover stay (a backfill must not leave a hole); retried on a later call.
+        // Unknown for good (named by the broker) or never stored: covered with no closes, so the
+        // period is computed and computeCore reports the ticker missing.
+        if (!own.length && (candles.get(t) || []).length && !badTickers.has(t)) continue
         if (historyAdjusted(candles.get(t) || [], own)) {
           // Split / adjustment: the stored history is stale as a whole.
           const back = cover[t]

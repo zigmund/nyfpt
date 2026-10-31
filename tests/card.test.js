@@ -166,11 +166,18 @@ describe('index card (getSecurityInfo without prices)', () => {
     expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
   })
 
-  it('Key statistics: Type Index, Volume a dash (the broker sends kind 1, vol 0)', async () => {
+  it('Key statistics: Type Index, Volume a dash, no Avg. volume (the broker sends kind 1, vol 0; index vl is meaningless)', async () => {
     const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf({ ...IDX_INFO, vol: 0 }) } })
     expect(w.get('[data-test="pk-kind"] dd').text()).toBe(t('pos.kind.index'))
     expect(w.get('[data-test="pk-volume"] dd').text()).toBe('—')
-    expect(w.get('[data-test="pk-avgVolume"]').exists()).toBe(true) // from the candles, as before
+    expect(w.find('[data-test="pk-avgVolume"]').exists()).toBe(false)
+  })
+
+  it('keyStats: avgVolume only for non-index kinds', () => {
+    const daily = [{ date: '2026-10-29', vol: 100 }, { date: '2026-10-30', vol: 300 }]
+    expect(keyStats({ info: { codesub_nm: 'INDEX', kind: 1 }, daily }).avgVolume).toBeNull()
+    expect(keyStats({ info: { kind: 1 }, ticker: 'NASDAQ.IDX', daily }).avgVolume).toBeNull()
+    expect(keyStats({ info: { codesub_nm: 'NASDAQ', kind: 1 }, daily }).avgVolume).toBe(200)
   })
 
   it('keyStats: index by codesub INDEX, else by the .IDX suffix; stocks and funds unchanged', () => {

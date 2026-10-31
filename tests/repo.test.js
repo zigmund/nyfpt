@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import fx from './fixtures/synthetic-api.json'
 import { openAccountDb } from '../src/store/db.js'
 import { createRepo } from '../src/data/repo.js'
-import { BrokerError, NetworkError, SessionExpiredError } from '../src/api/transport.js'
+import { BrokerError, HttpError, NetworkError, SessionExpiredError } from '../src/api/transport.js'
 import {
   parseHloc, parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js'
@@ -20,7 +20,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x))
 const tsOf = (d) => Date.parse(`${d}T00:00:00Z`) / 1000
 const PORTFOLIO = ['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'QQQ.US', 'SPY.US']
 const STRIP = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US']
-const TTL_MARKETS = TTL.intraday
+const TTL_MARKETS = TTL.markets
 
 // Candle table {ticker: [[date, close]]} built from the synthetic fixture.
 function fixtureSeries() {
@@ -413,6 +413,38 @@ describe('repo', () => {
     expect(repo2.coreFor('7d', '2026-10-12')).toEqual(direct)
   })
 
+  it('an unknown position ticker does not blank the period core: covered with no closes, reported missing', async () => {
+    const b = fakeBroker()
+    b.unknown.add('BBB.US')
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.ensurePrices('7d', '2026-10-12')
+    expect(st.errors.candles).toBeUndefined()
+    const core = repo.coreFor('7d', '2026-10-12')
+    expect(core).not.toBeNull()
+    expect(core.summary.missing).toContain('BBB.US')
+    expect(st.closes.get('AAA.US').length).toBeGreaterThan(0)
+    // Asked again later: the dropped ticker is not requested, the core stays.
+    const n = b.calls.hlocDaily.length
+    await repo.ensurePrices('1m', '2026-10-12')
+    expect(b.calls.hlocDaily.slice(n).flatMap((c) => c.tickers)).not.toContain('BBB.US')
+    expect(repo.coreFor('1m', '2026-10-12')).not.toBeNull()
+  })
+
+  it('a ticker skipped for now keeps its stored history and cover (no hole on a backfill)', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-12')
+    const stored = await db.getCandles('AAA.US')
+    const coverBefore = (await db.getKv('candleCover')).data['AAA.US']
+    b.hlocError = (ts) => (ts.length > 1 || ts[0] === 'AAA.US' ? new BrokerError('Nope') : null)
+    await repo.ensurePrices('1m', '2026-10-12')
+    expect(await db.getCandles('AAA.US')).toEqual(stored)
+    expect((await db.getKv('candleCover')).data['AAA.US']).toBe(coverBefore)
+    expect(repo.coreFor('1m', '2026-10-12')).toBeNull() // not covered yet: retried later, never a silent hole
+  })
+
   it('coreFor returns null before the cache is loaded', async () => {
     const repo = mk(fakeBroker())
     await repo.ensurePrices('7d', '2026-10-12')
@@ -482,6 +514,27 @@ describe('repo', () => {
     expect(stripIntraday(b)).toEqual([{ tickers: STRIP, dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
     expect(repo.marketsStrip()[0]).toMatchObject({ ticker: 'SP500.IDX', last: 6060, prev: 6000, change_pct: 1 })
     expect(st.markets).toEqual(repo.marketsStrip())
+  })
+
+  it('NASDAQ.IDX weekend single-print daily bar stays out of the strip and the card (daily, max)', async () => {
+    clock = Date.parse('2026-10-11T15:00:00Z') // Sunday
+    const b = fakeBroker()
+    b.series['SP500.IDX'] = [['2026-10-08', 6000], ['2026-10-09', 6060]]
+    b.series['NASDAQ.IDX'] = [['2026-10-08', 20000], ['2026-10-09', 20100], ['2026-10-10', 20190]] // Sat: one print, volume 1
+    b.intraday['SP500.IDX'] = [['2026-10-08', '09:30', 1], ['2026-10-09', '09:30', 1], ['2026-10-09', '15:45', 1]]
+    b.intraday['NASDAQ.IDX'] = [['2026-10-09', '09:30', 20050], ['2026-10-09', '15:45', 20100]]
+    const repo = mk(b)
+    await repo.refresh({ only: ['markets'] })
+    expect(repo.marketsStrip().find((r) => r.ticker === 'NASDAQ.IDX')).toMatchObject({ date: '2026-10-09', last: 20100, prev: 20000 })
+    await repo.loadSecurity('NASDAQ.IDX', ['daily', 'max'])
+    const s = repo.security('NASDAQ.IDX')
+    expect(s.daily.map((r) => r.date)).toEqual(['2026-10-08', '2026-10-09'])
+    expect(s.max.at(-1).date).toBe('2026-10-09')
+    expect(repo.security('NASDAQ.IDX').daily).toBe(s.daily) // memoized: no new array per read
+    // A market without the index (KASE) keeps its own bars.
+    b.series['KKK.KZ'] = [['2026-10-09', 50], ['2026-10-10', 51]]
+    await repo.loadSecurity('KKK.KZ', ['daily'])
+    expect(repo.security('KKK.KZ').daily.map((r) => r.date)).toEqual(['2026-10-09', '2026-10-10'])
   })
 
   describe('custom markets strip', () => {
@@ -585,7 +638,7 @@ describe('repo', () => {
 
     it('fallback without names: one request at a time; the session index is never dropped', async () => {
       const b = fakeBroker()
-      // Combined rejected without naming anything, the index rejected alone too (e.g. a 429 with a JSON body).
+      // Combined rejected without naming anything, the index rejected alone too (a business error, HTTP 200).
       b.hlocError = (ts) => (ts.length > 1 || ts[0] === 'SP500.IDX' ? new BrokerError('Too many requests') : null)
       let active = 0
       let peak = 0
@@ -613,6 +666,21 @@ describe('repo', () => {
       const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
       await repo.load()
       expect(repo.marketsStrip().find((r) => r.ticker === 'AAA.US').last).toBeNull()
+      b.hlocError = null
+      clock += TTL_MARKETS
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'AAA.US', 'BBB.US'])
+    })
+
+    it('HTTP 429 is a transport error: no fan-out, nothing dropped or skipped', async () => {
+      const b = fakeBroker()
+      b.hlocError = () => new HttpError(429)
+      const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.load()
+      expect(st.errors.markets).toBeTruthy()
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([['SP500.IDX', 'AAA.US', 'BBB.US']])
       b.hlocError = null
       clock += TTL_MARKETS
       await repo.refresh({ only: ['markets'] })
@@ -832,6 +900,22 @@ describe('repo', () => {
     await repo.refresh({ force: true, only: ['sparks'] })
     expect(st.errors.sparks).toBe('Bad request')
     expect(st.sparks['AAA.US'].spark).toEqual([1, 2])
+  })
+
+  it('position sparks: an unknown ticker does not blank the others', async () => {
+    const b = fakeBroker()
+    b.unknown.add('BBB.US')
+    b.intraday = {
+      'SP500.IDX': [['2026-10-12', '09:30', 1], ['2026-10-12', '15:45', 1]],
+      'AAA.US': [['2026-10-12', '09:30', 8], ['2026-10-12', '15:45', 9]],
+    }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    expect(st.errors.sparks).toBeUndefined()
+    expect(st.sparks['AAA.US']).toEqual({ date: '2026-10-12', spark: [8, 9] })
+    expect(sparkCalls(b).at(-1).tickers).toEqual(['AAA.US', 'CCC_KZ.KZ'])
   })
 
   it('state.closes: cached daily closes per ticker (period sparks)', async () => {

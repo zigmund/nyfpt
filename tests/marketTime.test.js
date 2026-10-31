@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   serverOffset, marketClock, marketClockFor, axisDate, axisAt, wallToUtc, axisToUtc, marketDay,
-  localDay, localParts, formatLocal, sessionWindow, hmsMinutes, dailyOffset, hlocMarkets,
+  localDay, localParts, formatLocal, sessionWindow, hmsMinutes, dailyOffset, hlocMarkets, dailyThroughSession,
 } from '../src/calc/marketTime.js'
 import { candleZone, chartRows, keyStats, parseCandles, sessionBounds } from '../src/calc/position.js'
 import { daySparks } from '../src/calc/sparks.js'
@@ -379,5 +379,19 @@ describe('owner rule: sessions start at the broker pre-open (p - dt), end at the
     const daily = ['SP500.IDX', 'USO.US'].flatMap((t) => [{ ticker: t, date: '2026-10-29', ts: 1, close: 1 }, { ticker: t, date: '2026-10-30', ts: 2, close: 2 }])
     const strip = computeMarkets(daily, [...IDX, ...stock.map((r) => ({ ...r, ticker: 'USO.US' }))], clock, '2026-10-31', ['SP500.IDX', 'USO.US'])
     expect(strip.find((r) => r.ticker === 'USO.US').spark).toEqual(d1.map((r) => r.close))
+  })
+})
+
+describe('dailyThroughSession (shared anchor rule)', () => {
+  const d = (date, close) => ({ date, close })
+  it('drops daily bars dated after the last index session (weekend single print)', () => {
+    const idx = [{ date: '2026-10-29' }, { date: '2026-10-30' }]
+    expect(dailyThroughSession([d('2026-10-29', 1), d('2026-10-30', 2), d('2026-10-31', 3)], idx)).toEqual([d('2026-10-29', 1), d('2026-10-30', 2)])
+  })
+  it('no index bars: the rows as they are', () => {
+    const rows = [d('2026-10-31', 3)]
+    expect(dailyThroughSession(rows, [])).toBe(rows)
+    expect(dailyThroughSession(rows, null)).toBe(rows)
+    expect(dailyThroughSession(null, [{ date: '2026-10-30' }])).toBeNull()
   })
 })

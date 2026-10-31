@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { callLegacy, callAnon, BrokerError, SessionExpiredError, NetworkError } from '../src/api/transport.js'
+import { callLegacy, callAnon, BrokerError, SessionExpiredError, NetworkError, HttpError } from '../src/api/transport.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../src/api/auth.js'
 import { createBroker } from '../src/api/broker.js'
 import { CABINETS } from '../src/config.js'
@@ -45,6 +45,20 @@ describe('transport', () => {
     await expect(callLegacy({ rest: 'r', cmd: 'c', fetchImpl: vi.fn().mockRejectedValue(new TypeError('x')) })).rejects.toBeInstanceOf(NetworkError)
     const bad = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => { throw new SyntaxError('x') } })
     await expect(callLegacy({ rest: 'r', cmd: 'c', fetchImpl: bad })).rejects.toBeInstanceOf(NetworkError)
+  })
+
+  it('non-2xx is a transport error (HttpError with status) before the body is read', async () => {
+    for (const status of [429, 500, 503]) {
+      const json = vi.fn(async () => ({ error: 'Too many requests', code: 5 }))
+      const f = vi.fn().mockResolvedValue({ ok: false, status, json })
+      const e = await callLegacy({ rest: 'r', cmd: 'c', fetchImpl: f }).catch((x) => x)
+      expect(e).toBeInstanceOf(HttpError)
+      expect(e).toBeInstanceOf(NetworkError)
+      expect(e).not.toBeInstanceOf(BrokerError)
+      expect(e.status).toBe(status)
+      await expect(callAnon({ rest: 'r', cmd: 'c', fetchImpl: f })).rejects.toMatchObject({ name: 'HttpError', status })
+      expect(json).not.toHaveBeenCalled()
+    }
   })
 
   it('callAnon uses GET with query params', async () => {
@@ -187,6 +201,16 @@ describe('broker', () => {
     const f = fake({ error: 'x', code: 5 }, { SID: 'S', user_id: 1 })
     const b = createBroker({ cabinet, sid: 'S', fetchImpl: f })
     await expect(b.positions()).rejects.toMatchObject({ name: 'BrokerError', code: 5, message: 'x' })
+  })
+
+  it('getSidInfo probe answering 429 / 5xx does not mark the session expired', async () => {
+    for (const status of [429, 502]) {
+      const f = fake({ error: 'x', code: 5 }, () => ({ ok: false, status, json: async () => ({ error: 'Too many requests' }) }))
+      const b = createBroker({ cabinet, sid: 'S', fetchImpl: f })
+      const e = await b.positions().catch((x) => x)
+      expect(e).not.toBeInstanceOf(SessionExpiredError)
+      expect(e).toMatchObject({ name: 'HttpError', status })
+    }
   })
 
   it('other broker errors pass through without probing', async () => {

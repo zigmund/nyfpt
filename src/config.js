@@ -19,9 +19,9 @@ export const TTL = {
   trades: 7 * 60e3,
   cashflows: 10 * 60e3,
   quotes: 60e3,
-  markets: 60e3,
+  markets: 60e3, // markets strip dataset (daily + 15-min candles of the strip tickers)
   clock: 10 * 60e3, // getMarketStatus snapshot: server offset and market hours
-  intraday: 60e3,
+  intraday: 60e3, // position card 15-min candles
   sparks: 5 * 60e3, // holdings sparklines: 15-min candles
 }
 // IndexedDB row format. Bump when a stored shape or its parsing changes: rows of another version

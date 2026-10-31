@@ -20,6 +20,16 @@ export class NetworkError extends Error {
   }
 }
 
+/** Non-2xx HTTP status: a transport failure (rate limit, gateway, maintenance), never a broker
+ *  answer. V1/V2 business errors come with HTTP 200 (docs/tradernet-api.md §4.2). */
+export class HttpError extends NetworkError {
+  constructor(status) {
+    super(`HTTP ${status}`)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
 // A hung request would pin in-flight work (repo datasets, polling) until the browser gives up.
 export const TIMEOUT_MS = 20000
 // A signal is not a header: the request stays CORS-simple. Older browsers: no timeout.
@@ -39,6 +49,8 @@ async function parse(promise) {
   } catch (e) {
     throw new NetworkError(e?.message || 'Network error')
   }
+  // Checked before the body: a 429 / 5xx with a JSON error body must not read as a broker error.
+  if (res && res.ok === false) throw new HttpError(res.status)
   try {
     return await res.json()
   } catch {

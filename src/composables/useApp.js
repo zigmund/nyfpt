@@ -419,8 +419,11 @@ export function createAppState(overrides = {}) {
     if (userId == null) throw new AccountError(t('error.noUser'))
     if (!isUsdAccount(await broker.positions())) throw new AccountError(t('error.usdOnly'))
     const s = { cabinetId: cabinet.id, sid: res.sid, userId, loggedAt: deps.now() }
+    // The previous session (kept over an expiry): Recent lists its activity, not another account's.
+    const prev = session.value || deps.sessionStore.load()
     // Persist only after the account check passed and its storage opened.
     await attach(s, broker)
+    if (prev && `${prev.cabinetId}:${prev.userId}` !== `${s.cabinetId}:${s.userId}`) clearRecent()
     deps.sessionStore.save(s)
     session.value = s
     fatal.value = ''
