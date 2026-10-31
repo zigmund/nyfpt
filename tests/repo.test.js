@@ -202,6 +202,22 @@ describe('repo', () => {
     expect(st.errors.positions).toBeUndefined()
   })
 
+  it('incomplete cash flows are kept and reported in errors.cashflows', async () => {
+    const b = fakeBroker()
+    const base = b.cashflows
+    b.cashflows = async () => ({ ...(await base()), total: 900, complete: false })
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    expect(st.cashflows).toHaveLength(4)
+    expect(st.inception).toBe('2026-09-09')
+    expect(st.errors.cashflows).toMatch(/incomplete/i)
+    b.cashflows = base
+    await repo.refresh({ force: true, only: ['cashflows'] })
+    expect(st.errors.cashflows).toBeUndefined()
+  })
+
   it('keeps cache on session expiry', async () => {
     const b = fakeBroker()
     const repo = mk(b)
