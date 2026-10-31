@@ -33,9 +33,9 @@
       <template v-if="rows">
         <p class="hold__total num" data-test="h-total">
           <span class="hold__total-label">{{ t('hold.today') }}</span>
-          <span class="hold__total-value" data-test="h-total-value">{{ fMoney(total.valueUsd, { hide: prefs.hide }) }}</span>
-          <span :class="tone(total.dayChangeUsd)">{{ fMoney(total.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
-          <span :class="tone(total.dayChangePct)">({{ fPct(total.dayChangePct) }})</span>
+          <span class="hold__total-value" data-test="h-total-value">{{ fMoney(dayTotal.valueUsd, { hide: prefs.hide }) }}</span>
+          <span :class="tone(dayTotal.dayChangeUsd)">{{ fMoney(dayTotal.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
+          <span :class="tone(dayTotal.dayChangePct)">({{ fPct(dayTotal.dayChangePct) }})</span>
         </p>
 
         <div class="tablebox tablebox--rows">
@@ -52,8 +52,7 @@
               <tr v-for="r in daySorted" :key="r.ticker" class="hrow" data-test="h-row" :data-ticker="r.ticker">
                 <th scope="row" class="hc-sym">
                   <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
-                    <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>
-                    <span class="hrow__name" data-test="h-name">{{ r.name }}</span>
+                    <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>{{ ' ' }}<span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                   </a>
                 </th>
                 <td class="hc-spark"><MarketSpark v-bind="daySpark(r)" /></td>
@@ -63,6 +62,14 @@
                 <td data-test="h-qty" class="hc-meta hc-qty" :data-label="t('hold.col.qty')">{{ fQty(r.qty, prefs.hide) }}</td>
                 <td data-test="h-value" class="hc-meta" :data-label="t('hold.col.valueUsd')">{{ fMoney(r.valueUsd, { hide: prefs.hide }) }}</td>
                 <td data-test="h-weight" class="hc-meta hc-weight" :data-label="t('hold.col.weight')">{{ fWeight(r.weight * 100) }}</td>
+              </tr>
+              <tr v-for="c in dayCash" :key="c.curr" class="hrow hrow--cash" data-test="h-cash-row" :data-cash="c.curr">
+                <th scope="row" class="hc-sym">
+                  <span class="hrow__sym" data-test="h-cash-sym">{{ t('hold.cash') }}</span>{{ ' ' }}<span class="hrow__name">{{ c.curr }}</span>
+                </th>
+                <td v-for="k in 5" :key="k" class="hc-empty" />
+                <td data-test="h-cash-value" class="hc-meta" :data-label="t('hold.col.valueUsd')">{{ fMoney(c.value, { hide: prefs.hide }) }}</td>
+                <td data-test="h-cash-weight" class="hc-meta hc-weight" :data-label="t('hold.col.weight')">{{ fWeight(c.weight) }}</td>
               </tr>
             </tbody>
           </table>
@@ -77,7 +84,7 @@
     <template v-else-if="core">
       <p v-if="summary" class="hold__total num" :class="{ 'is-stale': stale }" data-test="h-total">
         <span class="hold__total-label">{{ periodLabel }}</span>
-        <span class="hold__total-value" data-test="h-total-value">{{ fMoney(periodValue, { hide: prefs.hide }) }}</span>
+        <span class="hold__total-value" data-test="h-total-value">{{ fMoney(periodTotal, { hide: prefs.hide }) }}</span>
         <span :class="tone(summary.pnl)">{{ fMoney(summary.pnl, { hide: prefs.hide, sign: true }) }}</span>
         <span :class="tone(summary.twr)">({{ fPct(summary.twr) }})</span>
       </p>
@@ -96,8 +103,7 @@
             <tr v-for="r in periodSorted" :key="r.ticker" class="hrow" data-test="hp-row" :data-ticker="r.ticker">
               <th scope="row" class="hc-sym">
                 <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
-                  <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>
-                  <span class="hrow__name" data-test="h-name">{{ r.name }}</span>
+                  <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>{{ ' ' }}<span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                 </a>
               </th>
               <td class="hc-spark"><MarketSpark :spark="periodSparks[r.ticker] || EMPTY" :prev="null" :down="(n(r.change_pct) ?? 0) < 0" /></td>
@@ -109,6 +115,14 @@
               <td data-test="hp-pnl" class="hc-meta" :class="tone(r.pnl)" :data-label="t('hold.pcol.pnl')">{{ fMoney(r.pnl, { hide: prefs.hide, sign: true }) }}</td>
               <td data-test="hp-value" class="hc-meta" :data-label="t('hold.pcol.value')">{{ fMoney(r.value, { hide: prefs.hide }) }}</td>
               <td data-test="hp-weight" class="hc-meta hc-weight" :data-label="t('hold.pcol.weight')">{{ fWeight(r.weight) }}</td>
+            </tr>
+            <tr v-for="c in periodCash" :key="c.curr" class="hrow hrow--cash" data-test="hp-cash-row" :data-cash="c.curr">
+              <th scope="row" class="hc-sym">
+                <span class="hrow__sym">{{ t('hold.cash') }}</span>{{ ' ' }}<span class="hrow__name">{{ c.curr }}</span>
+              </th>
+              <td v-for="k in 7" :key="k" class="hc-empty" :class="{ 'h-narrow': k === 2 || k === 3 }" />
+              <td data-test="hp-cash-value" class="hc-meta" :data-label="t('hold.pcol.value')">{{ fMoney(c.value, { hide: prefs.hide }) }}</td>
+              <td data-test="hp-cash-weight" class="hc-meta hc-weight" :data-label="t('hold.pcol.weight')">{{ fWeight(c.weight) }}</td>
             </tr>
           </tbody>
         </table>
@@ -266,6 +280,21 @@ const rows = computed(() => {
   return ps ? holdingsRows(ps, app.liveQuotesForCalc()) : null
 })
 const total = computed(() => holdingsTotal(rows.value || []))
+// Cash per currency: kind 'cash' rows of the positions (USD value) — the same source as the value
+// card's current value. Zero balances are skipped; each row is marked with the currency code.
+const cashList = computed(() => (app.state.value?.positions || [])
+  .filter((r) => r.kind === 'cash' && (n(r.value) ?? 0) !== 0)
+  .map((r) => ({ curr: r.ticker, value: n(r.value) })))
+const cashTotal = computed(() => cashList.value.reduce((s, c) => s + c.value, 0))
+// Day total incl. cash (cash does not move on the day); % base incl. cash, like the value card.
+const dayTotal = computed(() => {
+  const tt = total.value
+  const valueUsd = tt.valueUsd + cashTotal.value
+  if (tt.dayChangeUsd == null) return { ...tt, valueUsd }
+  const base = valueUsd - tt.dayChangeUsd
+  return { valueUsd, dayChangeUsd: tt.dayChangeUsd, dayChangePct: base ? (tt.dayChangeUsd / base) * 100 : null }
+})
+const dayCash = computed(() => cashList.value.map((c) => ({ ...c, weight: dayTotal.value.valueUsd ? (c.value / dayTotal.value.valueUsd) * 100 : 0 })))
 const daySort = tableSort('holdings', DAY_COLS, { key: 'valueUsd', dir: -1 })
 const daySorted = computed(() => daySort.apply(rows.value || []))
 // Last-session closes from the repo (state.sparks); none yet: an empty spark of the same height.
@@ -283,7 +312,10 @@ const summary = computed(() => props.core?.summary || null)
 const periodSort = tableSort('holdingsPeriod', PERIOD_COLS, { key: 'pnl', dir: -1 },
   (r, key) => (key === 'status' ? statusText(r.status) : r[key]))
 const periodSorted = computed(() => periodSort.apply((props.core?.positions || []).filter((r) => r.qty_end)))
-const periodValue = computed(() => periodSorted.value.reduce((s, r) => s + (n(r.value) ?? 0), 0))
+// Period-end value incl. cash: the value card's number (cash at the end = current cash).
+const periodTotal = computed(() => n(summary.value?.value_end)
+  ?? periodSorted.value.reduce((s, r) => s + (n(r.value) ?? 0), 0) + cashTotal.value)
+const periodCash = computed(() => cashList.value.map((c) => ({ ...c, weight: periodTotal.value ? (c.value / periodTotal.value) * 100 : 0 })))
 // Daily closes (state.closes) between the period base and end, framed by price_start / price_end.
 const periodSparks = computed(() => {
   const s = summary.value

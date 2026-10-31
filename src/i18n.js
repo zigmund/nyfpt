@@ -47,6 +47,7 @@ const en = {
   'main.err.cashflows': 'cash flows',
   'main.err.markets': 'markets',
   'main.err.candles': 'prices',
+  'main.err.sparks': 'charts',
   'main.err.other': 'other data',
 
   'mkts.label': 'US markets',
@@ -83,6 +84,7 @@ const en = {
 
   'hold.title': 'Holdings',
   'hold.today': 'Today',
+  'hold.cash': 'Cash',
   'hold.col.ticker': 'Symbol',
   'hold.col.chart': 'Chart',
   'hold.col.price': 'Price',

@@ -93,10 +93,10 @@ describe('Holdings', () => {
     setup()
     const w = mountH()
     expect(tickers(w)).toEqual(['CCC.US', 'AAA.US', 'BBB.US'])
-    // day: AAA +20, BBB -40, CCC 0 => -20 on a base of 4020
+    // day: AAA +20, BBB -40, CCC 0 => -20 on a base of 4520 (incl. 500 cash)
     const total = w.get('[data-test="h-total"]').text()
     expect(total).toContain(money(-20))
-    expect(total).toContain(pct((-20 / 4020) * 100))
+    expect(total).toContain(pct((-20 / 4520) * 100))
   })
 
   it('sorts on header click, toggles direction, persists to prefs.sorts', async () => {
@@ -418,15 +418,14 @@ describe('Holdings: Yahoo-style rows', () => {
     expect(aaa.get('[data-test="hp-price"]').text()).toBe('100.00')
   })
 
-  it('total line: holdings value, then change $ and %', () => {
+  it('total line: holdings value incl. cash, then change $ and %', () => {
     setup()
     const w = mountH()
-    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(4000))
+    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(4500))
     installApp(null)
     setup({ prefs: { holdingsMode: 'period' } })
     const p = mountH()
-    const open = CORE_YTD.positions.filter((r) => r.qty_end).reduce((s, r) => s + r.value, 0)
-    expect(p.get('[data-test="h-total-value"]').text()).toBe(money(open))
+    expect(p.get('[data-test="h-total-value"]').text()).toBe(money(CORE_YTD.summary.value_end))
   })
 
   it('hide amounts: total value and row amounts ***, the pill and price stay', () => {
@@ -503,6 +502,66 @@ describe('sparks calc', () => {
   })
 })
 
+describe('Holdings cash row', () => {
+  it('Day: total includes cash, cash row is last, labelled, outside sorting, no spark/pill', async () => {
+    setup()
+    const w = mountH()
+    // positions 4000 + cash 500; day pct base includes cash like the value card
+    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(4500))
+    expect(w.get('[data-test="h-total"]').text()).toContain(pct((-20 / 4520) * 100))
+    const cash = w.findAll('[data-test="h-cash-row"]')
+    expect(cash).toHaveLength(1)
+    expect(cash[0].text()).toContain('Cash')
+    expect(cash[0].text()).toContain('USD')
+    expect(cash[0].get('[data-test="h-cash-value"]').text()).toBe(money(500))
+    expect(cash[0].get('[data-test="h-cash-weight"]').text()).toBe(`${((500 / 4500) * 100).toFixed(1)}%`)
+    expect(cash[0].findComponent(MarketSpark).exists()).toBe(false)
+    expect(cash[0].find('.pill').exists()).toBe(false)
+    expect(cash[0].find('a').exists()).toBe(false)
+    expect(tickers(w)).toEqual(['CCC.US', 'AAA.US', 'BBB.US'])
+    await w.get('[data-sort="ticker"]').trigger('click')
+    const trs = w.findAll('tbody tr')
+    expect(trs[trs.length - 1].attributes('data-test')).toBe('h-cash-row')
+    await w.get('[data-sort="ticker"]').trigger('click')
+    const trs2 = w.findAll('tbody tr')
+    expect(trs2[trs2.length - 1].attributes('data-test')).toBe('h-cash-row')
+  })
+
+  it('Day: hidden amounts mask the cash value', () => {
+    setup({ prefs: { hide: true } })
+    const w = mountH()
+    expect(w.get('[data-test="h-cash-value"]').text()).not.toContain('500')
+  })
+
+  it('Period: total equals the value card (summary.value_end), cash row last with weight', () => {
+    setup({ prefs: { holdingsMode: 'period' } })
+    const w = mountH()
+    const end = CORE_YTD.summary.value_end
+    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(end))
+    const cash = w.findAll('[data-test="hp-cash-row"]')
+    expect(cash).toHaveLength(1)
+    expect(cash[0].text()).toContain('Cash')
+    expect(cash[0].get('[data-test="hp-cash-value"]').text()).toBe(money(500))
+    expect(cash[0].get('[data-test="hp-cash-weight"]').text()).toBe(`${((500 / end) * 100).toFixed(1)}%`)
+    const trs = w.findAll('tbody tr')
+    expect(trs[trs.length - 1].attributes('data-test')).toBe('hp-cash-row')
+  })
+
+  it('one row per currency; zero balances are skipped', () => {
+    const { app } = setup()
+    app.state.value = { ...app.state.value, positions: [...POSITIONS, { ticker: 'EUR', name: 'EUR', kind: 'cash', qty: 100, price: 1.1, value: 110 }, { ticker: 'KZT', name: 'KZT', kind: 'cash', qty: 0, price: 0, value: 0 }] }
+    const w = mountH()
+    expect(w.findAll('[data-test="h-cash-row"]').map((r) => r.text())).toHaveLength(2)
+    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(4610))
+  })
+
+  it('link name has a separator between ticker and name', () => {
+    setup()
+    const w = mountH()
+    expect(w.get('[data-test="h-link"]').text()).toMatch(/^[A-Z.]+ \S/)
+  })
+})
+
 describe('dev mock (?mock)', () => {
   it('serves intraday candles for position tickers (sparks under ?mock)', async () => {
     const { createMockBroker } = await import('../src/dev/mock.js')
@@ -518,7 +577,6 @@ describe('dev mock (?mock)', () => {
     const sp = daySparks(pos, idx)
     for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
   })
-
 
   it('positions carry close_price, so Day % and Day $ show outside live mode', async () => {
     const { createMockBroker } = await import('../src/dev/mock.js')

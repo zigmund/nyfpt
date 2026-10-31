@@ -71,7 +71,7 @@ const updated = computed(() => {
 })
 
 // Short, non-blocking: which datasets failed to refresh (cached data stays on screen).
-const ERR_KEYS = new Set(['positions', 'trades', 'cashflows', 'markets', 'candles'])
+const ERR_KEYS = new Set(['positions', 'trades', 'cashflows', 'markets', 'candles', 'sparks'])
 const errorNames = computed(() => [...new Set(Object.keys(state.value?.errors || {})
   .map((k) => t(`main.err.${ERR_KEYS.has(k) ? k : 'other'}`)))].join(', '))
 </script>
