@@ -7,14 +7,14 @@
   --c-fg: #17201C;
   --c-muted: #5C6862;
   --c-line: #DAE0DD;
-  --c-line-strong: #C3CBC7;
+  --c-line-strong: #808A85;     /* control boundaries: >= 3:1 on bg and panel (WCAG 1.4.11) */
   --c-accent: #2E9E5B;          /* "dollar" green: accent, gains */
   --c-accent-ink: #217A45;      /* accent as small text on white (AA contrast) */
   --c-accent-soft: rgba(46, 158, 91, .12);
-  --c-amber: #C7780A;           /* section labels */
+  --c-amber: #9A5B00;           /* section labels (small text: >= 4.5:1) */
   --c-amber-soft: rgba(199, 120, 10, .10);
-  --c-pos: #2E9E5B;
-  --c-neg: #D9534F;             /* losses and danger only */
+  --c-pos: #2E9E5B;             /* charts and graphics; text uses --c-accent-ink */
+  --c-neg: #D9534F;             /* losses and danger only; text uses --c-neg-ink */
   --c-neg-ink: #B93A36;
   --c-neg-soft: rgba(217, 83, 79, .10);
   --c-skel: #E3E8E5;
@@ -26,7 +26,6 @@
   --c-thumb: #FFFFFF;           /* switch thumb */
   --c-shadow: rgba(23, 32, 28, .25);
   --c-shadow-soft: rgba(23, 32, 28, .1);
-  --c-neg-line: rgba(217, 83, 79, .45);
   --c-overlay: rgba(241, 243, 242, .86);
 
   /* Type */
@@ -56,14 +55,14 @@
   color-scheme: light;
 }
 
-/* Dark palette: near-black neutral, WCAG AA (small text >= 4.5:1, graphics >= 3:1); checked in tests/theme.test.js */
+/* Dark palette: near-black neutral, WCAG AA (small text >= 4.5:1, graphics and control borders >= 3:1); checked in tests/theme.test.js */
 :root[data-theme="dark"] {
   --c-bg: #0D0F0E;
   --c-panel: #161A18;
   --c-fg: #E9EDEB;
   --c-muted: #9DAAA3;
   --c-line: #2A312E;
-  --c-line-strong: #454E4A;
+  --c-line-strong: #66706B;
   --c-accent: #3FBF76;
   --c-accent-ink: #52CC85;
   --c-accent-soft: rgba(63, 191, 118, .16);
@@ -82,7 +81,6 @@
   --c-thumb: #E9EDEB;
   --c-shadow: rgba(0, 0, 0, .5);
   --c-shadow-soft: rgba(0, 0, 0, .5);
-  --c-neg-line: rgba(255, 123, 115, .5);
   --c-overlay: rgba(13, 15, 14, .86);
 
   color-scheme: dark;
@@ -126,8 +124,8 @@ button, input, select { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 
-.pos { color: var(--c-pos); }
-.neg { color: var(--c-neg); }
+.pos { color: var(--c-accent-ink); }
+.neg { color: var(--c-neg-ink); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -309,16 +307,20 @@ button, input, select { font: inherit; color: inherit; }
 .btn--block { width: 100%; }
 
 .btn--primary {
-  background: var(--c-accent);
-  border-color: var(--c-accent);
+  background: var(--c-accent-ink);
+  border-color: var(--c-accent-ink);
   color: var(--c-on-accent);
 }
 
-.btn--primary:hover:not(:disabled) { background: var(--c-accent-ink); border-color: var(--c-accent-ink); }
+/* Toward --c-fg: darker in light, lighter in dark; text contrast only grows. */
+.btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-accent-ink) 85%, var(--c-fg));
+  border-color: color-mix(in srgb, var(--c-accent-ink) 85%, var(--c-fg));
+}
 
 .btn--danger {
   color: var(--c-neg-ink);
-  border-color: var(--c-neg-line);
+  border-color: var(--c-neg);
 }
 
 .btn--danger:hover:not(:disabled) { background: var(--c-neg-soft); border-color: var(--c-neg); }
@@ -1010,8 +1012,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 }
 
 .lede b { font-weight: 600; color: var(--c-fg); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.lede b.pos { color: var(--c-pos); }
-.lede b.neg { color: var(--c-neg); }
+.lede b.pos { color: var(--c-accent-ink); }
+.lede b.neg { color: var(--c-neg-ink); }
 .lede.skel { max-width: none; }
 
 .tiles {
@@ -1080,7 +1082,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .flash-up { animation: flash-up .6s ease-out; }
 .flash-down { animation: flash-down .6s ease-out; }
 @keyframes flash-up { from { background: color-mix(in srgb, var(--c-pos) 28%, transparent); } to { background: transparent; } }
-@keyframes flash-down { from { background: var(--c-neg-soft); } to { background: transparent; } }
+@keyframes flash-down { from { background: color-mix(in srgb, var(--c-neg) 28%, transparent); } to { background: transparent; } }
 
 @media (max-width: 30rem) {
   .h-narrow { display: none; }

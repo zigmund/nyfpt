@@ -118,6 +118,13 @@ const block = (sel) => {
   if (i < 0) throw new Error(`no block ${sel}`)
   return css.slice(i, css.indexOf('\n}', i))
 }
+// Body of the first rule whose selector is exactly `sel` (single-line or multi-line rules).
+const rule = (sel) => {
+  const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = new RegExp(`(^|\\n)${esc} \\{([^]*?)\\n?\\}`).exec(css)
+  if (!m) throw new Error(`no rule ${sel}`)
+  return m[2]
+}
 const tokens = (sel) => Object.fromEntries([...block(sel).matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})\b/g)].map((m) => [m[1], m[2]]))
 const lum = (hex) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -160,10 +167,42 @@ describe('contrast (WCAG AA)', () => {
       expect(d[k], k).toBeTruthy()
     }
   })
-  it('light palette keeps its text pairs at AA', () => {
-    for (const [f, b] of [['c-fg', 'c-bg'], ['c-fg', 'c-panel'], ['c-muted', 'c-bg'], ['c-muted', 'c-panel'], ['c-accent-ink', 'c-panel'], ['c-neg-ink', 'c-panel']]) {
-      expect(ratio(lightT[f], lightT[b]), `${f} on ${b}`).toBeGreaterThanOrEqual(SMALL)
+  // Small text used on the page/card backgrounds in both themes.
+  const TEXT = ['c-fg', 'c-muted', 'c-amber', 'c-accent-ink', 'c-neg-ink']
+  it('light palette: every small-text token >= 4.5 on page and card; white on the primary button', () => {
+    for (const f of TEXT) {
+      for (const b of ['c-bg', 'c-panel']) expect(ratio(lightT[f], lightT[b]), `${f} on ${b}`).toBeGreaterThanOrEqual(SMALL)
     }
+    expect(ratio(lightT['c-on-accent'], lightT['c-accent-ink'])).toBeGreaterThanOrEqual(SMALL)
+  })
+  it('dark palette: the same small-text tokens >= 4.5', () => {
+    const dark = darkTokens()
+    for (const f of TEXT) {
+      for (const b of ['c-bg', 'c-panel']) expect(ratio(dark[f], dark[b]), `${f} on ${b}`).toBeGreaterThanOrEqual(SMALL)
+    }
+  })
+  it('control boundaries (inputs, buttons, code cells) >= 3 in both themes', () => {
+    for (const [name, p] of [['light', lightT], ['dark', darkTokens()]]) {
+      for (const f of ['c-line-strong', 'c-neg', 'c-accent', 'c-accent-ink']) {
+        for (const b of ['c-bg', 'c-panel']) expect(ratio(p[f], p[b]), `${name}: ${f} on ${b}`).toBeGreaterThanOrEqual(LARGE)
+      }
+    }
+  })
+  it('rules: gains/losses text uses the -ink tokens; borders and the primary button use AA tokens', () => {
+    expect(rule('.pos')).toContain('color: var(--c-accent-ink)')
+    expect(rule('.neg')).toContain('color: var(--c-neg-ink)')
+    expect(rule('.lede b.pos')).toContain('color: var(--c-accent-ink)')
+    expect(rule('.lede b.neg')).toContain('color: var(--c-neg-ink)')
+    expect(rule('.btn--primary')).toContain('background: var(--c-accent-ink)')
+    for (const sel of ['.btn', '.input', '.code__cell']) expect(rule(sel), sel).toContain('border: 1px solid var(--c-line-strong)')
+    expect(rule('.btn--danger')).toContain('border-color: var(--c-neg)')
+    // Text colors in the stylesheet never use the bright (graphics-only) pos/neg tokens.
+    expect(css).not.toMatch(/(^|[^-])color:\s*var\(--c-(pos|neg)\)/m)
+  })
+  it('price flashes: down as strong as up', () => {
+    const pct = (name) => /var\(--c-(?:pos|neg)\)\s+(\d+)%/.exec(rule(`@keyframes ${name}`))?.[1]
+    expect(rule('@keyframes flash-down')).toContain('var(--c-neg)')
+    expect(pct('flash-down')).toBe(pct('flash-up'))
   })
   it('meta theme-color values match the page backgrounds', () => {
     expect(lightT['c-bg']).toBe('#F1F3F2')
