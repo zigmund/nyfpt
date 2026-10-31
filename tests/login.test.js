@@ -32,6 +32,10 @@ function makeDeps({ positions = USD_PS, userId = 7 } = {}) {
         subscribe: vi.fn((fn) => { fn({ positions: [], errors: {}, loading: [] }); return () => {} }),
         onSessionExpired: vi.fn((fn) => { expiredFns.add(fn); return () => expiredFns.delete(fn) }),
         load: vi.fn(async () => {}),
+        // Rendered by the main screen once logged in.
+        coreFor: vi.fn(() => null),
+        ensurePrices: vi.fn(async () => {}),
+        marketsStrip: vi.fn(() => null),
       }
       repos.push(repo)
       return repo
