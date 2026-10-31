@@ -987,3 +987,16 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .legend__sw.cmp-spy { border-top-style: dashed; }
 .legend__sw.cmp-qqq { border-top-style: dotted; }
+
+/* ---------- holdings ---------- */
+.hold__total { display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: baseline; font-size: var(--fs-body); }
+.hold__total-label { color: var(--c-muted); font-family: var(--font-ui); }
+
+.flash-up { animation: flash-up .6s ease-out; }
+.flash-down { animation: flash-down .6s ease-out; }
+@keyframes flash-up { from { background: color-mix(in srgb, var(--c-pos) 28%, transparent); } to { background: transparent; } }
+@keyframes flash-down { from { background: var(--c-neg-soft); } to { background: transparent; } }
+
+@media (max-width: 30rem) {
+  .h-narrow { display: none; }
+}

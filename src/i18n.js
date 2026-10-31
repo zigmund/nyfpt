@@ -81,6 +81,16 @@ const en = {
   'flows.value_start': 'Value at start',
   'flows.value_end': 'Value at end',
 
+  'hold.title': 'Holdings',
+  'hold.today': 'Today',
+  'hold.col.ticker': 'Symbol',
+  'hold.col.price': 'Price',
+  'hold.col.dayChangePct': 'Day %',
+  'hold.col.dayChangeUsd': 'Day $',
+  'hold.col.qty': 'Qty',
+  'hold.col.valueUsd': 'Value',
+  'hold.col.weight': 'Weight',
+
   'ppos.title': 'All positions over the period',
   'ppos.note': 'Including those sold during the period. Tap a column header to sort.',
   'ppos.noteCurrent': 'Current positions. Period results appear once prices load.',

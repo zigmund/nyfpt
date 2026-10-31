@@ -1,5 +1,5 @@
 <!-- Main screen: markets strip, value card (value, chart, periods, contributions),
-     holdings (Task 10), cash flows and positions over the period. -->
+     holdings, cash flows and positions over the period. -->
 <template>
   <div class="screen">
     <header class="topbar">
@@ -26,8 +26,7 @@
       <Contributions :positions="core?.positions || null" :stale="stale" />
     </section>
 
-    <!-- Holdings block (Task 10) goes here: between the value card and the cash flows card. -->
-    <slot name="holdings" />
+    <Holdings />
 
     <CashflowsCard :summary="core?.summary || null" :stale="stale" />
 
@@ -47,6 +46,7 @@ import PeriodPicker from './PeriodPicker.vue'
 import Contributions from './Contributions.vue'
 import CashflowsCard from './CashflowsCard.vue'
 import PeriodPositions from './PeriodPositions.vue'
+import Holdings from './Holdings.vue'
 
 const app = useApp()
 const { live } = app
