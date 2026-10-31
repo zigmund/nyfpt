@@ -746,3 +746,94 @@ describe('Holdings column stability (Task 32)', () => {
     expect(m).toMatch(/\.hold__total\s*\{[^}]*display:\s*grid/)
   })
 })
+
+// Task 39: while the phone sticky header is stuck it becomes a page-coloured full-width bar
+// (iOS 26 extends the colour of the element at the top edge into the status-bar area).
+describe('Holdings sticky header: stuck state (Task 39)', () => {
+  let observers
+  class FakeIO {
+    constructor(cb, opts) { this.cb = cb; this.opts = opts; this.els = []; this.disconnected = false; observers.push(this) }
+    observe(el) { this.els.push(el); this.disconnected = false }
+    unobserve(el) { this.els = this.els.filter((e) => e !== el) }
+    disconnect() { this.els = []; this.disconnected = true }
+  }
+  const live = () => observers.filter((o) => !o.disconnected && o.els.length)
+  // A sentinel entry: above the viewport top (stuck), inside it, or below it.
+  const fire = async (where) => {
+    const [o] = live()
+    const el = o.els[0]
+    const top = where === 'above' ? -200 : where === 'below' ? 2000 : 100
+    o.cb([{ target: el, isIntersecting: where === 'inside', boundingClientRect: { top, bottom: top + 1 }, rootBounds: { top: 8, bottom: 800 } }])
+    await nextTick()
+  }
+  const stuck = (w) => w.get('.htable thead').classes().includes('is-stuck')
+
+  beforeEach(() => { observers = []; vi.stubGlobal('IntersectionObserver', FakeIO) })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('observes a sentinel placed right before the Day table (header natural position)', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    const s = w.get('[data-test="h-sentinel"]')
+    expect(s.attributes('aria-hidden')).toBe('true')
+    expect(s.element.nextElementSibling.tagName).toBe('TABLE')
+    expect(live()).toHaveLength(1)
+    expect(live()[0].els).toEqual([s.element])
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('toggles is-stuck on the header: sentinel above the top -> stuck; inside or below -> not', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    await fire('above')
+    expect(stuck(w)).toBe(true)
+    await fire('inside')
+    expect(stuck(w)).toBe(false)
+    await fire('above')
+    await fire('below')
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('root margin: the bar switches a little before the edge; the root reaches far below the viewport', async () => {
+    // IO reports only isIntersecting changes: a jump from "above" straight to "below the viewport"
+    // (tap on the status bar = scroll to top) must pass through "intersecting", or is-stuck stays on.
+    setup()
+    mountH()
+    await nextTick()
+    expect(live()[0].opts.rootMargin).toMatch(/^-\d+px 0px \d{5,}px 0px$/)
+  })
+
+  it('Period table: the new sentinel is observed after a mode switch; the stuck state carries over until IO says otherwise', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    await fire('above')
+    await w.get('[data-test="hmode-period"]').trigger('click')
+    await nextTick()
+    const s = w.get('[data-test="h-sentinel"]')
+    expect(s.element.nextElementSibling.getAttribute('data-test')).toBe('hp-table')
+    expect(live().flatMap((o) => o.els)).toEqual([s.element])
+    // no panel-coloured frame at the edge while scrolled into the table: the new header starts stuck
+    expect(w.get('[data-test="hp-table"] thead').classes()).toContain('is-stuck')
+    await fire('inside')
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('disconnects on unmount; works without IntersectionObserver (never stuck)', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    const [o] = live()
+    w.unmount()
+    expect(o.disconnected).toBe(true)
+
+    vi.stubGlobal('IntersectionObserver', undefined)
+    installApp(null)
+    setup()
+    const w2 = mountH()
+    await nextTick()
+    expect(stuck(w2)).toBe(false)
+  })
+})

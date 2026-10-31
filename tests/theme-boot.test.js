@@ -163,9 +163,11 @@ describe('boot script delivery', () => {
   })
 })
 
-// iOS 26 Safari / Home Screen apps tint the bar under the status bar with the fixed/sticky element
-// touching the top edge and keep that colour after it leaves; a page-coloured strip is always that element.
-describe('top edge guard (bar under the status bar stays the page colour)', () => {
+// iOS 26 Safari / Home Screen apps tint the status-bar area with the background of the fixed/sticky
+// element touching the top edge (found by hit-testing) and keep that colour after it leaves. The
+// Task 36 strip (pointer-events: none) was never picked on device; instead the stuck Holdings header
+// itself turns into a full-width page-coloured bar (Task 39).
+describe('top edge on phones (status-bar area stays the page colour)', () => {
   const css = readFileSync('src/styles/app.css', 'utf8')
   const blocks = []
   for (let i = 0; (i = css.indexOf('@media (max-width: 47.99rem) {', i)) > -1;) {
@@ -180,30 +182,43 @@ describe('top edge guard (bar under the status bar stays the page colour)', () =
     const m = new RegExp(`(^|\\n)\\s*${esc} \\{([^}]*)\\}`).exec(src)
     return m ? m[2] : null
   }
-  const z = (src, sel) => Number(/z-index:\s*(\d+)/.exec(body(src, sel))[1])
 
-  it('--edge-t is 0 by default and a sampled strip height on phones', () => {
-    expect(body(css, ':root')).toMatch(/--edge-t:\s*0(px)?;/)
-    expect(body(mobile, ':root')).toMatch(/--edge-t:\s*calc\(var\(--safe-t\) \+ \.75rem\);/)
+  it('the Task 36 strip and --edge-t are gone', () => {
+    expect(css).not.toContain('--edge-t')
+    expect(css).not.toMatch(/body::before/)
   })
 
-  it('phones get a fixed full-width page-coloured strip at the top edge, above sticky headers, below overlays', () => {
-    const r = body(mobile, 'body::before')
+  it('viewport-sticky headers stick at the very top edge again', () => {
+    expect(body(mobile, '.ptable.htable thead')).toContain('top: 0;')
+    expect(body(css, '.pcard__bar')).toContain('top: 0;')
+  })
+
+  it('stuck Holdings header: opaque page-coloured bar bleeding to both screen edges, content in place', () => {
+    const r = body(mobile, '.ptable.htable thead.is-stuck')
     expect(r).toBeTruthy()
-    for (const decl of ['position: fixed;', 'top: 0;', 'left: 0;', 'right: 0;', 'height: var(--edge-t);',
-      'background: var(--c-bg);', 'pointer-events: none;']) expect(r).toContain(decl)
-    expect(z(mobile, 'body::before')).toBeGreaterThan(z(mobile, '.ptable.htable thead'))
-    expect(z(mobile, 'body::before')).toBeGreaterThan(z(css, '.pcard__bar'))
-    expect(z(mobile, 'body::before')).toBeLessThan(z(css, '.login--overlay'))
+    for (const decl of ['background: var(--c-bg);', 'margin-inline: calc(50% - 50vw);',
+      'padding-inline: calc(50vw - 50%);']) expect(r).toContain(decl)
+    expect(r).not.toMatch(/opacity|pointer-events|backdrop-filter|height/)
+    // header cells carry the panel colour by default: transparent while stuck, so the bar is one colour
+    expect(body(mobile, '.ptable.htable thead.is-stuck th')).toContain('background: transparent;')
   })
 
-  it('viewport-sticky headers stick below the strip', () => {
-    expect(body(mobile, '.ptable.htable thead')).toContain('top: var(--edge-t);')
-    expect(body(css, '.pcard__bar')).toContain('top: var(--edge-t);')
+  it('a period reload dims only the rows: the stuck header stays opaque on phones', () => {
+    expect(body(css, '.is-stale')).toMatch(/opacity: \.45;/)
+    expect(body(mobile, '.tablebox--rows.is-stale')).toMatch(/opacity: 1;/)
+    expect(body(mobile, '.tablebox--rows.is-stale tbody')).toMatch(/opacity: \.45;/)
   })
 
-  it('wider layouts keep no strip', () => {
-    expect(body(wide, 'body::before')).toBeNull()
-    expect(body(wide, ':root')).not.toMatch(/--edge-t:\s*calc/)
+  it('the position-card bar is page-coloured and bleeds to the screen edges on phones', () => {
+    expect(body(css, '.pcard__bar')).toContain('background: var(--c-bg);')
+    const r = body(mobile, '.pcard__bar')
+    expect(r).toContain('margin-inline: calc(50% - 50vw);')
+    expect(r).toContain('padding-inline: calc(50vw - 50%);')
+  })
+
+  it('wider layouts are unchanged: no stuck bar, no bleeding position-card bar', () => {
+    // rules only: a comment may mention the class
+    expect(wide.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain('is-stuck')
+    expect(body(css, '.pcard__bar')).not.toContain('margin-inline')
   })
 })

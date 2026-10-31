@@ -39,9 +39,10 @@
         </p>
 
         <div class="tablebox tablebox--rows">
+          <div ref="sentinel" class="hold__sentinel" aria-hidden="true" data-test="h-sentinel" />
           <table class="ptable ptable--fixed htable num">
             <colgroup><col v-for="c in DAY_COLS" :key="c.key" :class="colClass(c)"></colgroup>
-            <thead>
+            <thead :class="{ 'is-stuck': stuck }">
               <tr>
                 <th v-for="c in DAY_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : daySort.aria(c.key)">
                   <span v-if="c.key === 'chart'" class="vh">{{ t('hold.col.chart') }}</span>
@@ -91,9 +92,10 @@
       </p>
 
       <div class="tablebox tablebox--rows" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">
+        <div ref="sentinel" class="hold__sentinel" aria-hidden="true" data-test="h-sentinel" />
         <table class="ptable ptable--fixed htable num" data-test="hp-table">
           <colgroup><col v-for="c in PERIOD_COLS" :key="c.key" :class="colClass(c)"></colgroup>
-          <thead>
+          <thead :class="{ 'is-stuck': stuck }">
             <tr>
               <th v-for="c in PERIOD_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : periodSort.aria(c.key)">
                 <span v-if="c.key === 'chart'" class="vh">{{ t('hold.col.chart') }}</span>
@@ -207,7 +209,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fMoney, fPct, fPrice, fQty, fWeight, tone, n, PERIOD_LABELS } from '../display.js'
 import { holdingsRows, holdingsTotal } from '../calc/live.js'
@@ -242,6 +244,8 @@ const STATUS = { 'новая': 'new', 'докуплена': 'added', 'сокра
 const CLOSED_ID = 'hold-closed'
 const EMPTY = Object.freeze([])
 const FLASH_MS = 600
+// The stuck-header bar switches on this many px before the header reaches the top edge.
+const STUCK_LEAD = 8
 
 const app = useApp()
 const { prefs, live } = app
@@ -365,4 +369,26 @@ watch(rows, (list) => {
   prev = next
 }, { immediate: true })
 onBeforeUnmount(() => { for (const id of timers.values()) clearTimeout(id) })
+
+// Stuck table header (< 48rem it sticks to the viewport top): a sentinel sits at its natural top;
+// once the sentinel is above the top edge, `is-stuck` makes the header a full-width page-coloured
+// bar (app.css). STUCK_LEAD: the bar is on before the header touches the edge, so iOS 26 never
+// samples the panel-coloured header there. The root reaches far below the viewport: IO reports only
+// isIntersecting changes, so a jump from stuck straight to "below" (scroll to top) must count as
+// intersecting. No scroll listeners.
+const sentinel = ref(null)
+const stuck = ref(false)
+let io = null
+watch(sentinel, (el) => {
+  // Keeps the current state (Day <-> Period inside the table: no panel-coloured frame at the edge);
+  // the initial IO entry for the new sentinel corrects it.
+  io?.disconnect()
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  io ||= new IntersectionObserver((entries) => {
+    const e = entries[entries.length - 1]
+    stuck.value = !e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)
+  }, { rootMargin: `-${STUCK_LEAD}px 0px 100000px 0px` })
+  io.observe(el)
+}, { flush: 'post' })
+onBeforeUnmount(() => io?.disconnect())
 </script>

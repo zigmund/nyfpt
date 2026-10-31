@@ -56,7 +56,6 @@
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
-  --edge-t: 0px;                /* top edge guard height; set on phones (see body::before) */
 
   color-scheme: light;
 }
@@ -116,27 +115,6 @@ body {
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overflow-x: clip;
-}
-
-/* Top edge guard. iOS 26 Safari and Home Screen apps no longer use theme-color: the bar under the
-   status bar / compact tab bar takes the background of the fixed or sticky element touching the top
-   edge and keeps that colour after the element leaves (the stuck Holdings header left a panel-coloured
-   band). A page-coloured strip is always that element, so the bar stays --c-bg in both themes; sticky
-   headers stick below it. Phones only: wider layouts have no viewport-sticky headers. */
-@media (max-width: 47.99rem) {
-  :root { --edge-t: calc(var(--safe-t) + .75rem); }
-
-  body::before {
-    content: "";
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: var(--edge-t);
-    z-index: 5;
-    background: var(--c-bg);
-    pointer-events: none;
-  }
 }
 
 #app { min-width: 0; }
@@ -1212,6 +1190,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 /* A table followed by the closed-positions block does not bleed into the card bottom. */
 .tablebox:not(:last-child) { margin-bottom: 0; }
 .hold__closed-body { padding-top: var(--gap); }
+/* Stuck-header sentinel (Holdings.vue): at the table top, takes no space. */
+.hold__sentinel { height: 1px; margin-bottom: -1px; }
 
 .hold__total { display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: baseline; font-size: var(--fs-body); }
 .hold__total-label { color: var(--c-muted); font-family: var(--font-ui); }
@@ -1284,6 +1264,9 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
    the list scrolls with the page. */
 @media (max-width: 47.99rem) {
   .tablebox--rows { max-height: none; overflow: visible; }
+  /* A period reload dims the rows only: a translucent stuck header would tint the status bar. */
+  .tablebox--rows.is-stale { opacity: 1; }
+  .tablebox--rows.is-stale tbody { opacity: .45; transition: opacity .3s; }
 
   .ptable.htable,
   .ptable.htable thead,
@@ -1291,11 +1274,22 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .ptable.htable thead {
     position: sticky;
-    top: var(--edge-t);
+    top: 0;
     z-index: 1;
     background: var(--c-panel);
     border-bottom: 1px solid var(--c-line);
   }
+
+  /* Stuck (Holdings.vue sentinel): a full-width page-coloured bar. iOS 26 tints the status-bar area
+     with the sticky element at the top edge and keeps the colour after it leaves, so it must be
+     --c-bg edge to edge (hit-testable, opaque). Same height; the padding keeps the columns in place. */
+  .ptable.htable thead.is-stuck {
+    margin-inline: calc(50% - 50vw);
+    padding-inline: calc(50vw - 50%);
+    background: var(--c-bg);
+  }
+
+  .ptable.htable thead.is-stuck th { background: transparent; }
 
   .ptable.htable thead tr {
     display: flex;
@@ -1382,10 +1376,16 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 /* position card */
 .pcard__bar {
   position: sticky;
-  top: var(--edge-t);
+  top: 0;
   z-index: 3;
   background: var(--c-bg);
   padding: var(--gap-xs) 0;
+}
+
+/* Phones: the bar reaches both screen edges (no visual change, it is page-coloured), so the element
+   iOS 26 finds at the top edge is --c-bg across the whole width (as the stuck Holdings header). */
+@media (max-width: 47.99rem) {
+  .pcard__bar { margin-inline: calc(50% - 50vw); padding-inline: calc(50vw - 50%); }
 }
 
 .pcard__title {
