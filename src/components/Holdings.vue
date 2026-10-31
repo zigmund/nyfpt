@@ -8,7 +8,7 @@
      a change pill. < 48rem: CSS turns each row into a card with the other amounts on a second line.
      Separate persisted sorts in prefs.sorts. No aria-live: cells change every tick. -->
 <template>
-  <section class="card" aria-labelledby="hold-h" data-test="holdings">
+  <section class="card hold" aria-labelledby="hold-h" data-test="holdings">
     <div class="hold__head">
       <h2 id="hold-h" class="label">{{ t('hold.title') }}</h2>
       <div class="seg seg--inline" role="group" :aria-label="t('hold.mode.label')" data-test="hmode">

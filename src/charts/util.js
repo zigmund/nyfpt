@@ -16,6 +16,12 @@ export const nextId = (p) => `${p}${++uid}`
 /** Chart width: the container's, at least `min` (hidden or not yet laid out containers report 0). */
 export const widthOf = (el, min = 280) => Math.max(min, Math.floor(el.clientWidth || 0))
 
+/**
+ * Chart height: the container's, which CSS sets per breakpoint; at least `min` (a container that is
+ * hidden or not laid out yet reports 0).
+ */
+export const heightOf = (el, min = 160) => Math.max(min, Math.floor(el.clientHeight || 0))
+
 /** Responsive SVG filling the container width. */
 export function svgIn(el, W, H, cls) {
   return select(el).append('svg')

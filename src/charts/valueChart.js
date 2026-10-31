@@ -1,8 +1,6 @@
 // Value block chart: TWR % (perf) or value $ (value) with hover rule, dot and a date pill.
 import { select, scaleLinear, scalePoint, line, area, minIndex, min, max } from 'd3'
-import { svgIn, xLabels, widthOf, splitPaint, segOf, dateFull, onOutsidePointer, pointerX } from './util.js'
-
-const H = 220
+import { svgIn, xLabels, widthOf, heightOf, splitPaint, segOf, dateFull, onOutsidePointer, pointerX } from './util.js'
 
 /**
  * Draws into `el` and returns a cleanup function.
@@ -21,6 +19,7 @@ export function drawValueChart(el, series, { mode = 'perf', onHover = () => {}, 
   }
 
   const W = widthOf(el)
+  const H = heightOf(el)
   const m = { t: 30, r: 8, b: 22, l: 4 }
   const v0 = val(rows[0])
   const lr = rows[rows.length - 1]

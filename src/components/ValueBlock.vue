@@ -1,5 +1,7 @@
 <!-- Portfolio value: mode switch, eye, big value, day line, period line and the chart.
-     Hovering the chart shows the values for that date. core == null -> skeletons. -->
+     Hovering the chart shows the values for that date. core == null -> skeletons.
+     Desktop: the block and its body are display: contents inside the value card's grid (figures
+     left of the chart); aria-busy for a stale period is on the card (MainScreen). -->
 <template>
   <div class="vblock">
     <div class="vblock__head">
@@ -35,14 +37,14 @@
     <p v-if="big != null" class="vblock__big big" :class="{ 'is-stale': stale }" data-test="v-big">{{ fMoney(big, { hide: prefs.hide }) }}</p>
     <p v-else class="vblock__big big skel" data-test="v-big-skel" aria-hidden="true">&nbsp;</p>
 
-    <div v-if="summary" class="vblock__body" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">
+    <div v-if="summary" class="vblock__body" :class="{ 'is-stale': stale }">
       <p v-if="summary.missing" class="warn">{{ t('value.missing', { list: summary.missing }) }}</p>
-      <p class="vline num" data-test="v-day">
+      <p class="vline vline--day num" data-test="v-day">
         <span :class="tone(summary.day_pnl)">{{ fMoney(summary.day_pnl, { hide: prefs.hide, sign: true }) }}</span>
         {{ ' ' }}<span :class="tone(summary.day_pct)">({{ fPct(summary.day_pct) }})</span>
         {{ ' ' }}<span class="vline__lab">{{ summary.day_date ? t('value.day', { date: dateShort(summary.day_date) }) : '' }}</span>
       </p>
-      <p class="vline num" data-test="v-period">
+      <p class="vline vline--period num" data-test="v-period">
         <span :class="tone(per.amount)">{{ fMoney(per.amount, { hide: prefs.hide, sign: true }) }}</span>
         {{ ' ' }}<span :class="tone(per.pct)">({{ fPct(per.pct) }})</span>
         {{ ' ' }}<span class="vline__lab">{{ per.label }}</span>
@@ -50,8 +52,8 @@
       <PerfChart :series="core.series" :mode="vmode" @hover="hover = $event" />
     </div>
     <div v-else class="vblock__body" data-test="v-skel" aria-hidden="true">
-      <p class="vline skel">&nbsp;</p>
-      <p class="vline skel">&nbsp;</p>
+      <p class="vline vline--day skel">&nbsp;</p>
+      <p class="vline vline--period skel">&nbsp;</p>
       <div class="vchart skel" />
     </div>
   </div>

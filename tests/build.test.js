@@ -50,6 +50,12 @@ describe.skipIf(!built && !required)('production build', () => {
     expect(readFileSync(join(dist, 'index.html'), 'utf8')).not.toMatch(/(https?:)?\/\/[a-z0-9-]+\.[a-z]/i)
   })
 
+  it('bundled CSS keeps the 48rem / 64rem layout breakpoints', () => {
+    const cssText = walk(dist).filter((f) => f.endsWith('.css')).map((f) => readFileSync(f, 'utf8')).join('\n')
+    expect(cssText).toMatch(/min-width:\s*48rem|width\s*>=\s*48rem/)
+    expect(cssText).toMatch(/min-width:\s*64rem|width\s*>=\s*64rem/)
+  })
+
   it('index.html has no inline styles or scripts (CSP without unsafe-inline)', () => {
     const html = readFileSync(join(dist, 'index.html'), 'utf8')
     expect(html).not.toMatch(/<style|\sstyle=/i)

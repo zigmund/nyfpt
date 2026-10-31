@@ -1,11 +1,10 @@
 // Position card price chart: close line by bar index (no gaps for nights and weekends),
 // dashed previous close (1D), max/min labels, volume bars, hover rule with a price pill.
 import { select, scaleLinear, line, area, maxIndex, minIndex, max } from 'd3'
-import { svgIn, widthOf, splitPaint, segOf, dateFull, monthOf, measure, onOutsidePointer, pointerX } from './util.js'
+import { svgIn, widthOf, heightOf, splitPaint, segOf, dateFull, monthOf, measure, onOutsidePointer, pointerX } from './util.js'
 import { dateShort } from '../format.js'
 import { fPrice } from '../display.js'
 
-const H = 240
 const VOL_H = 32
 
 /** '10:15 AM' from minutes since midnight. */
@@ -61,6 +60,7 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
   if (pts.length < 2) return () => el.replaceChildren()
 
   const W = widthOf(el)
+  const H = heightOf(el)
   const hasVol = pts.some((r) => r.vol > 0)
   const m = { t: 22, r: 8, b: 22, l: 4 }
   const bottom = H - m.b - (hasVol ? VOL_H + 6 : 0)

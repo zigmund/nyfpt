@@ -20,7 +20,8 @@
 
     <MarketsStrip />
 
-    <section class="card vcard" :aria-label="t('value.label')">
+    <!-- aria-busy sits on the card: on desktop the value block's body is display: contents. -->
+    <section class="card vcard" :aria-label="t('value.label')" :aria-busy="stale ? 'true' : 'false'">
       <ValueBlock :core="core" :stale="stale" :period="period" :current="current" />
       <PeriodPicker compare />
       <Contributions :positions="core?.positions || null" :stale="stale" />

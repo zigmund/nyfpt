@@ -47,6 +47,7 @@
   --gap-md: .75rem;
   --gap-lg: 1rem;
   --pad: .875rem;
+  --gutter: var(--gap-md);      /* page side gutters; wider on tablet / desktop (.app) */
   --radius: 10px;
   --radius-sm: 7px;
   --control-h: 2.75rem;
@@ -156,15 +157,16 @@ button, input, select { font: inherit; color: inherit; }
 }
 
 /* ---------- shell ---------- */
+/* < 48rem: one column up to 44rem; from 48rem: full width (see the tablet / desktop section). */
 .app {
   width: 100%;
   max-width: 44rem;
   margin: 0 auto;
   padding:
     calc(var(--safe-t) + var(--gap-md))
-    calc(var(--safe-r) + var(--gap-md))
+    calc(var(--safe-r) + var(--gutter))
     calc(var(--safe-b) + var(--gap-lg))
-    calc(var(--safe-l) + var(--gap-md));
+    calc(var(--safe-l) + var(--gutter));
   min-width: 0;
 }
 
@@ -782,6 +784,21 @@ button, input, select { font: inherit; color: inherit; }
 
 .spark { height: 36px; margin: var(--gap-xs) 0; }
 
+/* < 48rem the strip scrolls: a fade at its right edge says there is more; the end padding lets
+   the last card scroll clear of the fade. */
+@media (max-width: 47.99rem) {
+  .mkts__row { grid-area: 2 / 1; padding-right: calc(var(--gap-lg) * 1.5); }
+
+  .mkts::after {
+    content: "";
+    grid-area: 2 / 1;
+    justify-self: end;
+    width: calc(var(--gap-lg) * 1.5);
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--c-bg));
+  }
+}
+
 .spark__fill { fill: var(--seg); fill-opacity: .2; }
 .spark__dot { fill: var(--seg); }
 .spark__line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
@@ -827,9 +844,10 @@ button, input, select { font: inherit; color: inherit; }
   color: var(--c-fg);
 }
 
+/* Fixed height per breakpoint: the chart reads it (charts/valueChart.js). */
 .vchart {
   position: relative;
-  min-height: 220px;
+  height: 220px;
   margin-top: var(--gap);
 }
 
@@ -1073,7 +1091,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   border-top: 2px solid currentColor;
 }
 
-.cchart { position: relative; min-height: 280px; }
+.cchart { position: relative; height: 280px; }
 .cchart svg { touch-action: pan-y; }
 
 .cmp-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: butt; }
@@ -1307,8 +1325,9 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .phead__line .big.skel { display: inline-block; width: 8rem; }
 .phead__chg { font-size: var(--fs-body); }
 
-/* Fixed height = the chart's own (charts/priceChart.js H = 240): no jump when it loads. */
+/* Fixed height per breakpoint, read by the chart (charts/priceChart.js): no jump when it loads. */
 .pchart { position: relative; height: 240px; margin-top: var(--gap); }
+.pchart__plot, .pchart__box { height: 100%; }
 .pchart__skel { height: 100%; max-width: none; animation: pskel-pulse 1.4s ease-in-out infinite; }
 .pchart__busy { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 @keyframes pskel-pulse { 50% { opacity: .55; } }
@@ -1382,3 +1401,147 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .pstats dt { font-size: var(--fs-caption); color: var(--c-muted); }
 .pstats dd { font-weight: 600; overflow-wrap: anywhere; }
+
+/* ---------- tablet and desktop ----------
+   One spine of full-width bands in the mobile order; the page uses the whole window width
+   (no max-width container). Grid and media queries only, sizes from tokens. */
+@media (min-width: 48rem) {
+  .app { --gutter: calc(var(--gap-lg) * 1.25); max-width: none; }
+
+  /* Settings stays a centred column. */
+  .screen--narrow { width: 100%; max-width: 32rem; margin-inline: auto; }
+
+  /* Markets: every card visible, no clipping, no scroll. */
+  .mkts__row {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .mcard__name { overflow: hidden; text-overflow: ellipsis; }
+
+  .vchart { height: 260px; }
+  .pchart { height: 300px; }
+  .cchart { height: 300px; }
+
+  .pstats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* All 8 Day columns fit at 768px: names truncate sooner. */
+  .hrow__name { max-width: 7rem; }
+  .htable td.hc-spark { width: 4.5rem; min-width: 4rem; }
+}
+
+@media (min-width: 64rem) {
+  .app { --gutter: calc(var(--gap-lg) * 2); --gap: var(--gap-md); }
+
+  .big { font-size: 2rem; }
+
+  .lede { max-width: 65ch; }
+
+  /* Period buttons packed left on wide charts; the compare button stays at the right end. */
+  .periods { justify-content: flex-start; gap: var(--gap-xs); }
+  .periods__icon { margin-left: auto; }
+
+  /* Market cards: figures left, spark right. */
+  .mcard {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    grid-template-areas: "name name" "last spark" "chg spark";
+    column-gap: var(--gap-md);
+    align-items: center;
+  }
+
+  .mcard__name { grid-area: name; }
+  .mcard .spark { grid-area: spark; margin: 0; }
+  .mcard__last { grid-area: last; }
+  .mcard__chg { grid-area: chg; }
+
+  /* Value card: figures and Contributions in a column left of a wide chart, periods under it.
+     The value block and its body are display: contents, so their children are the card's grid
+     items (aria-busy is on the card; the stale dimming moves to the children). */
+  .vcard {
+    grid-template-columns: 18rem minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto auto 1fr auto;
+    column-gap: calc(var(--gap-lg) * 2);
+    row-gap: var(--gap-xs);
+    align-items: start;
+  }
+
+  .vcard .vblock,
+  .vcard .vblock__body { display: contents; }
+
+  .vcard .vblock__body.is-stale > * { opacity: .45; transition: opacity .3s; }
+
+  .vcard .vblock__head { grid-area: 1 / 1; margin-bottom: 0; }
+  .vcard .vblock__big { grid-area: 2 / 1; }
+  .vcard .vblock__body > .warn { grid-area: 3 / 1; }
+  .vcard .vline--day { grid-area: 4 / 1; }
+  .vcard .vline--period { grid-area: 5 / 1; }
+  .vcard .vchart { grid-area: 1 / 2 / 7 / 3; height: 300px; margin-top: 0; }
+  .vcard .periods { grid-area: 7 / 2; }
+  .vcard .contrib { grid-area: 6 / 1 / 8 / 2; margin-top: var(--gap); }
+
+  /* Holdings: title, total and the Day / period switch on one row; tables grow with the page. */
+  .hold { grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--gap-lg); }
+  .hold > * { grid-column: 1 / -1; }
+  .hold__head { display: contents; }
+  .hold__head > .label { grid-area: 1 / 1; align-self: center; }
+  .hold__head > .seg { grid-area: 1 / 3; }
+  .hold > .hold__total { grid-area: 1 / 2; align-self: center; }
+
+  .tablebox { max-height: none; }
+  .ptable { font-size: .875rem; }
+  .hrow__name { max-width: 16rem; }
+  .htable td.hc-spark { width: 7.5rem; }
+
+  /* Cash flows: the 7 figures in one row, label over value. */
+  .kv.flows {
+    grid-template-columns: none;
+    grid-template-rows: auto auto;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: var(--gap-xs) 0;
+  }
+
+  .kv.flows dt,
+  .kv.flows dd {
+    text-align: left;
+    padding: 0 var(--gap-md);
+    border-left: 1px solid var(--c-line);
+  }
+
+  .kv.flows dt { font-family: var(--font-ui); font-size: var(--fs-caption); align-self: end; }
+  .kv.flows dd { font-size: clamp(var(--fs-body), 1.1vw, var(--fs-heading)); }
+
+  .kv.flows dt:first-of-type,
+  .kv.flows dd:first-of-type { border-left: 0; padding-left: 0; }
+
+  /* Position card: wide chart, My holdings in one row, Key statistics ranges side by side. */
+  .pcard__title { justify-items: start; margin-right: 0; }
+  .pchart { height: 340px; }
+
+  .p-hold {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    gap: var(--gap) calc(var(--gap-lg) * 2.5);
+    align-items: center;
+  }
+
+  .p-hold > .label,
+  .p-hold > .card__hint { grid-column: 1 / -1; }
+
+  .p-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: calc(var(--gap-lg) * 2.5); }
+
+  .p-stats > .label,
+  .p-stats > .pstats { grid-column: 1 / -1; }
+
+  .pstats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+  /* Compare: chart full width with the legend to its right. */
+  .cchart { height: 360px; }
+
+  .cmp-card { grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--gap-lg); align-items: start; }
+  .cmp-card > * { grid-column: 1 / -1; }
+  .cmp-card > .cchart { grid-area: 3 / 1; }
+  .cmp-card > .legend { grid-area: 3 / 2; flex-direction: column; }
+}

@@ -34,7 +34,7 @@
       </div>
     </template>
 
-    <section class="card" aria-labelledby="cmp-h">
+    <section class="card cmp-card" aria-labelledby="cmp-h">
       <h2 id="cmp-h" class="label">{{ t('compare.chartTitle') }}</h2>
       <p class="card__hint">{{ t('compare.chartNote') }}</p>
       <ul class="legend">

@@ -56,7 +56,7 @@
     </section>
 
     <section v-if="holdingsPending" class="card" :aria-label="t('pos.holdings')" aria-busy="true" data-test="p-holdings-skel">
-      <div aria-hidden="true">
+      <div aria-hidden="true" class="p-hold">
         <p class="label skel skel--inline">&nbsp;</p>
         <dl class="kv">
           <dt class="skel">&nbsp;</dt><dd class="skel">&nbsp;</dd>
@@ -68,7 +68,7 @@
       </div>
     </section>
 
-    <section v-else-if="h || closed" class="card" aria-labelledby="ph-h" data-test="p-holdings">
+    <section v-else-if="h || closed" class="card p-hold" aria-labelledby="ph-h" data-test="p-holdings">
       <h2 id="ph-h" class="label">{{ t('pos.holdings') }}</h2>
       <template v-if="h">
         <dl class="kv num">
@@ -102,7 +102,7 @@
     </section>
 
     <section v-if="statsPending" class="card" :aria-label="t('pos.keyStats')" aria-busy="true" data-test="p-stats-skel">
-      <div aria-hidden="true" class="pskel">
+      <div aria-hidden="true" class="pskel p-stats">
         <div v-for="i in 2" :key="`r${i}`" class="prange"><p class="prange__head skel">&nbsp;</p><div class="prange__track" /></div>
         <dl class="pstats">
           <div v-for="i in 5" :key="i" class="pstats__item"><dt class="skel">&nbsp;</dt><dd class="skel">&nbsp;</dd></div>
@@ -110,7 +110,7 @@
       </div>
     </section>
 
-    <section v-else-if="hasStats" class="card" aria-labelledby="pk-h" data-test="p-stats">
+    <section v-else-if="hasStats" class="card p-stats" aria-labelledby="pk-h" data-test="p-stats">
       <h2 id="pk-h" class="label">{{ t('pos.keyStats') }}</h2>
       <div v-for="r in ranges" :key="r.key" class="prange" :data-test="`pk-${r.key}`">
         <div class="prange__head num">
