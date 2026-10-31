@@ -198,6 +198,7 @@ const en = {
   'pos.kind.stock': 'Stock',
   'pos.kind.preferred': 'Preferred stock',
   'pos.kind.fund': 'Fund / ETF',
+  'pos.kind.index': 'Index',
 
   'settings.title': 'Settings',
   'settings.account': 'Account',

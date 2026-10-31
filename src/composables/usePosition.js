@@ -67,7 +67,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({
-    info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
+    ticker, info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
   }))
 
   // A ticker without a position or security info (an index): its strip card label or search name.

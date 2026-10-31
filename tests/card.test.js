@@ -9,6 +9,7 @@ import MarketsStrip from '../src/components/MarketsStrip.vue'
 import { createAppState, installApp, positionRoute, parseHash } from '../src/composables/useApp.js'
 import { marketClock, marketClockFor } from '../src/calc/marketTime.js'
 import { lastTradeTime } from '../src/composables/usePosition.js'
+import { keyStats } from '../src/calc/position.js'
 import { t } from '../src/i18n.js'
 
 const TS = (d) => Date.parse(`${d}T00:00:00Z`) / 1000
@@ -163,6 +164,31 @@ describe('index card (getSecurityInfo without prices)', () => {
     const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) }, open: ['FIX'], liveQuotes: q, isLive: true })
     expect(w.get('[data-test="p-price"]').text()).toBe('6,000.00')
     expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
+  })
+
+  it('Key statistics: Type Index, Volume a dash (the broker sends kind 1, vol 0)', async () => {
+    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf({ ...IDX_INFO, vol: 0 }) } })
+    expect(w.get('[data-test="pk-kind"] dd').text()).toBe(t('pos.kind.index'))
+    expect(w.get('[data-test="pk-volume"] dd').text()).toBe('—')
+    expect(w.get('[data-test="pk-avgVolume"]').exists()).toBe(true) // from the candles, as before
+  })
+
+  it('keyStats: index by codesub INDEX, else by the .IDX suffix; stocks and funds unchanged', () => {
+    expect(keyStats({ info: { codesub_nm: 'INDEX', kind: 1, vol: 0 } })).toMatchObject({ kind: 'index', volume: null })
+    expect(keyStats({ info: { c: 'DJI.IDX', kind: 1, vol: 0 } })).toMatchObject({ kind: 'index', volume: null })
+    expect(keyStats({ info: { kind: 1, vol: 0 }, ticker: 'DJI.IDX' })).toMatchObject({ kind: 'index', volume: null })
+    expect(keyStats({ info: { codesub_nm: 'INDEX', kind: 1, vol: 1200 } }).volume).toBe(1200) // a real index volume stays
+    // a codesub other than INDEX wins over the suffix
+    expect(keyStats({ info: { c: 'ODD.IDX', codesub_nm: 'NASDAQ', kind: 1, vol: 0 } })).toMatchObject({ kind: 'stock', volume: 0 })
+    expect(keyStats({ info: { c: 'AAA.US', codesub_nm: 'NASDAQ', kind: 1, vol: 0 } })).toMatchObject({ kind: 'stock', volume: 0 })
+    expect(keyStats({ info: { c: 'QQQ.US', codesub_nm: 'ARCA', kind: 7, vol: 0 } })).toMatchObject({ kind: 'fund', volume: 0 })
+  })
+
+  it('a stock with a real zero volume still shows 0', async () => {
+    const secs = { 'DIA.US': secOf(info('DIA.US', { kind: 1, codesub_nm: 'NYSE', vol: 0 })) }
+    const { w } = await mountApp({ secs })
+    expect(w.get('[data-test="pk-kind"] dd').text()).toBe(t('pos.kind.stock'))
+    expect(w.get('[data-test="pk-volume"] dd').text()).toBe('0')
   })
 
   it('lastTradeTime ignores implausible times (before 2000)', () => {
