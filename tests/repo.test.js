@@ -10,7 +10,7 @@ import {
 } from '../src/calc/portfolio.js'
 import { livePriceRows } from '../src/calc/live.js'
 import { createAppState } from '../src/composables/useApp.js'
-import { CACHE_VERSION } from '../src/config.js'
+import { CACHE_VERSION, TTL } from '../src/config.js'
 
 // Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
 const SRV3 = { offset: 10800, markets: {} }
@@ -20,6 +20,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x))
 const tsOf = (d) => Date.parse(`${d}T00:00:00Z`) / 1000
 const PORTFOLIO = ['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'QQQ.US', 'SPY.US']
 const STRIP = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US']
+const TTL_MARKETS = TTL.intraday
 
 // Candle table {ticker: [[date, close]]} built from the synthetic fixture.
 function fixtureSeries() {
@@ -42,6 +43,8 @@ function fakeBroker() {
   const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [], marketStatus: 0 }
   const b = {
     calls, fail: {}, series: fixtureSeries(), intraday: {}, gate: null, now: () => T0,
+    unknown: new Set(), // tickers the broker does not know: a request naming one fails as a whole
+    finder: [],
     async marketStatus() {
       calls.marketStatus++; await b.gate
       if (b.fail.marketStatus) throw b.fail.marketStatus
@@ -70,15 +73,21 @@ function fakeBroker() {
     // count -N: N-1 candles before dateFrom, then everything after.
     async hlocDaily(tickers, dateFrom, count = -6) {
       calls.hlocDaily.push({ tickers: [...tickers], dateFrom, count }); await b.gate
+      if (tickers.some((t) => b.unknown.has(t))) throw new BrokerError('Instruments not found')
       return answer(tickers, (rows) => {
         const i = rows.findIndex(([d]) => d >= dateFrom)
         return i < 0 ? [] : rows.slice(Math.max(0, i + count + 1))
       })
     },
+    async tickerFinder(text) {
+      calls.finder = [...(calls.finder || []), text]
+      return { found: clone(b.finder) }
+    },
     // b.intraday: {ticker: [[date, 'HH:MM', close]]}
     async hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
       calls.hlocIntraday.push({ tickers: [...tickers], dateFrom, dateTo, timeframe }); await b.gate
       if (b.fail.hlocIntraday) throw b.fail.hlocIntraday
+      if (tickers.some((t) => b.unknown.has(t))) throw new BrokerError('Instruments not found')
       const a = { hloc: {}, xSeries: {}, info: {} }
       for (const t of tickers) {
         const rows = b.intraday[t] || []
@@ -465,6 +474,126 @@ describe('repo', () => {
     expect(stripIntraday(b)).toEqual([{ tickers: STRIP, dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
     expect(repo.marketsStrip()[0]).toMatchObject({ ticker: 'SP500.IDX', last: 6060, prev: 6000, change_pct: 1 })
     expect(st.markets).toEqual(repo.marketsStrip())
+  })
+
+  describe('custom markets strip', () => {
+    const mkStrip = (b, strip) => { b.now = () => clock; return createRepo({ broker: b, db, now: () => clock, strip }) }
+    const stripDaily = (b) => b.calls.hlocDaily.filter((c) => c.count === -1)
+
+    it('fetches the session index and the strip tickers; rows for each of them', async () => {
+      const b = fakeBroker()
+      b.series['SP500.IDX'] = [['2026-10-09', 6000], ['2026-10-12', 6060]]
+      const repo = mkStrip(b, ['GLD.US', 'AAA.US'])
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.load()
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([['SP500.IDX', 'GLD.US', 'AAA.US']])
+      expect(stripIntraday(b).map((c) => c.tickers)).toEqual([['SP500.IDX', 'GLD.US', 'AAA.US']])
+      expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(['SP500.IDX', 'GLD.US', 'AAA.US'])
+      expect(repo.marketsStrip().find((r) => r.ticker === 'AAA.US').last).not.toBeNull()
+      expect(st.strip).toEqual(['GLD.US', 'AAA.US'])
+    })
+
+    it('a new ticker is fetched at once, a removed one is not requested again; reordering fetches nothing', async () => {
+      const b = fakeBroker()
+      const repo = mkStrip(b, ['GLD.US', 'AAA.US'])
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.load()
+      expect(stripDaily(b)).toHaveLength(1)
+      await repo.setStrip(['AAA.US', 'GLD.US'])
+      await repo.setStrip(['GLD.US'])
+      expect(stripDaily(b)).toHaveLength(1)
+      expect(st.strip).toEqual(['GLD.US'])
+      await repo.setStrip(['GLD.US', 'BBB.US'])
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([['SP500.IDX', 'GLD.US', 'AAA.US'], ['SP500.IDX', 'GLD.US', 'BBB.US']])
+      expect(stripIntraday(b).at(-1).tickers).toEqual(['SP500.IDX', 'GLD.US', 'BBB.US'])
+      expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(['SP500.IDX', 'GLD.US', 'BBB.US'])
+      expect(st.strip).toEqual(['GLD.US', 'BBB.US'])
+    })
+
+    it('a ticker added while the strip is being fetched is fetched right after', async () => {
+      const b = fakeBroker()
+      const repo = mkStrip(b, ['GLD.US'])
+      const loading = repo.load()
+      await vi.waitFor(() => expect(stripDaily(b)).toHaveLength(1))
+      const set = repo.setStrip(['GLD.US', 'BBB.US'])
+      await Promise.all([loading, set])
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'GLD.US', 'BBB.US'])
+    })
+
+    it('an empty strip still fetches the session index (the app\'s trading date)', async () => {
+      const b = fakeBroker()
+      await mkStrip(b, []).load()
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([['SP500.IDX']])
+    })
+
+    it('a cached strip from before the setting counts as the default set', async () => {
+      const b = fakeBroker()
+      await mk(b).load()
+      const { data } = await db.getKv('markets')
+      delete data.tickers
+      await db.putKv('markets', data, clock)
+      const repo = mk(b)
+      await repo.load()
+      expect(stripDaily(b)).toHaveLength(1)
+      expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(STRIP)
+    })
+
+    it('an unknown ticker does not break the strip: its row is empty, no error, and it is skipped later', async () => {
+      const b = fakeBroker()
+      b.series['SP500.IDX'] = [['2026-10-09', 6000], ['2026-10-12', 6060]]
+      b.unknown.add('BAD.US')
+      const repo = mkStrip(b, ['SP500.IDX', 'BAD.US', 'AAA.US'])
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.load()
+      expect(st.errors.markets).toBeUndefined()
+      const rows = repo.marketsStrip()
+      expect(rows.map((r) => r.ticker)).toEqual(['SP500.IDX', 'BAD.US', 'AAA.US'])
+      expect(rows[0]).toMatchObject({ last: 6060, prev: 6000 })
+      expect(rows[1]).toMatchObject({ last: null, change_pct: null })
+      expect(rows[2].last).not.toBeNull()
+      const before = stripDaily(b).length
+      clock += TTL_MARKETS
+      await repo.refresh({ only: ['markets'] })
+      const again = stripDaily(b).slice(before)
+      expect(again.map((c) => c.tickers)).toEqual([['SP500.IDX', 'AAA.US']])
+      expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(['SP500.IDX', 'BAD.US', 'AAA.US'])
+    })
+
+    it('a strip request failing for every ticker is an error and keeps the cache', async () => {
+      const b = fakeBroker()
+      const repo = mkStrip(b, ['GLD.US'])
+      await repo.load()
+      b.unknown.add('SP500.IDX').add('GLD.US')
+      clock += TTL_MARKETS
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.refresh({ only: ['markets'] })
+      expect(st.errors.markets).toBeTruthy()
+      expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(['SP500.IDX', 'GLD.US'])
+    })
+  })
+
+  it('findTickers: tickerFinder results as {ticker, name, market}; currency pairs and rows without a ticker dropped', async () => {
+    const b = fakeBroker()
+    b.finder = [
+      { t: 'GLD.US', nm: 'Gold Trust', mkt: 'FIX', type: 1, kind: 7 },
+      { t: 'EUR/USD', nm: 'Euro', mkt: 'FX' },
+      { nm: 'No ticker' },
+      { t: 'KKK.KZ', n: 'Kappa', mkt: 'KASE' },
+      { t: 'ZZZ.US' },
+    ]
+    const repo = mk(b)
+    expect(await repo.findTickers('  gold ')).toEqual([
+      { ticker: 'GLD.US', name: 'Gold Trust', market: 'FIX' },
+      { ticker: 'KKK.KZ', name: 'Kappa', market: 'KASE' },
+      { ticker: 'ZZZ.US', name: 'ZZZ.US', market: '' },
+    ])
+    expect(b.calls.finder).toEqual(['gold'])
+    expect(await repo.findTickers('   ')).toEqual([])
+    expect(b.calls.finder).toEqual(['gold'])
   })
 
   it('position sparks: one multi-ticker 15-min request for the positions, day sparks in state', async () => {

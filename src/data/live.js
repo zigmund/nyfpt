@@ -235,12 +235,13 @@ export function createLive({
   }
 
   // --- wiring
+  // Positions ∪ benchmarks ∪ the strip cards of the repo (state.strip; the default strip without it).
   function onRepo(state) {
     const pos = (state && state.positions) || []
     const next = [...new Set([
       ...pos.filter((r) => r.kind === 'position').map((r) => r.ticker),
       ...BENCHMARKS,
-      ...MARKET_STRIP.map((m) => m.ticker),
+      ...((state && state.strip) ?? MARKET_STRIP.map((m) => m.ticker)),
     ])].filter((t) => t && !String(t).includes('/')).sort()
     const key = next.join(',')
     if (key === tickersKey) return

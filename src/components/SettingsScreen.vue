@@ -43,6 +43,8 @@
       </label>
     </section>
 
+    <MarketStripEditor />
+
     <section class="card" aria-labelledby="set-data">
       <h2 id="set-data" class="label">{{ t('settings.data') }}</h2>
       <p class="card__hint">{{ t('settings.clearCacheHint') }}</p>
@@ -65,6 +67,7 @@
 import { computed, ref } from 'vue'
 import { t } from '../i18n.js'
 import { useApp } from '../composables/useApp.js'
+import MarketStripEditor from './MarketStripEditor.vue'
 
 const THEME_OPTIONS = [
   { value: 'system', label: 'settings.themeSystem' },

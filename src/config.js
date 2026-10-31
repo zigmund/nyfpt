@@ -4,6 +4,7 @@ export const CABINETS = [
 ]
 export const DEFAULT_CABINET = 'global'
 export const BENCHMARKS = ['SPY.US', 'QQQ.US']
+// Default markets strip; prefs.marketStrip (Settings) replaces it, absent = this list.
 export const MARKET_STRIP = [
   { ticker: 'SP500.IDX', label: 'S&P 500' },
   { ticker: 'NASDAQ.IDX', label: 'Nasdaq 100' },
@@ -11,6 +12,7 @@ export const MARKET_STRIP = [
   { ticker: 'GLD.US', label: 'Gold', note: 'GLD' },
   { ticker: 'SLV.US', label: 'Silver', note: 'SLV' },
 ]
+export const MARKET_STRIP_MAX = 10
 // Cache TTLs in ms
 export const TTL = {
   positions: 90e3,

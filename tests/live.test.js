@@ -28,6 +28,7 @@ function fakeRepo(tickers = ['AAA.US']) {
   const repo = {
     subscribe(fn) { fns.add(fn); fn(cur); return () => fns.delete(fn) },
     emitTickers(ts) { cur = state(ts); for (const fn of fns) fn(cur) },
+    emitStrip(strip) { cur = { ...cur, strip }; for (const fn of fns) fn(cur) },
     applyPortfolio: vi.fn(async (ps) => repo.emitTickers(ps.pos.map((p) => p.i))),
     refresh: vi.fn(async () => {}),
   }
@@ -163,6 +164,20 @@ describe('createLive', () => {
     expect(last().sent).toContainEqual(['quotes', want])
     expect(last().sent).toContainEqual(['portfolio'])
     expect(last().sent).toContainEqual(['markets'])
+  })
+
+  it('quote subscription follows the markets strip set of the repo', () => {
+    const { live, repo } = setup({ tickers: ['AAA.US'] })
+    live.start()
+    last().open()
+    repo.emitStrip(['GLD.US', 'ZZZ.IDX'])
+    const quotes = () => last().sent.filter((m) => m[0] === 'quotes')
+    expect(quotes().at(-1)[1]).toEqual([...new Set(['AAA.US', ...BENCHMARKS, 'GLD.US', 'ZZZ.IDX'])].sort())
+    const n = quotes().length
+    repo.emitStrip(['ZZZ.IDX', 'GLD.US']) // reordered: same set
+    expect(quotes()).toHaveLength(n)
+    repo.emitStrip([])
+    expect(quotes().at(-1)[1]).toEqual([...new Set(['AAA.US', ...BENCHMARKS])].sort())
   })
 
   it('merges quote snapshot and deltas', () => {

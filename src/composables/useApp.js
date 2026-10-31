@@ -1,13 +1,15 @@
 // App state singleton: session, account partition, repo + live wiring, prefs and hash routing.
-import { ref, shallowRef, reactive, watch } from 'vue'
-import { CABINETS, DEFAULT_CABINET, POLL_MS } from '../config.js'
+import { ref, shallowRef, reactive, watch, computed } from 'vue'
+import { CABINETS, DEFAULT_CABINET, MARKET_STRIP, POLL_MS } from '../config.js'
 import { PERIODS } from '../calc/periods.js'
 import { t } from '../i18n.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../api/auth.js'
 import { createBroker } from '../api/broker.js'
 import { LiveSocket } from '../api/ws.js'
 import { openAccountDb } from '../store/db.js'
-import { loadSession, saveSession, clearSession, loadPrefs, savePrefs } from '../store/session.js'
+import {
+  loadSession, saveSession, clearSession, loadPrefs, savePrefs, marketStripOf, validStrip,
+} from '../store/session.js'
 import { createRepo } from '../data/repo.js'
 import { localDay } from '../calc/marketTime.js'
 import { createLive } from '../data/live.js'
@@ -104,6 +106,9 @@ export const parseHash = (h) => {
  *   tick         Ref<number>    bumped on every repo emit and live 'update'
  *   live         { isLive: Ref<boolean>, usOpen: Ref<boolean>, quotes: Map }
  *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
+ *   marketStrip  ComputedRef<[{ticker, label, note?}]> cards of the markets strip (prefs.marketStrip or the default)
+ *   setMarketStrip(list | null)  save the strip (null / the default list: back to the default); false when invalid
+ *   findTickers(text)  broker instrument search for the strip editor (repo.findTickers)
  *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   isLiveFor(ticker)    live and this security's own market is open (position card)
@@ -141,6 +146,19 @@ export function createAppState(overrides = {}) {
   let refreshTimer = null
 
   watch(prefs, (p) => deps.prefsStore.save({ ...p }), { deep: true })
+
+  // --- markets strip: prefs.marketStrip absent / null = MARKET_STRIP (a new default reaches everyone
+  // who never customised it); the repo fetches and live subscribes the card tickers.
+  const marketStrip = computed(() => marketStripOf(prefs.marketStrip))
+  const stripTickers = () => marketStrip.value.map((m) => m.ticker)
+  function setMarketStrip(list) {
+    if (list === null) { prefs.marketStrip = null; return true }
+    const v = validStrip(list)
+    if (!v) return false
+    prefs.marketStrip = JSON.stringify(v) === JSON.stringify(MARKET_STRIP) ? null : v
+    return true
+  }
+  watch(() => stripTickers().join(','), () => { repo?.setStrip?.(stripTickers())?.catch?.(() => {}) })
 
   // --- theme: prefs.theme -> <html data-theme>, meta tags; 'system' follows prefers-color-scheme
   if (!THEMES.includes(prefs.theme)) prefs.theme = 'light'
@@ -276,7 +294,7 @@ export function createAppState(overrides = {}) {
       accountKey = key
     }
     broker ||= deps.createBroker({ cabinet, sid: s.sid })
-    repo = deps.createRepo({ broker, db })
+    repo = deps.createRepo({ broker, db, strip: stripTickers() })
     liveObj = deps.createLive({ repo, broker, socketFactory: deps.socketFactory(cabinet, s.sid) })
     news = deps.createNews({ broker, db, onExpired: () => { if (my === gen && !expired.value) onExpired() } })
     expired.value = false
@@ -400,6 +418,8 @@ export function createAppState(overrides = {}) {
 
   return {
     session, expired, fatal, state, tick, live, prefs, route,
+    marketStrip, setMarketStrip,
+    findTickers: (text) => (repo?.findTickers ? repo.findTickers(text) : Promise.resolve([])),
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,

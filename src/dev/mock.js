@@ -3,8 +3,10 @@
 // intraday candles (with volumes) are generated deterministically so that each ticker's latest
 // close equals its last close in the fixture; getSecurityInfo is synthesized from them. The socket reports market FIX as OPEN and streams quote deltas.
 // News: synthetic per ticker (see newsList below).
+// tickerFinder: a small synthetic universe (FINDER); UNKNOWN tickers make getHloc fail like the broker.
 // main.js imports this module dynamically under `import.meta.env.DEV`: never in production builds.
 import fixture from '../../tests/fixtures/synthetic-api.json'
+import { BrokerError } from '../api/transport.js'
 
 const DAY = 86400e3
 const MARKET = 'FIX'
@@ -137,6 +139,28 @@ function step(tk) {
 
 const FUNDS = new Set(['SPY.US', 'QQQ.US', 'USO.US', 'GLD.US', 'SLV.US'])
 
+// --- tickerFinder: synthetic instruments [ticker, name, market]; UNKNOWN: found, but no candles.
+const UNKNOWN = new Set(['GONE.US'])
+const FINDER = [
+  ...Object.entries(names).map(([t, nm]) => [t, nm, marketOf(t)]),
+  ['SP500.IDX', 'S&P 500 Index', 'FIX'], ['NASDAQ.IDX', 'Nasdaq 100 Index', 'FIX'], ['DJI.IDX', 'Dow Jones Industrial Average', 'FIX'],
+  ['SPY.US', 'Mock S&P 500 ETF', 'FIX'], ['QQQ.US', 'Mock Nasdaq 100 ETF', 'FIX'], ['DIA.US', 'Mock Dow ETF', 'FIX'],
+  ['IWM.US', 'Mock Small Cap ETF', 'FIX'], ['USO.US', 'Mock Oil Fund', 'FIX'], ['GLD.US', 'Mock Gold Trust', 'FIX'],
+  ['SLV.US', 'Mock Silver Trust', 'FIX'], ['UNG.US', 'Mock Natural Gas Fund', 'FIX'], ['TLT.US', 'Mock Long Treasury Bond ETF', 'FIX'],
+  ['EEE.US', 'Echo Mock Holdings With A Very Long Company Name Incorporated', 'FIX'], ['GONE.US', 'Gone Mock Corp (no data)', 'FIX'],
+  ['KZM.KZ', 'Kazakh Mock Bank', 'KASE'], ['EUR/USD', 'Euro / US Dollar', 'FX'],
+]
+function tickerFinder(text) {
+  const q = String(text || '').trim().toLowerCase()
+  const found = FINDER.filter(([t, nm]) => t.toLowerCase().includes(q) || nm.toLowerCase().includes(q))
+    .slice(0, 30).map(([t, nm, mkt], i) => ({ instr_id: 1000 + i, t, nm, n: nm, mkt, type: 1, kind: 1 }))
+  return { found }
+}
+const known = (tickers) => {
+  const bad = tickers.filter((t) => UNKNOWN.has(t))
+  if (bad.length) throw new BrokerError(`Instruments not found: ${bad.join(', ')}`, { cmd: 'getHloc' })
+}
+
 /** getSecurityInfo-like flat object (subset of fields the card reads). */
 function securityInfo(tk) {
   const { ltp, pp } = priceOf(tk)
@@ -257,9 +281,10 @@ export function createMockBroker() {
       return a
     },
     async cashflows() { await wait(); return clone(fixture.getUserCashFlows) },
-    async quotes(tickers) { await wait(150); return { result: { q: tickers.map(quote) } } },
-    async hlocDaily(tickers, dateFrom, count) { await wait(); return hlocDaily(tickers, dateFrom, count) },
-    async hlocIntraday(tickers, dateFrom, dateTo, tf) { await wait(); return hlocIntraday(tickers, dateFrom, dateTo, tf) },
+    async quotes(tickers) { await wait(150); return { result: { q: tickers.filter((t) => !UNKNOWN.has(t)).map(quote) } } },
+    async hlocDaily(tickers, dateFrom, count) { await wait(); known(tickers); return hlocDaily(tickers, dateFrom, count) },
+    async hlocIntraday(tickers, dateFrom, dateTo, tf) { await wait(); known(tickers); return hlocIntraday(tickers, dateFrom, dateTo, tf) },
+    async tickerFinder(text) { await wait(300); return tickerFinder(text) },
     async securityInfo(tk) { await wait(200); return securityInfo(tk) },
     async marketStatus() { await wait(150); return { result: { markets: MARKETS() } } },
     async checkSession() { return { SID: 'mock-sid', user_id: 'mock' } },
@@ -313,7 +338,7 @@ export class MockSocket {
   }
 
   setQuotes(tickers) {
-    this.tickers = [...tickers]
+    this.tickers = tickers.filter((t) => !UNKNOWN.has(t))
     if (this.isOpen) this.snapshot()
   }
 

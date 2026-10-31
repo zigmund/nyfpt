@@ -1,7 +1,8 @@
-<!-- US markets strip: status line + 5 cards (S&P 500, Nasdaq 100, oil, gold, silver) scrolling inside
-     the strip. Live quotes (ltp, pcp) override the daily data when present. -->
+<!-- Markets strip: status line + the cards of prefs.marketStrip (default: S&P 500, Nasdaq 100, oil, gold,
+     silver) scrolling inside the strip; hidden when the list is empty. Live quotes (ltp, pcp) override
+     the daily data when present. A card whose ticker was fetched without data shows dashes. -->
 <template>
-  <section class="mkts" :aria-label="t('mkts.label')" data-test="markets">
+  <section v-if="items.length" class="mkts" :aria-label="t('mkts.label')" data-test="markets">
     <p class="status">
       <span class="dot" :class="{ 'dot--on': usOpen }" aria-hidden="true" />
       <span>{{ usOpen ? t('mkts.open') : t('mkts.closed') }}</span>
@@ -12,12 +13,17 @@
     </p>
     <ul class="mkts__row">
       <li v-for="c in cards" :key="c.ticker" class="mcard">
-        <p class="mcard__name">{{ c.label }}<small v-if="c.note">{{ c.note }}</small></p>
+        <p class="mcard__name" :title="c.note ? `${c.label} ${c.note}` : c.label">{{ c.label }}<small v-if="c.note">{{ c.note }}</small></p>
         <MarketSpark v-if="c.ready" :spark="c.spark" :prev="c.prev" />
+        <div v-else-if="c.empty" class="spark" aria-hidden="true" />
         <div v-else class="spark skel" aria-hidden="true" />
         <template v-if="c.ready">
           <p class="mcard__last num">{{ fPrice(c.last) }}</p>
           <p class="mcard__chg num" :class="tone(c.change)">{{ fPct(c.change) }}</p>
+        </template>
+        <template v-else-if="c.empty">
+          <p class="mcard__last num">—</p>
+          <p class="mcard__chg num">—</p>
         </template>
         <template v-else>
           <p class="mcard__last skel" aria-hidden="true">&nbsp;</p>
@@ -33,7 +39,6 @@ import { computed } from 'vue'
 import { t } from '../i18n.js'
 import { dateShort } from '../format.js'
 import { fPct, fPrice, tone, n } from '../display.js'
-import { MARKET_STRIP } from '../config.js'
 import { useApp } from '../composables/useApp.js'
 import MarketSpark from './MarketSpark.vue'
 
@@ -41,6 +46,7 @@ const app = useApp()
 const { state, tick, live } = app
 
 const usOpen = computed(() => live.usOpen.value)
+const items = computed(() => app.marketStrip.value)
 
 const strip = computed(() => {
   void tick.value
@@ -52,7 +58,8 @@ const date = computed(() => strip.value?.find((r) => r.ticker === 'SP500.IDX')?.
 const cards = computed(() => {
   void tick.value // live.quotes is a plain Map: tick marks its updates
   const quotes = live.quotes
-  return MARKET_STRIP.map((m) => {
+  return items.value.map((m) => {
+    // No row: not fetched yet (skeleton); a row without a close: fetched, no data (dashes).
     const r = strip.value?.find((x) => x.ticker === m.ticker) || null
     const q = quotes?.get?.(m.ticker) || null
     const last = n(q?.ltp) ?? n(r?.last)
@@ -60,6 +67,7 @@ const cards = computed(() => {
     return {
       ...m,
       ready: last !== null,
+      empty: last === null && !!r,
       last,
       change,
       prev: n(r?.prev),
