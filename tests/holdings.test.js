@@ -40,6 +40,7 @@ const CLOSES = {
   'CCC.US': [400, 400, 400, 400, 400],
   'DDD.US': [18, 19, 19, 20, 21],
   'EEE.US': [25, 30, 31, 31, 31],
+  'GGG.US': [10, 10, 10, 10, 11],
 }
 const pricesFrom = (start) => Object.entries(CLOSES).flatMap(([ticker, cs]) => DATES
   .map((date, i) => ({ ticker, date, close: cs[i], window_start: start }))
@@ -284,6 +285,26 @@ describe('Holdings: Day / period switch', () => {
     expect(cTickers(w)).toEqual(['EEE.US', 'DDD.US'])
     await w.setProps({ core: CORE_1D, period: '1d' })
     expect(cTickers(w)).toEqual(['DDD.US'])
+  })
+
+  it('a round-trip inside the period (bought and sold on the last day) is listed as closed in both modes', async () => {
+    const rt = [
+      ...TRADES,
+      { id: '4', date: '2026-10-30', ticker: 'GGG.US', side: 1, qty: 2, price: 10.5, commission: 0 },
+      { id: '5', date: '2026-10-30', ticker: 'GGG.US', side: -1, qty: 2, price: 11, commission: 0 },
+    ]
+    const ytd = computeCore(POSITIONS, rt, [], pricesFrom('2025-12-31'))
+    const d1 = computeCore(POSITIONS, rt, [], pricesFrom('2026-10-29'))
+    setup({ prefs: { holdingsClosedOpen: true }, cores: { '1d': d1 } })
+    const w = mountH({ core: ytd })
+    expect(cTickers(w)).toEqual(['DDD.US', 'GGG.US'])
+    const ggg = () => w.get('[data-test="hc-row"][data-ticker="GGG.US"]')
+    expect(ggg().get('[data-test="hc-qstart"]').text()).toBe('0')
+    expect(ggg().get('[data-test="hc-pnl"]').text()).toBe(money(1, { sign: true })) // 2 * (11 - 10.5)
+    await w.get('[data-test="hmode-period"]').trigger('click')
+    expect(cTickers(w)).toEqual(['EEE.US', 'DDD.US', 'GGG.US'])
+    expect(w.get('[data-test="hc-toggle"]').text()).toBe(t('hold.closedN', { n: 3 }))
+    expect(pTickers(w)).not.toContain('GGG.US')
   })
 
   it('separate persisted sorts per mode and for closed positions', async () => {

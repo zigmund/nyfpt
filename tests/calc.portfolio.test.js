@@ -96,6 +96,42 @@ describe('computeCore on the synthetic scenario', () => {
   });
 });
 
+describe('computeCore: round-trip inside the period', () => {
+  // Synthetic: ZZZ bought 3 @10 on 10-07 and sold 3 @12 on 10-12, commission 1 each (also in cashflows).
+  const base = inputs();
+  const ws = base.prices[0].window_start;
+  const closes = { '2026-10-05': 9, '2026-10-07': 10, '2026-10-12': 12, '2026-10-13': 13 };
+  const prices = [...base.prices, ...Object.entries(closes).map(([date, close]) => ({ ticker: 'ZZZ.US', date, close, window_start: ws }))];
+  const trades = [
+    ...base.trades,
+    { id: 'rt1', date: '2026-10-07', ticker: 'ZZZ.US', side: 1, qty: 3, price: 10, commission: 1 },
+    { id: 'rt2', date: '2026-10-12', ticker: 'ZZZ.US', side: -1, qty: 3, price: 12, commission: 1 },
+  ];
+  const cashflows = [
+    ...base.cashflows,
+    { date: '2026-10-07', type: 'commission_for_trades', name: 'Commission', currency: 'USD', sum: -1 },
+    { date: '2026-10-12', type: 'commission_for_trades', name: 'Commission', currency: 'USD', sum: -1 },
+  ];
+  const before = computeCore(base.positions, base.trades, base.cashflows, base.prices);
+  const res = computeCore(base.positions, trades, cashflows, prices);
+  const rowsPnl = (r) => Math.round(r.positions.reduce((s, p) => s + p.pnl, 0) * 100) / 100;
+
+  it('keeps the round-trip as a closed row with zero value and its realized P&L', () => {
+    const zzz = res.positions.find((p) => p.ticker === 'ZZZ.US');
+    // pnl = sells - buys = (36 - 1) - (30 + 1) = 4
+    expect(zzz).toMatchObject({ qty_start: 0, qty_end: 0, status: 'закрыта', value: 0, weight: 0, pnl: 4 });
+  });
+
+  it('other rows unchanged; row P&L + income = summary P&L (no double counting)', () => {
+    const others = res.positions.filter((p) => p.ticker !== 'ZZZ.US')
+    expect(others).toEqual(before.positions);
+    expect(rowsPnl(before) + before.summary.income).toBe(before.summary.pnl); // 315 + 20 = 335
+    expect(res.summary.pnl).toBe(339); // + the round-trip's 4
+    expect(rowsPnl(res) + res.summary.income).toBe(res.summary.pnl);
+    expect(res.summary.value_end).toBe(before.summary.value_end);
+  });
+});
+
 describe('parsers', () => {
   it('getPositionJson with and without the result wrapper gives the same rows', () => {
     const a = parsePositions({ answer: fx.getPositionJson });

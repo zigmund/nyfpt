@@ -122,7 +122,7 @@ export const computeCore = (positions, trades, cashflows, prices) => {
       const v1 = endQ[t] * (p1 || 0);
       const status = endQ[t] === 0 ? 'закрыта' : startQ[t] === 0 ? 'новая' : endQ[t] > startQ[t] ? 'докуплена' : endQ[t] < startQ[t] ? 'сокращена' : '';
       return { ticker: t, name: names[t] || t, status, qty_start: startQ[t], qty_end: endQ[t], price_start: p0, price_end: p1, change_pct: p0 ? r2((p1 / p0 - 1) * 100) : null, pnl: r2(v1 - startQ[t] * (p0 || 0) - buys + sells), value: r2(v1), weight: r2((v1 / Vend) * 100) };
-    }).filter((r) => r.qty_start || r.qty_end);
+    }).filter((r) => r.qty_start || r.qty_end || wk.some((x) => x.ticker === r.ticker)); // keep round-trips inside the period
     const sum = (re) => r2(flows.filter((c) => re.test(c.type)).reduce((s, c) => s + c.sum, 0));
     const last = series[series.length - 1];
     const twr = r2((idx - 1) * 100);
