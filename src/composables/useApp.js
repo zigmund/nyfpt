@@ -125,7 +125,7 @@ export const parseHash = (h) => {
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
  *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
+ *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -417,6 +417,7 @@ export function createAppState(overrides = {}) {
     }
     closeDb()
     deps.sessionStore.clear()
+    clearRecent() // built from this account's activity (held tickers): not left for the next user
     session.value = null
     expired.value = false
     fatal.value = ''

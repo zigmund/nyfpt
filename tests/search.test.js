@@ -437,3 +437,129 @@ describe('SearchSheet alone', () => {
     expect(w.emitted('close')).toHaveLength(1)
   })
 })
+
+describe('fix round 1', () => {
+  it('logout clears Recent (it lists the account’s activity)', async () => {
+    const { app, recentSaved } = makeApp({ recent: [recentOf(AMZN), recentOf(HELD)] })
+    await app.logout()
+    expect(app.recent.value).toEqual([])
+    expect(recentSaved.at(-1)).toEqual([])
+  })
+
+  it('focus trap holds when focus fell to <body>; focus moved to a background control comes back', async () => {
+    const { w } = await openSheet({ recent: [recentOf(AMZN)] })
+    wrapper = w
+    await flushPromises()
+    const dlg = w.get('[role="dialog"]').element
+    expect(dlg.getAttribute('tabindex')).toBe('-1')
+    const focusables = [...dlg.querySelectorAll('button:not([disabled]), input')]
+    document.activeElement.blur()
+    expect(document.activeElement).toBe(document.body)
+    key(document.body, 'Tab')
+    expect(document.activeElement).toBe(focusables[0])
+    document.activeElement.blur()
+    key(document.body, 'Tab', { shiftKey: true })
+    expect(document.activeElement).toBe(focusables.at(-1))
+    // the panel itself (a click on a non-focusable area) is inside: Tab goes to the first control
+    dlg.focus()
+    key(dlg, 'Tab')
+    expect(document.activeElement).toBe(focusables[0])
+    w.get('[data-test="search-open"]').element.focus()
+    expect(document.activeElement).toBe(w.get('[data-test="search-input"]').element)
+    // Esc from <body> still closes
+    document.activeElement.blur()
+    key(document.body, 'Escape')
+    await flushPromises()
+    expect(w.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('a session expiry closes the sheet (the login overlay takes focus)', async () => {
+    const { w, app } = await openSheet()
+    wrapper = w
+    app.expired.value = true
+    await flushPromises()
+    expect(w.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  describe('Enter', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+
+    it('opens a result only when the results answer the current text', async () => {
+      const pending = []
+      const findTickers = vi.fn((q) => new Promise((r) => pending.push({ q, r })))
+      const { w, app } = await openSheet({ findTickers })
+      wrapper = w
+      await type(w, 'am')
+      pending[0].r([AMZN])
+      await flushPromises()
+      const input = w.get('[data-test="search-input"]')
+      await input.setValue('gl') // debouncing: AMZN is the previous text's answer
+      key(input.element, 'Enter')
+      await flushPromises()
+      expect(app.route.value).toBe('/')
+      await vi.advanceTimersByTimeAsync(SEARCH_MS + 50) // in flight
+      key(input.element, 'Enter')
+      await flushPromises()
+      expect(app.route.value).toBe('/')
+      pending[1].r([GLD])
+      await flushPromises()
+      key(input.element, 'Enter')
+      await flushPromises()
+      expect(app.route.value).toBe('/position/GLD.US')
+    })
+
+    it('Recent rows are current at once (filtered locally)', async () => {
+      const { w, app } = await openSheet({ recent: [recentOf(GLD)], findTickers: vi.fn(() => new Promise(() => {})) })
+      wrapper = w
+      const input = w.get('[data-test="search-input"]')
+      await input.setValue('gol')
+      key(input.element, 'Enter')
+      await flushPromises()
+      expect(app.route.value).toBe('/position/GLD.US')
+    })
+
+    it('is ignored while an IME composes', async () => {
+      const { w, app } = await openSheet({ findTickers: vi.fn(async () => [AMZN]) })
+      wrapper = w
+      await type(w, 'am')
+      const input = w.get('[data-test="search-input"]').element
+      key(input, 'Enter', { isComposing: true })
+      key(input, 'Escape', { isComposing: true })
+      await flushPromises()
+      expect(app.route.value).toBe('/')
+      expect(w.find('[role="dialog"]').exists()).toBe(true)
+    })
+  })
+
+  describe('prices', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+
+    it('only the answer for the latest rows is applied (out-of-order answers dropped)', async () => {
+      const pending = []
+      const searchQuotes = vi.fn((ts) => new Promise((r) => pending.push({ ts, r })))
+      const { w } = await openSheet({ findTickers: vi.fn(async (q) => (q === 'a' ? [AMZN] : [AMZN, GLD])), searchQuotes })
+      wrapper = w
+      await type(w, 'a')
+      await type(w, 'ab')
+      expect(pending.map((p) => p.ts)).toEqual([['AMZN.US'], ['AMZN.US', 'GLD.US']])
+      pending[1].r({ 'AMZN.US': { last: 2, change: 2 }, 'GLD.US': { last: 3, change: 3 } })
+      await flushPromises()
+      pending[0].r({ 'AMZN.US': { last: 1, change: 1 } })
+      await flushPromises()
+      expect(rows(w)[0].get('.srow__price').text()).toBe('2.00')
+    })
+
+    it('an answer after the sheet closed is dropped without errors', async () => {
+      const pending = []
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { w } = await openSheet({ recent: [recentOf(AMZN)], searchQuotes: vi.fn(() => new Promise((r) => pending.push(r))) })
+      wrapper = w
+      await flushPromises()
+      await w.get('[data-test="search-close"]').trigger('click')
+      pending[0]({ 'AMZN.US': { last: 1, change: 1 } })
+      await flushPromises()
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+    })
+  })
+})

@@ -734,6 +734,38 @@ describe('repo', () => {
       expect(x).toEqual(y)
     })
 
+    it('a miss (failed request, no price) is asked again after 10 s; a price is kept for the TTL', async () => {
+      const b = withQuotes(fakeBroker())
+      const repo = mk(b)
+      await repo.searchQuotes(['AAA.US', 'NONE.US'])
+      clock += 10e3 - 1
+      await repo.searchQuotes(['AAA.US', 'NONE.US'])
+      expect(b.calls.quotes).toHaveLength(1)
+      clock += 2
+      await repo.searchQuotes(['AAA.US', 'NONE.US'])
+      expect(b.calls.quotes.at(-1)).toEqual(['NONE.US'])
+      const fails = withQuotes(fakeBroker())
+      fails.quotes = vi.fn(async () => { throw new BrokerError('blip') })
+      const r2 = mk(fails)
+      await r2.searchQuotes(['AAA.US'])
+      clock += 10e3 + 1
+      await r2.searchQuotes(['AAA.US'])
+      expect(fails.quotes).toHaveBeenCalledTimes(2)
+    })
+
+    it('expired entries are pruned: the memory does not only grow', async () => {
+      const b = withQuotes(fakeBroker())
+      const repo = mk(b)
+      await repo.searchQuotes(['A1.US', 'A2.US', 'NONE.US'])
+      expect(repo.searchQuotes.memoSize()).toBe(3)
+      clock += 10e3 + 1 // the miss has expired
+      await repo.searchQuotes(['B1.US'])
+      expect(repo.searchQuotes.memoSize()).toBe(3)
+      clock += TTL.quotes
+      await repo.searchQuotes(['C1.US'])
+      expect(repo.searchQuotes.memoSize()).toBe(1)
+    })
+
     it('never rejects: a failed request gives no prices; an expired session is reported', async () => {
       const b = withQuotes(fakeBroker())
       b.quotes = vi.fn(async () => { throw new BrokerError('boom') })

@@ -8,10 +8,7 @@
 <template>
   <div class="srch" data-test="search">
     <div class="srch__backdrop" aria-hidden="true" data-test="search-backdrop" @click="close" />
-    <section
-      ref="panel" class="srch__panel" role="dialog" aria-modal="true" aria-labelledby="srch-title"
-      @keydown="onKey"
-    >
+    <section ref="panel" class="srch__panel" role="dialog" aria-modal="true" aria-labelledby="srch-title" tabindex="-1">
       <header class="srch__head">
         <h2 id="srch-title" class="srch__title">{{ t('search.title') }}</h2>
         <button
@@ -91,7 +88,7 @@ const app = useApp()
 const panel = ref(null)
 const input = ref(null)
 
-const { query, text, results, status } = useTickerSearch(app.findTickers)
+const { query, text, results, status, settled } = useTickerSearch(app.findTickers)
 
 const recentRows = computed(() => filterRecent(app.recent.value, text.value))
 // Server rows a recent row already shows are not repeated.
@@ -116,11 +113,16 @@ const held = computed(() => new Set((app.state.value?.positions || [])
   .filter((p) => p.kind === 'position').map((p) => p.ticker)))
 
 // --- prices: one batched request per set of rows shown (repo memoizes per ticker); live quotes win.
+// Only the answer for the latest set is applied (it covers every row shown), never after unmount.
 const fetched = ref({})
 const shownKey = computed(() => sections.value.flatMap((s) => s.rows.map((r) => r.ticker)).join(','))
+let alive = true
+let priceSeq = 0
 watch(shownKey, async (key) => {
+  const my = ++priceSeq
   if (!key) return
   const got = await app.searchQuotes(key.split(','))
+  if (!alive || my !== priceSeq) return
   fetched.value = { ...fetched.value, ...got }
 }, { immediate: true })
 function priceOf(ticker) {
@@ -155,27 +157,41 @@ function close() {
   emit('close')
 }
 
-// --- keyboard
+// First row for Enter in the input: Recent rows are filtered locally (always current); server
+// results only once they answer the current text.
+function firstRow() {
+  const sec = sections.value[0]
+  if (!sec || (sec.id === 'results' && !settled.value)) return null
+  return sec.rows[0] || null
+}
+
+// --- keyboard (on the document while open: the trap holds even when focus fell to <body>)
 const rowButtons = () => [...(panel.value?.querySelectorAll('[data-test="search-row"]') || [])]
 function focusables() {
   return [...(panel.value?.querySelectorAll('button, input, [href]') || [])]
     .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1')
 }
+const inside = (el) => !!el && !!panel.value?.contains(el)
 function onKey(e) {
+  if (e.isComposing) return // IME: Enter / Esc belong to the composition
   if (e.key === 'Escape') { e.preventDefault(); close(); return }
   if (e.key === 'Tab') {
     const list = focusables()
     if (!list.length) return
     const first = list[0]
     const last = list[list.length - 1]
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    const at = document.activeElement
+    if (!inside(at) || at === panel.value) { e.preventDefault(); (e.shiftKey ? last : first).focus() }
+    else if (e.shiftKey && at === first) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus() }
     return
   }
+  if (!inside(e.target)) return
   const onInput = e.target === input.value
   if (e.key === 'Enter' && onInput) {
-    const first = sections.value[0]?.rows[0]
-    if (first) { e.preventDefault(); openRow(first) }
+    e.preventDefault()
+    const first = firstRow()
+    if (first) openRow(first)
     return
   }
   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -189,10 +205,24 @@ function onKey(e) {
   else rowsEls[Math.min(to, rowsEls.length - 1)]?.focus()
 }
 
+// Focus that lands outside the dialog (a background control) comes back to the input.
+function onFocusIn(e) {
+  if (!inside(e.target)) input.value?.focus()
+}
+// Session expired: the login overlay takes over (outside this dialog), so the sheet closes.
+watch(() => app.expired.value, (x) => { if (x) close() }, { immediate: true })
+
 // --- open: focus the input; the page behind does not scroll
 onMounted(() => {
   document.documentElement.classList.add('srch-open')
+  document.addEventListener('keydown', onKey)
+  document.addEventListener('focusin', onFocusIn)
   nextTick(() => input.value?.focus())
 })
-onBeforeUnmount(() => document.documentElement.classList.remove('srch-open'))
+onBeforeUnmount(() => {
+  alive = false
+  document.removeEventListener('keydown', onKey)
+  document.removeEventListener('focusin', onFocusIn)
+  document.documentElement.classList.remove('srch-open')
+})
 </script>

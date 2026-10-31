@@ -58,6 +58,7 @@ const LEGACY_STRIP = Object.freeze(['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US
 const HLOC_RETRY_MS = 5 * 60e3
 const NAME_ROUNDS = 3 // combined retries after dropping the tickers an error names
 const FINDER_MAX = 30
+const QUOTE_MISS_MS = 10e3 // search quotes: a miss (failed request, no price) is asked again after this
 // tickerFinder type/kind -> instrument type (docs/tradernet-api.md; pairs seen in real answers
 // 2026-11-01): 1/1 and 1/2 shares, 1/7 funds (ETF/ETP), 2 bonds, 3 futures, 5 indices, 6/8, 6/29,
 // 6/31, 6/33 crypto. Anything else (6/1 money, repo, new kinds) has no type.
@@ -324,15 +325,17 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   }
 
   // --- search rows: last price and day change of any ticker (getStockQuotesJson), memory only
-  const quoteMemo = new Map() // ticker -> {at, last, change}
+  const quoteMemo = new Map() // ticker -> {until, last, change}
   const quotePending = new Map() // ticker -> promise of the batch fetching it
+  const fresh = (t, at) => quoteMemo.has(t) && at < quoteMemo.get(t).until
   /** {ticker: {last, change}} for `tickers` (null = no data). One batched request for the
-   *  tickers neither fresh (TTL.quotes) nor already being fetched; never rejects (a failed request
-   *  gives nulls until the TTL passes; an expired session is reported). */
+   *  tickers neither fresh nor already being fetched; a price is kept TTL.quotes, a miss (failed
+   *  request, no price in the answer) QUOTE_MISS_MS. Expired entries are pruned on every insert.
+   *  Never rejects; an expired session is reported. */
   async function searchQuotes(tickers) {
     const list = [...new Set(tickers)]
     const t0 = now()
-    const want = list.filter((t) => !quotePending.has(t) && !(quoteMemo.has(t) && t0 - quoteMemo.get(t).at < TTL.quotes))
+    const want = list.filter((t) => !quotePending.has(t) && !fresh(t, t0))
     if (want.length) {
       const batch = (async () => {
         const got = new Map()
@@ -345,9 +348,12 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
           if (isExpired(e)) sessionExpired()
         }
         const at = now()
+        for (const [t, m] of quoteMemo) if (at >= m.until) quoteMemo.delete(t)
         for (const t of want) {
           const q = got.get(t)
-          quoteMemo.set(t, { at, last: numOrNull(q?.ltp), change: numOrNull(q?.pcp) })
+          const last = numOrNull(q?.ltp)
+          const until = at + (last === null ? QUOTE_MISS_MS : TTL.quotes)
+          quoteMemo.set(t, { until, last, change: numOrNull(q?.pcp) })
           quotePending.delete(t)
         }
       })()
@@ -359,6 +365,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       return [t, { last: m ? m.last : null, change: m ? m.change : null }]
     }))
   }
+  searchQuotes.memoSize = () => quoteMemo.size // tests: the memo does not only grow
 
   // null = never loaded.
   function state() {

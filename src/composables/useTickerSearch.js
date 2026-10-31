@@ -11,12 +11,14 @@ export const SEARCH_MS = 300
  *   text     ComputedRef<string>  the trimmed query
  *   results  Ref<rows>    rows of the latest answer ([] for an empty query)
  *   state    Ref<'' | 'busy' | 'none' | 'failed'>
+ *   settled  ComputedRef<boolean>  `results` answer the current text (nothing pending or debouncing)
  *   status   ComputedRef<string>  `state` as text for a live region
  */
 export function useTickerSearch(find) {
   const query = ref('')
   const results = ref([])
   const state = ref('')
+  const answered = ref('') // text the current `results` answer
   let timer = null
   let seq = 0
 
@@ -24,17 +26,19 @@ export function useTickerSearch(find) {
     clearTimeout(timer)
     const my = ++seq
     const text = String(v || '').trim()
-    if (!text) { results.value = []; state.value = ''; return }
+    if (!text) { results.value = []; state.value = ''; answered.value = ''; return }
     timer = setTimeout(async () => {
       state.value = 'busy'
       try {
         const found = await find(text)
         if (my !== seq) return
         results.value = found
+        answered.value = text
         state.value = found.length ? '' : 'none'
       } catch {
         if (my !== seq) return
         results.value = []
+        answered.value = text
         state.value = 'failed'
       }
     }, SEARCH_MS)
@@ -42,9 +46,11 @@ export function useTickerSearch(find) {
 
   onBeforeUnmount(() => { clearTimeout(timer); seq++ })
 
+  const text = computed(() => String(query.value || '').trim())
   return {
     query,
-    text: computed(() => String(query.value || '').trim()),
+    text,
+    settled: computed(() => state.value !== 'busy' && answered.value === text.value),
     results,
     state,
     status: computed(() => (state.value ? t(`search.${state.value}`) : '')),
