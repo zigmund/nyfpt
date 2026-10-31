@@ -1001,10 +1001,6 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .skel-rows { display: grid; gap: var(--gap); }
 .skel-rows .skel { max-width: none; }
 
-@media (max-width: 35rem) {
-  .is-wide { display: none; }
-}
-
 /* ---------- compare screen ---------- */
 .lede {
   color: var(--c-muted);
@@ -1076,6 +1072,17 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .legend__sw.cmp-qqq { border-top-style: dotted; }
 
 /* ---------- holdings ---------- */
+.hold__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--gap);
+}
+
+/* A table followed by the closed-positions block does not bleed into the card bottom. */
+.tablebox:not(:last-child) { margin-bottom: 0; }
+.hold__closed-body { padding-top: var(--gap); }
+
 .hold__total { display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: baseline; font-size: var(--fs-body); }
 .hold__total-label { color: var(--c-muted); font-family: var(--font-ui); }
 

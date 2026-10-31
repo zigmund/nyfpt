@@ -15,11 +15,15 @@ export const pricedTickersKey = (st) => [...new Set([
   ...(st?.trades || []).map((r) => r.ticker),
 ])].filter((t) => t && !String(t).includes('/')).sort().join(',')
 
-export function usePeriodCore({ now = () => Date.now() } = {}) {
+/**
+ * `period` fixes the period instead of prefs.period; `fetch: false` never calls ensurePrices
+ * (the core is computed only from what the selected period already loaded).
+ */
+export function usePeriodCore({ now = () => Date.now(), period: fixed = null, fetch = true } = {}) {
   const app = useApp()
   const { state, tick, prefs } = app
 
-  const period = computed(() => periodOf(prefs))
+  const period = computed(() => fixed || periodOf(prefs))
 
   // NY trading date, checked on a clock and when the app becomes visible again (resumed PWA).
   const day = ref(nyDate(now()))
@@ -44,7 +48,7 @@ export function usePeriodCore({ now = () => Date.now() } = {}) {
   const tickers = computed(() => pricedTickersKey(state.value))
 
   function ensure() {
-    if (ready.value) Promise.resolve(app.ensurePrices(period.value)).catch(() => {})
+    if (fetch && ready.value) Promise.resolve(app.ensurePrices(period.value)).catch(() => {})
   }
 
   // Covered -> not covered for the same period (cache dropped, new data arrived): fetch once.

@@ -3,7 +3,10 @@ const SESSION_KEY = 'nyfpt.session'
 const PREFS_KEY = 'nyfpt.prefs'
 
 function defaultPrefs() {
-  return { hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light' }
+  return {
+    hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light',
+    holdingsMode: 'day', holdingsClosedOpen: false,
+  }
 }
 
 function read(key) {
