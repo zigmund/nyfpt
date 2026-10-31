@@ -150,12 +150,21 @@ const FINDER = [
   ['EEE.US', 'Echo Mock Holdings With A Very Long Company Name Incorporated', 'FIX'], ['GONE.US', 'Gone Mock Corp (no data)', 'FIX'],
   ['KZM.KZ', 'Kazakh Mock Bank', 'KASE'], ['EUR/USD', 'Euro / US Dollar', 'FX'],
 ]
+// tickerFinder type/kind like the broker: 5 index, 1/7 funds, 1/1 shares (repo.js instrumentType).
+const finderType = (t, nm) => (t.endsWith('.IDX') ? { type: 5, kind: 1 }
+  : FUNDS.has(t) || /\b(ETF|Fund|Trust)\b/.test(nm) ? { type: 1, kind: 7 } : { type: 1, kind: 1 })
+// code_nm like the broker: the ticker without its suffix, KASE copies keep _KZ (AMZN_KZ.KZ -> AMZN_KZ).
+const codeNm = (t) => {
+  if (t.includes('/')) return t
+  const base = t.replace(/\.[^.]+$/, '')
+  return t.endsWith('.KZ') && !base.endsWith('_KZ') ? `${base}_KZ` : base
+}
 function tickerFinder(text) {
   const q = String(text || '').trim().toLowerCase()
   const found = FINDER.filter(([t, nm]) => t.toLowerCase().includes(q) || nm.toLowerCase().includes(q))
     .slice(0, 30).map(([t, nm, mkt], i) => ({
-      instr_id: 1000 + i, t, nm, n: nm, ln: null, code_nm: t.includes('/') ? t : t.replace(/\.KZ$/, '_KZ').replace(/\.[^.]+$/, ''),
-      mkt, x_curr: mkt === 'KASE' ? 'KZT' : 'USD', type: 1, kind: 1,
+      instr_id: 1000 + i, t, nm, n: nm, ln: null, code_nm: codeNm(t),
+      mkt, x_curr: mkt === 'KASE' ? 'KZT' : 'USD', ...finderType(t, nm),
     }))
   return { found }
 }

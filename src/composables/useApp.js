@@ -1,6 +1,6 @@
 // App state singleton: session, account partition, repo + live wiring, prefs and hash routing.
 import { ref, shallowRef, reactive, watch, computed } from 'vue'
-import { CABINETS, DEFAULT_CABINET, MARKET_STRIP, POLL_MS } from '../config.js'
+import { CABINETS, DEFAULT_CABINET, MARKET_STRIP, MARKET_STRIP_MAX, POLL_MS } from '../config.js'
 import { PERIODS } from '../calc/periods.js'
 import { t } from '../i18n.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../api/auth.js'
@@ -8,7 +8,8 @@ import { createBroker } from '../api/broker.js'
 import { LiveSocket } from '../api/ws.js'
 import { openAccountDb } from '../store/db.js'
 import {
-  loadSession, saveSession, clearSession, loadPrefs, savePrefs, marketStripOf, validStrip,
+  loadSession, saveSession, clearSession, loadPrefs, savePrefs, marketStripOf, validStrip, stripCardOf,
+  loadRecent, saveRecent, pushRecent,
 } from '../store/session.js'
 import { createRepo } from '../data/repo.js'
 import { localDay } from '../calc/marketTime.js'
@@ -32,6 +33,7 @@ const defaultDeps = () => ({
   socketFactory: (cabinet, sid) => () => new LiveSocket({ wsUrl: cabinet.ws, sid }),
   sessionStore: { load: loadSession, save: saveSession, clear: clearSession },
   prefsStore: { load: loadPrefs, save: savePrefs },
+  recentStore: { load: loadRecent, save: saveRecent },
   now: () => Date.now(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (id) => clearTimeout(id),
@@ -108,7 +110,13 @@ export const parseHash = (h) => {
  *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
  *   marketStrip  ComputedRef<[{ticker, label, note?}]> cards of the markets strip (prefs.marketStrip or the default)
  *   setMarketStrip(list | null)  save the strip (null / the default list: back to the default); false when invalid
- *   findTickers(text)  broker instrument search for the strip editor (repo.findTickers)
+ *   inStrip(ticker), stripFull  ComputedRef<boolean>: the strip has MARKET_STRIP_MAX cards
+ *   addToStrip({ticker, name, code})  a card at the end (label = name, note = code); false when full or shown
+ *   removeFromStrip(ticker)
+ *   findTickers(text)  broker instrument search (repo.findTickers)
+ *   searchQuotes(tickers)  {ticker: {last, change}} for search rows (repo.searchQuotes; never rejects)
+ *   recent       Ref<[{ticker, name, code, type, market, currency}]> securities opened from the search
+ *   addRecent(row), clearRecent()
  *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   isLiveFor(ticker)    live and this security's own market is open (position card)
@@ -159,6 +167,24 @@ export function createAppState(overrides = {}) {
     return true
   }
   watch(() => stripTickers().join(','), () => { repo?.setStrip?.(stripTickers())?.catch?.(() => {}) })
+  const inStrip = (ticker) => marketStrip.value.some((m) => m.ticker === ticker)
+  const stripFull = computed(() => marketStrip.value.length >= MARKET_STRIP_MAX)
+  function addToStrip(r) {
+    if (stripFull.value || inStrip(r.ticker)) return false
+    return setMarketStrip([...marketStrip.value, stripCardOf(r)])
+  }
+  function removeFromStrip(ticker) {
+    return setMarketStrip(marketStrip.value.filter((m) => m.ticker !== ticker))
+  }
+
+  // --- recent searches (localStorage, no prices)
+  const recent = ref(deps.recentStore.load())
+  function setRecent(list) {
+    recent.value = list
+    deps.recentStore.save(list)
+  }
+  const addRecent = (r) => setRecent(pushRecent(recent.value, r))
+  const clearRecent = () => setRecent([])
 
   // --- theme: prefs.theme -> <html data-theme>, meta tags; 'system' follows prefers-color-scheme
   if (!THEMES.includes(prefs.theme)) prefs.theme = 'light'
@@ -418,8 +444,10 @@ export function createAppState(overrides = {}) {
 
   return {
     session, expired, fatal, state, tick, live, prefs, route,
-    marketStrip, setMarketStrip,
+    marketStrip, setMarketStrip, inStrip, stripFull, addToStrip, removeFromStrip,
+    recent, addRecent, clearRecent,
     findTickers: (text) => (repo?.findTickers ? repo.findTickers(text) : Promise.resolve([])),
+    searchQuotes: (tickers) => (repo?.searchQuotes ? repo.searchQuotes(tickers) : Promise.resolve({})),
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,

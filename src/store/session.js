@@ -79,3 +79,46 @@ export function validStrip(list) {
 /** Cards of the markets strip from prefs.marketStrip: absent, null or invalid = a copy of
  *  MARKET_STRIP, so a new default reaches everyone who never customised the strip. */
 export const marketStripOf = (saved) => validStrip(saved) || MARKET_STRIP.map((m) => ({ ...m }))
+
+/** The ticker's short code: the broker's code_nm (DIA, NVDA_KZ), else the ticker without its
+ *  market suffix (USO.US -> USO). */
+export const tickerCode = (r) => (text(r.code) ? r.code.trim() : '') || r.ticker.replace(/\.[^.]+$/, '') || r.ticker
+
+/** Strip card of a search row {ticker, name, code}: label = name, note = its code. */
+export const stripCardOf = (r) => ({ ticker: r.ticker, label: text(r.name) ? r.name.trim() : r.ticker, note: tickerCode(r) })
+
+// --- recent searches: securities opened from the search, newest first; descriptive fields only (no prices)
+const RECENT_KEY = 'nyfpt.recent'
+export const RECENT_MAX = 10
+const RECENT_FIELDS = ['code', 'type', 'market', 'currency']
+
+/** A clean recent entry, or null when `r` has no ticker. */
+function recentEntry(r) {
+  if (!r || typeof r !== 'object' || !text(r.ticker)) return null
+  const ticker = r.ticker.trim()
+  const e = { ticker, name: text(r.name) ? r.name.trim() : ticker }
+  for (const k of RECENT_FIELDS) e[k] = typeof r[k] === 'string' ? r[k] : ''
+  return e
+}
+
+const cleanRecent = (list) => {
+  const out = []
+  for (const r of Array.isArray(list) ? list : []) {
+    const e = recentEntry(r)
+    if (e && !out.some((x) => x.ticker === e.ticker)) out.push(e)
+  }
+  return out.slice(0, RECENT_MAX)
+}
+
+/** Recent list from localStorage; missing or broken = [], broken entries dropped. */
+export const loadRecent = () => cleanRecent(read(RECENT_KEY))
+
+export function saveRecent(list) {
+  write(RECENT_KEY, cleanRecent(list))
+}
+
+/** `list` with `r` in front (once), at most RECENT_MAX entries. */
+export const pushRecent = (list, r) => {
+  const e = recentEntry(r)
+  return e ? cleanRecent([e, ...(list || []).filter((x) => x && x.ticker !== e.ticker)]) : cleanRecent(list)
+}

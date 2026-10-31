@@ -678,13 +678,74 @@ describe('repo', () => {
     ]
     const repo = mk(b)
     expect(await repo.findTickers('  gold ')).toEqual([
-      { ticker: 'GLD.US', name: 'Gold Trust', market: 'FIX', code: 'GLD' },
-      { ticker: 'KKK.KZ', name: 'Kappa', market: 'KASE', code: 'KKK_KZ' },
-      { ticker: 'ZZZ.US', name: 'ZZZ.US', market: '', code: '' },
+      { ticker: 'GLD.US', name: 'Gold Trust', market: 'FIX', code: 'GLD', currency: 'USD', type: 'etf' },
+      { ticker: 'KKK.KZ', name: 'Kappa', market: 'KASE', code: 'KKK_KZ', currency: '', type: '' },
+      { ticker: 'ZZZ.US', name: 'ZZZ.US', market: '', code: '', currency: '', type: '' },
     ])
     expect(b.calls.finder).toEqual(['gold'])
     expect(await repo.findTickers('   ')).toEqual([])
     expect(b.calls.finder).toEqual(['gold'])
+  })
+
+  // type/kind pairs seen in real tickerFinder answers (2026-11-01) and docs/tradernet-api.md.
+  it('findTickers: type from tickerFinder type/kind; unknown pairs get none', async () => {
+    const b = fakeBroker()
+    const pairs = [
+      [1, 1, 'equity'], [1, 2, 'equity'], [1, 7, 'etf'], [2, 1, 'bond'], [3, 6, 'future'], [5, 1, 'index'],
+      [6, 31, 'crypto'], [6, 29, 'crypto'], [6, 1, ''], [1, 99, ''], [9, 1, ''], [undefined, undefined, ''], ['1', '7', 'etf'],
+    ]
+    b.finder = pairs.map(([type, kind], i) => ({ t: `T${i}.US`, nm: `N${i}`, type, kind }))
+    const repo = mk(b)
+    expect((await repo.findTickers('t')).map((r) => r.type)).toEqual(pairs.map((p) => p[2]))
+  })
+
+  describe('searchQuotes', () => {
+    const withQuotes = (b, q = (t) => ({ c: t, ltp: 10, pcp: -1.5 })) => {
+      b.calls.quotes = []
+      b.quotes = vi.fn(async (tickers) => { b.calls.quotes.push([...tickers]); return { result: { q: tickers.filter((t) => t !== 'NONE.US').map(q) } } })
+      return b
+    }
+
+    it('one batched request for the tickers it does not know; {ticker: {last, change}}', async () => {
+      const b = withQuotes(fakeBroker())
+      const repo = mk(b)
+      expect(await repo.searchQuotes(['AAA.US', 'NONE.US', 'AAA.US'])).toEqual({
+        'AAA.US': { last: 10, change: -1.5 }, 'NONE.US': { last: null, change: null },
+      })
+      expect(b.calls.quotes).toEqual([['AAA.US', 'NONE.US']])
+    })
+
+    it('answers within the quotes TTL come from memory; later ones are fetched again', async () => {
+      const b = withQuotes(fakeBroker())
+      const repo = mk(b)
+      await repo.searchQuotes(['AAA.US'])
+      await repo.searchQuotes(['AAA.US', 'BBB.US'])
+      expect(b.calls.quotes).toEqual([['AAA.US'], ['BBB.US']])
+      clock += TTL.quotes + 1
+      await repo.searchQuotes(['AAA.US', 'BBB.US'])
+      expect(b.calls.quotes.at(-1)).toEqual(['AAA.US', 'BBB.US'])
+    })
+
+    it('a ticker already being fetched is not requested twice', async () => {
+      const b = withQuotes(fakeBroker())
+      const repo = mk(b)
+      const [x, y] = await Promise.all([repo.searchQuotes(['AAA.US']), repo.searchQuotes(['AAA.US'])])
+      expect(b.calls.quotes).toEqual([['AAA.US']])
+      expect(x).toEqual(y)
+    })
+
+    it('never rejects: a failed request gives no prices; an expired session is reported', async () => {
+      const b = withQuotes(fakeBroker())
+      b.quotes = vi.fn(async () => { throw new BrokerError('boom') })
+      const repo = mk(b)
+      expect(await repo.searchQuotes(['AAA.US'])).toEqual({ 'AAA.US': { last: null, change: null } })
+      const expired = vi.fn()
+      repo.onSessionExpired(expired)
+      b.quotes = vi.fn(async () => { throw new SessionExpiredError() })
+      expect(await repo.searchQuotes(['ZZZ.US'])).toEqual({ 'ZZZ.US': { last: null, change: null } })
+      expect(expired).toHaveBeenCalledTimes(1)
+      expect(await repo.searchQuotes([])).toEqual({})
+    })
   })
 
   it('position sparks: one multi-ticker 15-min request for the positions, day sparks in state', async () => {

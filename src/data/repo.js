@@ -58,6 +58,22 @@ const LEGACY_STRIP = Object.freeze(['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US
 const HLOC_RETRY_MS = 5 * 60e3
 const NAME_ROUNDS = 3 // combined retries after dropping the tickers an error names
 const FINDER_MAX = 30
+// tickerFinder type/kind -> instrument type (docs/tradernet-api.md; pairs seen in real answers
+// 2026-11-01): 1/1 and 1/2 shares, 1/7 funds (ETF/ETP), 2 bonds, 3 futures, 5 indices, 6/8, 6/29,
+// 6/31, 6/33 crypto. Anything else (6/1 money, repo, new kinds) has no type.
+const CRYPTO_KINDS = new Set([8, 29, 31, 33])
+function instrumentType(type, kind) {
+  const ty = Number(type)
+  const k = Number(kind)
+  if (ty === 1) return k === 7 ? 'etf' : k === 1 || k === 2 ? 'equity' : ''
+  if (ty === 2) return 'bond'
+  if (ty === 3) return 'future'
+  if (ty === 5) return 'index'
+  if (ty === 6 && CRYPTO_KINDS.has(k)) return 'crypto'
+  return ''
+}
+const str = (v) => (typeof v === 'string' ? v.trim() : '')
+const numOrNull = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(+v) ? null : +v)
 const HLOC_KEYS = ['hloc', 'xSeries', 'vl', 'info', 'maxSeries']
 
 const addDays = (s, n) => {
@@ -305,6 +321,43 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       errors: { ...(e?.errors || {}) },
       loading: e ? [...e.inflight.keys()] : [],
     }
+  }
+
+  // --- search rows: last price and day change of any ticker (getStockQuotesJson), memory only
+  const quoteMemo = new Map() // ticker -> {at, last, change}
+  const quotePending = new Map() // ticker -> promise of the batch fetching it
+  /** {ticker: {last, change}} for `tickers` (null = no data). One batched request for the
+   *  tickers neither fresh (TTL.quotes) nor already being fetched; never rejects (a failed request
+   *  gives nulls until the TTL passes; an expired session is reported). */
+  async function searchQuotes(tickers) {
+    const list = [...new Set(tickers)]
+    const t0 = now()
+    const want = list.filter((t) => !quotePending.has(t) && !(quoteMemo.has(t) && t0 - quoteMemo.get(t).at < TTL.quotes))
+    if (want.length) {
+      const batch = (async () => {
+        const got = new Map()
+        try {
+          const a = await broker.quotes(want)
+          for (const q of (a && a.result && Array.isArray(a.result.q)) ? a.result.q : []) {
+            if (q && q.c) got.set(q.c, q)
+          }
+        } catch (e) {
+          if (isExpired(e)) sessionExpired()
+        }
+        const at = now()
+        for (const t of want) {
+          const q = got.get(t)
+          quoteMemo.set(t, { at, last: numOrNull(q?.ltp), change: numOrNull(q?.pcp) })
+          quotePending.delete(t)
+        }
+      })()
+      for (const t of want) quotePending.set(t, batch)
+    }
+    await Promise.all([...new Set(list.map((t) => quotePending.get(t)).filter(Boolean))])
+    return Object.fromEntries(list.map((t) => {
+      const m = quoteMemo.get(t)
+      return [t, { last: m ? m.last : null, change: m ? m.change : null }]
+    }))
   }
 
   // null = never loaded.
@@ -633,8 +686,9 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       await refresh({ only: ['markets'] })
     },
 
-    /** Broker search (tickerFinder, anonymous): [{ticker, name, market, code}] (code: code_nm, the
-     *  ticker without its suffix, '' when absent), at most 30;
+    /** Broker search (tickerFinder, anonymous): [{ticker, name, market, code, currency, type}]
+     *  (code: code_nm, the ticker without its suffix; currency: x_curr; type: 'equity' | 'etf' |
+     *  'bond' | 'future' | 'index' | 'crypto'; '' when absent or unknown), at most 30;
      *  currency pairs skipped. Rejects on errors. */
     async findTickers(text) {
       const q = String(text || '').trim()
@@ -644,11 +698,16 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
         .filter((x) => x && typeof x.t === 'string' && x.t.trim() && !x.t.includes('/'))
         .slice(0, FINDER_MAX)
         .map((x) => {
-          const name = [x.nm, x.n, x.ln].find((v) => typeof v === 'string' && v.trim())
-          const code = typeof x.code_nm === 'string' && x.code_nm.trim() ? x.code_nm.trim() : ''
-          return { ticker: x.t.trim(), name: name ? name.trim() : x.t.trim(), market: typeof x.mkt === 'string' ? x.mkt : '', code }
+          const ticker = x.t.trim()
+          const name = [x.nm, x.n, x.ln].map(str).find(Boolean) || ticker
+          return {
+            ticker, name, market: typeof x.mkt === 'string' ? x.mkt : '', code: str(x.code_nm),
+            currency: str(x.x_curr), type: instrumentType(x.type, x.kind),
+          }
         })
     },
+
+    searchQuotes,
 
     /** Trading date of the session index's market at `ms` (default now). */
     today,

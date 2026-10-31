@@ -1,5 +1,5 @@
-<!-- Main screen: markets strip, value card (value, chart, periods, contributions, cash flows),
-     holdings (day / selected period) and cash flows. -->
+<!-- Main screen: header (status, search, settings), markets strip, value card (value, chart, periods,
+     contributions, cash flows), holdings (day / selected period) and cash flows. -->
 <template>
   <div class="screen">
     <header class="topbar">
@@ -8,6 +8,13 @@
         <span class="dot" :class="{ 'dot--on': live.isLive.value }" aria-hidden="true" />
         <span>{{ live.isLive.value ? t('main.live') : updated }}</span>
       </p>
+      <button
+        ref="searchBtn" type="button" class="icon-btn sbtn" aria-haspopup="dialog" :aria-label="t('search.open')"
+        :title="t('search.open')" data-test="search-open" @click="searchOpen = true"
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M16 16l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+        <span class="sbtn__text" aria-hidden="true">{{ t('search.open') }}</span>
+      </button>
       <a class="icon-btn" href="#/settings" :aria-label="t('nav.settings')" :title="t('nav.settings')">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-test="gear">
           <circle cx="12" cy="12" r="3" />
@@ -29,11 +36,13 @@
     </section>
 
     <Holdings :core="core" :stale="stale" :period="period" />
+
+    <SearchSheet v-if="searchOpen" @close="closeSearch" />
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { t } from '../i18n.js'
 import { n } from '../display.js'
 import { useApp } from '../composables/useApp.js'
@@ -44,11 +53,20 @@ import PeriodPicker from './PeriodPicker.vue'
 import Contributions from './Contributions.vue'
 import CashflowsCard from './CashflowsCard.vue'
 import Holdings from './Holdings.vue'
+import SearchSheet from './SearchSheet.vue'
 
 const app = useApp()
 const { live } = app
 const state = computed(() => app.state.value)
 const { core, stale, period } = usePeriodCore()
+
+// Search sheet; closing it returns focus to the search button.
+const searchOpen = ref(false)
+const searchBtn = ref(null)
+function closeSearch() {
+  searchOpen.value = false
+  nextTick(() => searchBtn.value?.focus())
+}
 
 // Current value from positions (incl. cash), shown until the period is computed.
 const current = computed(() => {
