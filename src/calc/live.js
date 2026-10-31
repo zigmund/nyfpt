@@ -10,6 +10,18 @@ const num = (v) => {
 /** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object. */
 export const mergeQuote = (prev, delta) => ({ ...(prev || {}), ...(delta || {}) });
 
+/** Price multiplier `k` and USD rate `fx` of a raw position (see holdingsRows); usd = USD currval. */
+export const positionFactor = (p, usd = 1) => {
+  const q = num(p.q) || 0;
+  const mkt = num(p.mkt_price);
+  const fx = (num(p.currval) || 0) / usd || 1;
+  const mv = num(p.market_value);
+  const face = num(p.face_val_a);
+  let k = mv !== null && mv !== 0 && q && mkt ? mv / (q * mkt * fx) : null;
+  if (k === null || !Number.isFinite(k)) k = face ? face / 100 : 1;
+  return { k, fx };
+};
+
 /** Positions of a raw `ps` as rows in USD, with live quotes applied.
  *  fx = pos.currval / currval_USD (as in parsePositions).
  *  k: multiplier such that q * mkt_price * k * fx == market_value (USD). Derived from the
@@ -22,12 +34,9 @@ export const holdingsRows = (ps, quotes) => {
   const rows = ((ps && ps.pos) || []).map((p) => {
     const quote = (quotes && quotes.get(p.i)) || {};
     const q = num(p.q) || 0;
-    const mkt = num(p.mkt_price);
-    const fx = (num(p.currval) || 0) / usd || 1;
     const mv = num(p.market_value);
-    const face = num(p.face_val_a);
-    let k = mv !== null && mv !== 0 && q && mkt ? mv / (q * mkt * fx) : null;
-    if (k === null || !Number.isFinite(k)) k = face ? face / 100 : 1;
+    const { k, fx } = positionFactor(p, usd);
+    const mkt = num(p.mkt_price);
     const price = num(quote.ltp) ?? mkt;
     const pp = num(quote.pp) ?? num(p.close_price);
     const prevClose = pp ? pp : null;

@@ -61,9 +61,25 @@ export function isUsdAccount(answer) {
 /** Selected period from prefs; unknown values fall back to YTD. */
 export const periodOf = (prefs) => (PERIODS.includes(prefs.period) ? prefs.period : 'YTD')
 
+// Position card: '/position/<URL-encoded ticker>[/<tab>]'.
+const POSITION_RE = /^\/position\/([^/]+)(?:\/([a-z]+))?$/
+
+/** {ticker, tab} of a position card path, or null. Tab defaults to 'summary'. */
+export function positionRoute(path) {
+  const m = POSITION_RE.exec(String(path || ''))
+  if (!m) return null
+  let ticker
+  try { ticker = decodeURIComponent(m[1]).trim() } catch { return null }
+  return ticker ? { ticker, tab: m[2] || 'summary' } : null
+}
+
+/** Path of a position card tab; Summary is the bare card path. */
+export const positionPath = (ticker, tab = 'summary') =>
+  `/position/${encodeURIComponent(ticker)}${tab && tab !== 'summary' ? `/${tab}` : ''}`
+
 export const parseHash = (h) => {
   const p = String(h || '').replace(/^#/, '') || '/'
-  return ROUTES.includes(p) ? p : '/'
+  return ROUTES.includes(p) || positionRoute(p) ? p : '/'
 }
 
 /**
@@ -76,12 +92,13 @@ export const parseHash = (h) => {
  *   tick         Ref<number>    bumped on every repo emit and live 'update'
  *   live         { isLive: Ref<boolean>, usOpen: Ref<boolean>, quotes: Map }
  *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
- *   route        Ref<'/' | '/login' | '/compare' | '/settings'>
+ *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
+ *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path), start(), stop()
+ *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -173,11 +190,11 @@ export function createAppState(overrides = {}) {
     if (replace) win.history.replaceState(null, '', hash)
     else win.location.hash = hash
   }
-  /** Navigate; login is enforced while there is no session. */
-  function go(path) {
+  /** Navigate; login is enforced while there is no session. `replace`: no new history entry. */
+  function go(path, { replace = false } = {}) {
     const p = parseHash(path)
     if (!session.value) return setRoute('/login', true)
-    setRoute(p === '/login' ? '/' : p)
+    setRoute(p === '/login' ? '/' : p, replace)
   }
   function onHash() {
     const p = parseHash(win.location.hash)
@@ -370,6 +387,8 @@ export function createAppState(overrides = {}) {
     ensurePrices: (period, day) => (repo ? repo.ensurePrices(period, day) : Promise.resolve()),
     refresh: (opts) => (repo ? repo.refresh(opts) : Promise.resolve()),
     marketsStrip: () => (repo ? repo.marketsStrip() : null),
+    security: (ticker) => (repo ? repo.security(ticker) : null),
+    loadSecurity: (ticker, parts, opts) => (repo ? repo.loadSecurity(ticker, parts, opts) : Promise.resolve()),
   }
 }
 

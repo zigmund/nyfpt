@@ -8,12 +8,15 @@
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
+// Position card data (security info, full candles per ticker) is kept in memory only, TTL-gated.
 import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
 } from '../calc/portfolio.js'
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
+
+import { parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { SessionExpiredError } from '../api/transport.js'
 
@@ -24,6 +27,13 @@ const TTL_OF = {
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
+
+// Position card datasets: TTL per part; daily reaches back far enough for 1Y, YTD and 52 weeks.
+const SEC_TTL = { info: TTL.quotes, intraday: TTL.intraday, daily: 5 * 60e3, max: 60 * 60e3 }
+const SEC_DAILY_DAYS = 400
+const SEC_INTRADAY_DAYS = 8 // 5 sessions back, weekends and a holiday included
+const SEC_MAX_FROM = '1990-01-01'
+const SESSION_INDEX = 'SP500.IDX' // its intraday bars mark the regular US session
 
 const nyFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
 /** Calendar date in New York ('YYYY-MM-DD'): candle dates are US trading dates. */
@@ -73,6 +83,73 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   // Cached sparks were fetched for a different set of positions.
   const sparksOutdated = () => !!cache.positions && !!cache.sparks
     && cache.sparks.tickers.join(',') !== positionTickers().join(',')
+
+  // --- position card: per ticker {info, intraday, daily, max} + fetch times, errors, in-flight
+  const sec = new Map()
+  function secEntry(ticker) {
+    let e = sec.get(ticker)
+    if (!e) sec.set(ticker, (e = { info: null, intraday: null, daily: null, max: null, at: {}, errors: {}, inflight: new Map() }))
+    return e
+  }
+  const secFetchers = {
+    async info(tk) {
+      const a = await broker.securityInfo(tk)
+      if (!a || typeof a !== 'object') throw new Error('No security info')
+      return a
+    },
+    async intraday(tk) {
+      const t = today()
+      return parseCandles(await broker.hlocIntraday([tk], addDays(t, -SEC_INTRADAY_DAYS), addDays(t, 1), 15), tk)
+    },
+    async daily(tk) {
+      return parseCandles(await broker.hlocDaily([tk], addDays(today(), -SEC_DAILY_DAYS), -1), tk)
+    },
+    async max(tk) {
+      return parseCandles(await broker.hlocDaily([tk], SEC_MAX_FROM, -1), tk)
+    },
+  }
+
+  /** Fetch the parts ('info' | 'intraday' | 'daily' | 'max') of a ticker that are past their TTL.
+   *  Never rejects: errors land in security(ticker).errors[part], the old data stays. */
+  function loadSecurity(ticker, parts = ['info', 'daily'], { force = false } = {}) {
+    const e = secEntry(ticker)
+    return Promise.all(parts.filter((p) => p in secFetchers).map((part) => {
+      if (e.inflight.has(part)) return e.inflight.get(part)
+      if (!force && e.at[part] != null && now() - e.at[part] < SEC_TTL[part]) return null
+      const pr = (async () => {
+        try {
+          e[part] = await secFetchers[part](ticker)
+          e.at[part] = now()
+          delete e.errors[part]
+        } catch (err) {
+          e.errors[part] = (err && err.message) || String(err)
+        } finally {
+          e.inflight.delete(part)
+          emit()
+        }
+      })()
+      e.inflight.set(part, pr)
+      emit()
+      return pr
+    })).then(() => {})
+  }
+
+  /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: regular US
+   *  session bounds by date (sessionBounds over SP500.IDX bars), only for US tickers. */
+  function security(ticker) {
+    const e = sec.get(ticker)
+    const us = String(ticker).endsWith('.US')
+    const idx = us ? (cache.markets?.intraday || []).filter((r) => r.ticker === SESSION_INDEX) : []
+    return {
+      info: e?.info ?? null,
+      intraday: e?.intraday ?? null,
+      daily: e?.daily ?? null,
+      max: e?.max ?? null,
+      sessions: us ? sessionBounds(idx) : null,
+      errors: { ...(e?.errors || {}) },
+      loading: e ? [...e.inflight.keys()] : [],
+    }
+  }
 
   // null = never loaded.
   function state() {
@@ -317,6 +394,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     },
 
     marketsStrip,
+    security,
+    loadSecurity,
 
     /** Positions pushed by the WS `portfolio` event (raw `ps`). */
     async applyPortfolio(ps) {
