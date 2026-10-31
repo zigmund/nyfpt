@@ -56,7 +56,7 @@
                     <span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                   </a>
                 </th>
-                <td class="hc-spark"><MarketSpark :spark="daySpark(r.ticker)" :prev="n(r.prevClose)" :down="(n(r.dayChangePct) ?? 0) < 0" /></td>
+                <td class="hc-spark"><MarketSpark v-bind="daySpark(r)" /></td>
                 <td data-test="h-price" class="hc-price" :class="flashes[r.ticker]">{{ fPrice(r.price) }}</td>
                 <td class="hc-pill"><span data-test="h-daypct" :class="pill(r.dayChangePct)">{{ fPct(r.dayChangePct) }}</span></td>
                 <td data-test="h-dayusd" class="hc-meta" :class="tone(r.dayChangeUsd)" :data-label="t('hold.col.dayChangeUsd')">{{ fMoney(r.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</td>
@@ -269,7 +269,14 @@ const total = computed(() => holdingsTotal(rows.value || []))
 const daySort = tableSort('holdings', DAY_COLS, { key: 'valueUsd', dir: -1 })
 const daySorted = computed(() => daySort.apply(rows.value || []))
 // Last-session closes from the repo (state.sparks); none yet: an empty spark of the same height.
-const daySpark = (ticker) => app.state.value?.sparks?.[ticker]?.spark || EMPTY
+// Dashed level at the previous close, tone by the day change. A `prior` session (US, right after
+// the open) is not what they refer to: no level, tone by the drawn line's own direction.
+function daySpark(r) {
+  const s = app.state.value?.sparks?.[r.ticker]
+  const spark = s?.spark || EMPTY
+  if (s?.prior) return { spark, prev: null, down: spark[spark.length - 1] < spark[0] }
+  return { spark, prev: n(r.prevClose), down: (n(r.dayChangePct) ?? 0) < 0 }
+}
 
 // Period: positions still open at the period end.
 const summary = computed(() => props.core?.summary || null)

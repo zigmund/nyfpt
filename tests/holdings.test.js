@@ -396,6 +396,15 @@ describe('Holdings: Yahoo-style rows', () => {
     expect(ccc.find('.spark').exists()).toBe(true)
   })
 
+  it('Day spark of the previous session (prior): no previous-close level, tone by its own direction', () => {
+    const { app } = setup()
+    app.state.value = { ...app.state.value, sparks: { ...SPARKS, 'BBB.US': { date: '2026-10-29', spark: [49, 51], prior: true } } }
+    const w = mountH()
+    // BBB is down today (pill), but the drawn session rose: the line is not measured against today's base.
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [49, 51], prev: null, down: false })
+    expect(w.get('[data-ticker="BBB.US"] [data-test="h-daypct"]').classes()).toContain('pill--neg')
+  })
+
   it('Period spark: closes over the period from the start price to the end price, tone by Range %', () => {
     setup({ prefs: { holdingsMode: 'period' } })
     const w = mountH()
@@ -460,6 +469,17 @@ describe('sparks calc', () => {
       bar('AAA.US', '2026-10-31', '08:00', 14), // pre-market of a day without an index session yet
     ]
     expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
+  })
+
+  it('US tickers before their first regular bar of the index session: the previous session, flagged prior', () => {
+    // The markets cache (TTL 60 s) already has today's open; cached position bars (TTL 5 min) only pre-market.
+    const rows = [
+      bar('AAA.US', '2026-10-29', '08:00', 4), // pre-market of 10-29: clipped by that day's index session
+      bar('AAA.US', '2026-10-29', '09:30', 5), bar('AAA.US', '2026-10-29', '15:45', 6),
+      bar('AAA.US', '2026-10-30', '08:00', 7), // pre-market only
+    ]
+    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-29', spark: [5, 6], prior: true })
+    expect(daySparks([bar('AAA.US', '2026-10-30', '08:00', 7)], IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [] })
   })
 
   it('other markets (KZ): their own last session', () => {
