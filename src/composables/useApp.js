@@ -195,7 +195,12 @@ export function createAppState(overrides = {}) {
     started = true
     win?.addEventListener('hashchange', onHash)
     doc?.addEventListener('visibilitychange', onVisibility)
-    const s = deps.sessionStore.load()
+    let s = deps.sessionStore.load()
+    // A session from a removed cabinet (older builds) is unusable.
+    if (s && !CABINETS.some((c) => c.id === s.cabinetId)) {
+      deps.sessionStore.clear()
+      s = null
+    }
     if (!s) {
       setRoute('/login', true)
       return

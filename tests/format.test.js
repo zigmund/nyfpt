@@ -36,7 +36,7 @@ describe('i18n', () => {
 describe('config', () => {
   it('defaults', () => {
     expect(DEFAULT_CABINET).toBe('global')
-    expect(CABINETS.map((c) => c.id)).toEqual(['global', 'kz'])
+    expect(CABINETS.map((c) => c.id)).toEqual(['global'])
     expect(TTL.positions).toBe(90000)
   })
 })

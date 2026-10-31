@@ -12,8 +12,10 @@
     <section class="card" aria-labelledby="set-account">
       <h2 id="set-account" class="label">{{ t('settings.account') }}</h2>
       <dl class="kv">
-        <dt>{{ t('settings.cabinet') }}</dt>
-        <dd>{{ cabinet.label }}</dd>
+        <template v-if="app.cabinets.length > 1">
+          <dt>{{ t('settings.cabinet') }}</dt>
+          <dd>{{ cabinet.label }}</dd>
+        </template>
         <dt>{{ t('settings.userId') }}</dt>
         <dd class="num">{{ session?.userId ?? '—' }}</dd>
       </dl>

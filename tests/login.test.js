@@ -153,6 +153,25 @@ describe('LoginScreen', () => {
   })
 })
 
+describe('single cabinet', () => {
+  it('renders no cabinet select and shows the broker host', () => {
+    const { wrapper } = setup()
+    expect(wrapper.find('select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('tradernet.global')
+  })
+
+  it('treats a stored session of an unknown cabinet as logged out', () => {
+    const f = makeDeps()
+    f.deps.sessionStore.load.mockReturnValue({ cabinetId: 'kz', sid: 's', userId: 7, loggedAt: 1 })
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    expect(f.deps.sessionStore.clear).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.route.value).toBe('/login')
+    expect(f.deps.openAccountDb).not.toHaveBeenCalled()
+  })
+})
+
 describe('useApp login flow', () => {
   it('rejects non-USD accounts, keeps no session and stays on login', async () => {
     const { wrapper, deps, app } = setup({ positions: KZT_PS })
@@ -169,10 +188,10 @@ describe('useApp login flow', () => {
 
   it('saves the session and opens the account partition on success', async () => {
     const { deps, app } = setup()
-    await app.login('kz', { login: 'me', password: 'pw' })
-    expect(deps.sessionStore.save).toHaveBeenCalledWith(expect.objectContaining({ cabinetId: 'kz', sid: 'sid-1', userId: 7 }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(deps.sessionStore.save).toHaveBeenCalledWith(expect.objectContaining({ cabinetId: 'global', sid: 'sid-1', userId: 7 }))
     expect(deps.sessionStore.save.mock.calls[0][0]).not.toHaveProperty('password')
-    expect(deps.openAccountDb).toHaveBeenCalledWith('kz:7')
+    expect(deps.openAccountDb).toHaveBeenCalledWith('global:7')
     expect(app.route.value).toBe('/')
   })
 

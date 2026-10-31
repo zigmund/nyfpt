@@ -1,6 +1,6 @@
+// Password/SMS login works only on tradernet.global; add cabinets here to re-enable the selector.
 export const CABINETS = [
   { id: 'global', label: 'tradernet.global', rest: 'https://tradernet.global', ws: 'wss://wss.tradernet.global/' },
-  { id: 'kz', label: 'tradernet.kz', rest: 'https://tradernet.kz', ws: 'wss://wss.tradernet.kz/' },
 ]
 export const DEFAULT_CABINET = 'global'
 export const BENCHMARKS = ['SPY.US', 'QQQ.US']

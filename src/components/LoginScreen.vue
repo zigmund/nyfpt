@@ -16,7 +16,7 @@
       <p v-if="mock" class="login__note login__note--mock">{{ t('login.mock') }}</p>
 
       <form class="login__form" @submit.prevent="submit">
-        <label class="field">
+        <label v-if="cabinets.length > 1" class="field">
           <span class="field__label">{{ t('login.cabinet') }}</span>
           <select v-model="cabinetId" class="input input--select" :disabled="busy" @change="resetCode">
             <option v-for="c in cabinets" :key="c.id" :value="c.id">{{ c.label }}</option>
