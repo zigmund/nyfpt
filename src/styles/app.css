@@ -1303,10 +1303,22 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .phead__line .big.skel { display: inline-block; width: 8rem; }
 .phead__chg { font-size: var(--fs-body); }
 
-.pchart { position: relative; min-height: 240px; margin-top: var(--gap); }
-.pchart.skel { max-width: none; }
+/* Fixed height = the chart's own (charts/priceChart.js H = 240): no jump when it loads. */
+.pchart { position: relative; height: 240px; margin-top: var(--gap); }
+.pchart__skel { height: 100%; max-width: none; animation: pskel-pulse 1.4s ease-in-out infinite; }
+.pchart__busy { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+@keyframes pskel-pulse { 50% { opacity: .55; } }
+.pskel { display: grid; gap: var(--gap); }
+.pskel .prange__head { min-height: 1.3em; }
+.pstats__item .skel, .pgrid .skel, .kv .skel { min-height: 1.3em; }
+.pgrid .skel { max-width: 6rem; }
+.pgrid > div:nth-child(2) .skel { margin-inline: auto; }
+.pgrid > div:last-child .skel { margin-left: auto; }
+.phead__name.skel { min-height: 1.4em; width: 12rem; }
+.phead__chg.skel { display: inline-block; width: 6rem; }
+.phead .status { min-height: 1.2em; }
 .pchart svg { touch-action: pan-y; }
-.pchart__none { min-height: 4rem; display: grid; place-items: center; }
+.pchart__none { height: 100%; display: grid; place-items: center; }
 .pchart__lab { fill: var(--c-muted); font-size: .6875rem; }
 .pchart__vol rect { fill: var(--c-line-strong); opacity: .45; }
 

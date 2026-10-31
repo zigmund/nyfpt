@@ -291,6 +291,59 @@ describe('Summary', () => {
     expect(w.find('[data-test="pc-vol"]').exists()).toBe(true)
   })
 
+  describe('loading layout (Task 28)', () => {
+    const EMPTY_SEC = { info: null, intraday: null, daily: null, max: null, sessions: null, errors: {}, loading: ['info'] }
+
+    it('before data: chart area is there, busy, with a skeleton and a loading label; stats skeleton', () => {
+      setup({ sec: EMPTY_SEC, prefs: { period: '1d' } })
+      const w = mountCard()
+      const chart = w.get('[data-test="p-chart"]')
+      expect(chart.attributes('aria-busy')).toBe('true')
+      expect(chart.find('[data-test="p-chart-skel"]').exists()).toBe(true)
+      expect(chart.text()).toContain(t('main.loading'))
+      expect(chart.find('svg').exists()).toBe(false)
+      expect(w.find('[data-test="p-stats-skel"]').exists()).toBe(true)
+      expect(w.find('[data-test="p-stats"]').exists()).toBe(false)
+      expect(w.findAll('[data-test="p-stats-skel"] .pstats__item')).toHaveLength(5)
+    })
+
+    it('holdings skeleton while the period result is not ready and the ticker is not held', () => {
+      const app = setup({ sec: EMPTY_SEC })
+      app.coreFor.mockReturnValue(null)
+      const w = mountCard({ ticker: 'QQQ.US' })
+      expect(w.find('[data-test="p-holdings-skel"]').exists()).toBe(true)
+    })
+
+    it('after load: same chart area, not busy, no skeletons', () => {
+      setup({ prefs: { period: '1d' } })
+      const w = mountCard()
+      const chart = w.get('[data-test="p-chart"]')
+      expect(chart.attributes('aria-busy')).toBe('false')
+      expect(chart.find('svg').exists()).toBe(true)
+      expect(w.find('[data-test="p-chart-skel"]').exists()).toBe(false)
+      expect(w.find('[data-test="p-stats-skel"]').exists()).toBe(false)
+    })
+
+    it('period switch keeps the old chart, dimmed and busy, while the new one loads', async () => {
+      setup({ prefs: { period: '1d' } })
+      const w = mountCard()
+      expect(w.get('[data-test="p-chart"]').find('svg').exists()).toBe(true)
+      await w.get('[data-cperiod="5Y"]').trigger('click') // 'max' data is not loaded
+      const chart = w.get('[data-test="p-chart"]')
+      expect(chart.attributes('aria-busy')).toBe('true')
+      expect(chart.classes()).toContain('is-stale')
+      expect(chart.find('svg').exists()).toBe(true)
+    })
+
+    it('no data / error: the message sits inside the same chart area', () => {
+      setup({ sec: { ...SEC, intraday: [], daily: [] } })
+      const w = mountCard()
+      const chart = w.get('[data-test="p-chart"]')
+      expect(chart.attributes('aria-busy')).toBe('false')
+      expect(chart.get('[data-test="p-chart-none"]').text()).toBe(t('pos.noChart'))
+    })
+  })
+
   it('info error with nothing cached: message with retry', async () => {
     const app = setup({ sec: { ...SEC, info: null, errors: { info: 'boom' } } })
     const w = mountCard()

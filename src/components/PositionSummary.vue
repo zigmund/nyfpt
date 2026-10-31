@@ -10,11 +10,13 @@
 
     <section class="card phead" :aria-label="t('pos.quote')">
       <p v-if="venue" class="card__hint" data-test="p-venue">{{ venue }}</p>
-      <h2 class="phead__name" data-test="p-name">{{ pos.name === ticker ? ticker : `${pos.name} (${ticker})` }}</h2>
+      <h2 v-if="nameLoading" class="phead__name skel" aria-hidden="true" data-test="p-name-skel">&nbsp;</h2>
+      <h2 v-else class="phead__name" data-test="p-name">{{ pos.name === ticker ? ticker : `${pos.name} (${ticker})` }}</h2>
       <p class="phead__line">
         <span v-if="pos.price != null" ref="bigEl" class="big num" data-test="p-price">{{ fPrice(pos.price) }}</span>
         <span v-else ref="bigEl" class="big skel" aria-hidden="true">&nbsp;</span>
         <span v-if="pos.change != null" class="phead__chg num" :class="tone(pos.change)" data-test="p-change">{{ fChange(pos.change) }} ({{ fPct(pos.changePct) }})</span>
+        <span v-else-if="pos.price == null" class="phead__chg skel" aria-hidden="true">&nbsp;</span>
       </p>
       <p class="status" data-test="p-asof">
         <template v-if="pos.isLive">
@@ -24,11 +26,20 @@
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
       </p>
 
-      <div v-if="rows.length > 1" class="pchart" :aria-label="t('pos.chartLabel', { period: periodLabel })" role="img" data-test="p-chart">
-        <PriceChart :rows="rows" :base="base" :intraday="intraday" />
+      <!-- One fixed-height area in every state: chart, old chart while a new period loads, skeleton, message. -->
+      <div
+        class="pchart"
+        :class="{ 'is-stale': chartStale }"
+        :aria-label="t('pos.chartLabel', { period: periodLabel })"
+        :aria-busy="chartLoading ? 'true' : 'false'"
+        :role="shown ? 'img' : null"
+        data-test="p-chart"
+      >
+        <PriceChart v-if="shown" :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" />
+        <div v-else-if="chartLoading" class="pchart__skel skel" aria-hidden="true" data-test="p-chart-skel" />
+        <p v-else class="card__hint pchart__none" data-test="p-chart-none">{{ t('pos.noChart') }}</p>
+        <p v-if="chartLoading" class="pchart__busy card__hint" role="status" data-test="p-chart-busy">{{ t('main.loading') }}</p>
       </div>
-      <div v-else-if="chartLoading" class="pchart skel" aria-hidden="true" data-test="p-chart-skel" />
-      <p v-else class="card__hint pchart__none" data-test="p-chart-none">{{ t('pos.noChart') }}</p>
 
       <div class="periods" role="group" :aria-label="t('period.label')">
         <button
@@ -43,7 +54,20 @@
       </div>
     </section>
 
-    <section v-if="h || closed" class="card" aria-labelledby="ph-h" data-test="p-holdings">
+    <section v-if="holdingsPending" class="card" :aria-label="t('pos.holdings')" aria-busy="true" data-test="p-holdings-skel">
+      <div aria-hidden="true">
+        <p class="label skel skel--inline">&nbsp;</p>
+        <dl class="kv">
+          <dt class="skel">&nbsp;</dt><dd class="skel">&nbsp;</dd>
+          <dt class="skel">&nbsp;</dt><dd class="skel">&nbsp;</dd>
+        </dl>
+        <div class="pgrid">
+          <div v-for="i in 3" :key="i"><p class="pgrid__k skel">&nbsp;</p><p class="pgrid__v skel">&nbsp;</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section v-else-if="h || closed" class="card" aria-labelledby="ph-h" data-test="p-holdings">
       <h2 id="ph-h" class="label">{{ t('pos.holdings') }}</h2>
       <template v-if="h">
         <dl class="kv num">
@@ -76,7 +100,16 @@
       </template>
     </section>
 
-    <section v-if="hasStats" class="card" aria-labelledby="pk-h" data-test="p-stats">
+    <section v-if="statsPending" class="card" :aria-label="t('pos.keyStats')" aria-busy="true" data-test="p-stats-skel">
+      <div aria-hidden="true" class="pskel">
+        <div v-for="i in 2" :key="`r${i}`" class="prange"><p class="prange__head skel">&nbsp;</p><div class="prange__track" /></div>
+        <dl class="pstats">
+          <div v-for="i in 5" :key="i" class="pstats__item"><dt class="skel">&nbsp;</dt><dd class="skel">&nbsp;</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section v-else-if="hasStats" class="card" aria-labelledby="pk-h" data-test="p-stats">
       <h2 id="pk-h" class="label">{{ t('pos.keyStats') }}</h2>
       <div v-for="r in ranges" :key="r.key" class="prange" :data-test="`pk-${r.key}`">
         <div class="prange__head num">
@@ -99,7 +132,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fMoney, fPct, fPrice, fQty, tone, n, PERIOD_LABELS } from '../display.js'
 import { useApp } from '../composables/useApp.js'
@@ -149,6 +182,18 @@ const chartLoading = computed(() => {
   return props.pos.sec[src] == null && !props.pos.sec.errors?.[src]
 })
 
+// What the chart area draws: the current dataset, or the last drawn one (dimmed) while the new
+// period loads, so the area never collapses.
+const last = shallowRef(null)
+watch([rows, base, intraday], ([r, b, i]) => {
+  if (r.length > 1) last.value = { rows: r, base: b, intraday: i }
+}, { immediate: true })
+const shown = computed(() => {
+  if (rows.value.length > 1) return { rows: rows.value, base: base.value, intraday: intraday.value }
+  return chartLoading.value ? last.value : null
+})
+const chartStale = computed(() => chartLoading.value && rows.value.length <= 1 && !!shown.value)
+
 // --- My holdings; a closed position shows its result for the selected (main) period.
 const h = computed(() => props.pos.holding)
 const foreign = computed(() => h.value?.currency && h.value.currency !== 'USD')
@@ -158,6 +203,10 @@ const closed = computed(() => {
   if (h.value) return null
   return (core.value?.positions || []).find((r) => r.ticker === ticker.value && !r.qty_end) || null
 })
+
+// Placeholders until the data arrives, so the card has its final layout from the first frame.
+const holdingsPending = computed(() => !h.value && !core.value)
+const nameLoading = computed(() => props.pos.name === ticker.value && !props.pos.sec.info && !loadError.value)
 
 // --- key statistics
 const KIND_KEYS = { stock: 'pos.kind.stock', preferred: 'pos.kind.preferred', fund: 'pos.kind.fund' }
@@ -181,6 +230,7 @@ const statRows = computed(() => {
   ].filter((r) => r.v != null).map((r) => ({ ...r, label: t(`pos.ks.${r.key}`) }))
 })
 const hasStats = computed(() => ranges.value.length > 0 || statRows.value.length > 0)
+const statsPending = computed(() => !hasStats.value && !props.pos.sec.info && !loadError.value)
 
 // --- big price visibility (compact header in the screen's top bar)
 const bigEl = ref(null)
