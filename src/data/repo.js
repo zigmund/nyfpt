@@ -5,6 +5,7 @@
 //   cashflows    rows                 parseCashflows rows (whole history)
 //   trades       {from, rows}         parseTrades rows since `from` (beginDate watermark)
 //   markets      {daily, intraday}    parseHloc rows for MARKET_STRIP
+//   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
 import {
@@ -12,11 +13,14 @@ import {
 } from '../calc/portfolio.js'
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
+import { daySparks } from '../calc/sparks.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { SessionExpiredError } from '../api/transport.js'
 
-const DATASETS = ['positions', 'cashflows', 'trades', 'markets']
-const TTL_OF = { positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday }
+const DATASETS = ['positions', 'cashflows', 'trades', 'markets', 'sparks']
+const TTL_OF = {
+  positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
+}
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
@@ -34,7 +38,7 @@ const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
 
 export function createRepo({ broker, db, now = () => Date.now() }) {
-  const cache = { positions: null, cashflows: null, trades: null, markets: null }
+  const cache = { positions: null, cashflows: null, trades: null, markets: null, sparks: null }
   const fetchedAt = {}
   const candles = new Map() // ticker -> [{date, close}] asc
   let cover = {}
@@ -53,6 +57,23 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     return cache.markets ? computeMarkets(cache.markets.daily, cache.markets.intraday) : null
   }
 
+  // Day sparks, recomputed only when their inputs change (state() runs on every emit).
+  let sparksMemo = { src: undefined, mkts: undefined, value: null }
+  function sparksState() {
+    if (!cache.sparks) return null
+    if (sparksMemo.src !== cache.sparks || sparksMemo.mkts !== cache.markets) {
+      sparksMemo = { src: cache.sparks, mkts: cache.markets, value: daySparks(cache.sparks.intraday, cache.markets?.intraday) }
+    }
+    return sparksMemo.value
+  }
+
+  // Tickers of the open positions (currency pairs skipped), sorted.
+  const positionTickers = () => [...new Set((cache.positions?.rows || [])
+    .filter((r) => r.kind === 'position').map((r) => r.ticker))].filter((t) => !String(t).includes('/')).sort()
+  // Cached sparks were fetched for a different set of positions.
+  const sparksOutdated = () => !!cache.positions && !!cache.sparks
+    && cache.sparks.tickers.join(',') !== positionTickers().join(',')
+
   // null = never loaded.
   function state() {
     return {
@@ -61,6 +82,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       trades: cache.trades ? cache.trades.rows : null,
       cashflows: cache.cashflows,
       markets: marketsStrip(),
+      sparks: sparksState(), // {ticker: {date, spark}}: last-session 15-min closes
+      closes: candles, // ticker -> [{date, close}] daily closes (period sparks)
       inception: inceptionFromCashflows(cache.cashflows),
       updatedAt: fetchedAt.positions ?? null,
       errors: { ...errors },
@@ -136,6 +159,16 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
         broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15),
       ])
       await save('markets', { daily: parseHloc({ answer: d }).rows, intraday: parseHloc({ answer: i }).rows })
+    },
+    // One multi-ticker request for all positions; needs the positions, so waits for their fetch.
+    // Nothing is saved without positions: the next refresh tries again.
+    async sparks() {
+      if (inflight.has('positions')) await inflight.get('positions')
+      const tickers = positionTickers()
+      if (!tickers.length) return
+      const t = today()
+      const a = await broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15)
+      await save('sparks', { tickers, intraday: parseHloc({ answer: a }).rows })
     },
   }
 
@@ -236,7 +269,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   async function refresh({ force = false, only } = {}) {
     await loadCache()
     const names = (only || DATASETS).filter((n) => DATASETS.includes(n))
-    const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n])
+    const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n]
+      || (n === 'sparks' && sparksOutdated()))
     await Promise.all(due.map(refreshOne))
   }
 

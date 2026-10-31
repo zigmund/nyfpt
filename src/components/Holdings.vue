@@ -3,6 +3,9 @@
      Period: period P&L total (same numbers as the value card) + positions open at the period end;
      before the period is computed: current positions without period columns.
      Below, in both modes: a collapsible "Closed positions" block (Day: last trading day = 1D core).
+     Rows (Yahoo style): ticker + name linking to the position card, a sparkline (Day: last session
+     15-min closes with the previous-close level; Period: daily closes over the period), price and
+     a change pill. < 48rem: CSS turns each row into a card with the other amounts on a second line.
      Separate persisted sorts in prefs.sorts. No aria-live: cells change every tick. -->
 <template>
   <section class="card" aria-labelledby="hold-h" data-test="holdings">
@@ -30,28 +33,36 @@
       <template v-if="rows">
         <p class="hold__total num" data-test="h-total">
           <span class="hold__total-label">{{ t('hold.today') }}</span>
+          <span class="hold__total-value" data-test="h-total-value">{{ fMoney(total.valueUsd, { hide: prefs.hide }) }}</span>
           <span :class="tone(total.dayChangeUsd)">{{ fMoney(total.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
           <span :class="tone(total.dayChangePct)">({{ fPct(total.dayChangePct) }})</span>
         </p>
 
-        <div class="tablebox">
-          <table class="ptable num">
+        <div class="tablebox tablebox--rows">
+          <table class="ptable htable num">
             <thead>
               <tr>
-                <th v-for="c in DAY_COLS" :key="c.key" scope="col" :class="{ 'h-narrow': c.narrow }" :aria-sort="daySort.aria(c.key)">
-                  <button type="button" class="ptable__sort" :data-sort="c.key" @click="daySort.by(c.key)">{{ t(`hold.col.${c.key}`) }}</button>
+                <th v-for="c in DAY_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : daySort.aria(c.key)">
+                  <span v-if="c.key === 'chart'" class="vh">{{ t('hold.col.chart') }}</span>
+                  <button v-else type="button" class="ptable__sort" :data-sort="c.key" @click="daySort.by(c.key)">{{ t(`hold.col.${c.key}`) }}</button>
                 </th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in daySorted" :key="r.ticker" data-test="h-row" :data-ticker="r.ticker">
-                <th scope="row">{{ r.ticker }}</th>
-                <td data-test="h-price" :class="flashes[r.ticker]">{{ fPrice(r.price) }}</td>
-                <td data-test="h-daypct" :class="tone(r.dayChangePct)">{{ fPct(r.dayChangePct) }}</td>
-                <td data-test="h-dayusd" :class="tone(r.dayChangeUsd)">{{ fMoney(r.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</td>
-                <td data-test="h-qty" class="h-narrow">{{ fQty(r.qty, prefs.hide) }}</td>
-                <td data-test="h-value">{{ fMoney(r.valueUsd, { hide: prefs.hide }) }}</td>
-                <td data-test="h-weight" class="h-narrow">{{ fWeight(r.weight * 100) }}</td>
+              <tr v-for="r in daySorted" :key="r.ticker" class="hrow" data-test="h-row" :data-ticker="r.ticker">
+                <th scope="row" class="hc-sym">
+                  <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
+                    <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>
+                    <span class="hrow__name" data-test="h-name">{{ r.name }}</span>
+                  </a>
+                </th>
+                <td class="hc-spark"><MarketSpark :spark="daySpark(r.ticker)" :prev="n(r.prevClose)" :down="(n(r.dayChangePct) ?? 0) < 0" /></td>
+                <td data-test="h-price" class="hc-price" :class="flashes[r.ticker]">{{ fPrice(r.price) }}</td>
+                <td class="hc-pill"><span data-test="h-daypct" :class="pill(r.dayChangePct)">{{ fPct(r.dayChangePct) }}</span></td>
+                <td data-test="h-dayusd" class="hc-meta" :class="tone(r.dayChangeUsd)" :data-label="t('hold.col.dayChangeUsd')">{{ fMoney(r.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</td>
+                <td data-test="h-qty" class="hc-meta hc-qty" :data-label="t('hold.col.qty')">{{ fQty(r.qty, prefs.hide) }}</td>
+                <td data-test="h-value" class="hc-meta" :data-label="t('hold.col.valueUsd')">{{ fMoney(r.valueUsd, { hide: prefs.hide }) }}</td>
+                <td data-test="h-weight" class="hc-meta hc-weight" :data-label="t('hold.col.weight')">{{ fWeight(r.weight * 100) }}</td>
               </tr>
             </tbody>
           </table>
@@ -66,30 +77,38 @@
     <template v-else-if="core">
       <p v-if="summary" class="hold__total num" :class="{ 'is-stale': stale }" data-test="h-total">
         <span class="hold__total-label">{{ periodLabel }}</span>
+        <span class="hold__total-value" data-test="h-total-value">{{ fMoney(periodValue, { hide: prefs.hide }) }}</span>
         <span :class="tone(summary.pnl)">{{ fMoney(summary.pnl, { hide: prefs.hide, sign: true }) }}</span>
         <span :class="tone(summary.twr)">({{ fPct(summary.twr) }})</span>
       </p>
 
-      <div class="tablebox" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">
-        <table class="ptable num" data-test="hp-table">
+      <div class="tablebox tablebox--rows" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">
+        <table class="ptable htable num" data-test="hp-table">
           <thead>
             <tr>
-              <th v-for="c in PERIOD_COLS" :key="c.key" scope="col" :class="{ 'h-narrow': c.narrow }" :aria-sort="periodSort.aria(c.key)">
-                <button type="button" class="ptable__sort" :data-sort="c.key" @click="periodSort.by(c.key)">{{ t(`hold.pcol.${c.key}`) }}</button>
+              <th v-for="c in PERIOD_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : periodSort.aria(c.key)">
+                <span v-if="c.key === 'chart'" class="vh">{{ t('hold.col.chart') }}</span>
+                <button v-else type="button" class="ptable__sort" :data-sort="c.key" @click="periodSort.by(c.key)">{{ t(`hold.pcol.${c.key}`) }}</button>
               </th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in periodSorted" :key="r.ticker" data-test="hp-row" :data-ticker="r.ticker">
-              <th scope="row">{{ r.ticker }}</th>
+            <tr v-for="r in periodSorted" :key="r.ticker" class="hrow" data-test="hp-row" :data-ticker="r.ticker">
+              <th scope="row" class="hc-sym">
+                <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
+                  <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>
+                  <span class="hrow__name" data-test="h-name">{{ r.name }}</span>
+                </a>
+              </th>
+              <td class="hc-spark"><MarketSpark :spark="periodSparks[r.ticker] || EMPTY" :prev="null" :down="(n(r.change_pct) ?? 0) < 0" /></td>
               <td data-test="hp-status" class="h-narrow ptable__st">{{ statusText(r.status) }}</td>
               <td data-test="hp-qstart" class="h-narrow">{{ fQty(r.qty_start, prefs.hide) }}</td>
-              <td data-test="hp-qend">{{ fQty(r.qty_end, prefs.hide) }}</td>
-              <td data-test="hp-price" class="h-narrow">{{ fPrice(r.price_end) }}</td>
-              <td data-test="hp-pct" :class="tone(r.change_pct)">{{ fPct(r.change_pct) }}</td>
-              <td data-test="hp-pnl" :class="tone(r.pnl)">{{ fMoney(r.pnl, { hide: prefs.hide, sign: true }) }}</td>
-              <td data-test="hp-value">{{ fMoney(r.value, { hide: prefs.hide }) }}</td>
-              <td data-test="hp-weight">{{ fWeight(r.weight) }}</td>
+              <td data-test="hp-qend" class="hc-meta hc-qty" :data-label="t('hold.col.qty')">{{ fQty(r.qty_end, prefs.hide) }}</td>
+              <td data-test="hp-price" class="hc-price">{{ fPrice(r.price_end) }}</td>
+              <td class="hc-pill"><span data-test="hp-pct" :class="pill(r.change_pct)">{{ fPct(r.change_pct) }}</span></td>
+              <td data-test="hp-pnl" class="hc-meta" :class="tone(r.pnl)" :data-label="t('hold.pcol.pnl')">{{ fMoney(r.pnl, { hide: prefs.hide, sign: true }) }}</td>
+              <td data-test="hp-value" class="hc-meta" :data-label="t('hold.pcol.value')">{{ fMoney(r.value, { hide: prefs.hide }) }}</td>
+              <td data-test="hp-weight" class="hc-meta hc-weight" :data-label="t('hold.pcol.weight')">{{ fWeight(r.weight) }}</td>
             </tr>
           </tbody>
         </table>
@@ -174,6 +193,8 @@ import { computed, onBeforeUnmount, reactive, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fMoney, fPct, fPrice, fQty, fWeight, tone, n, PERIOD_LABELS } from '../display.js'
 import { holdingsRows, holdingsTotal } from '../calc/live.js'
+import { periodSpark } from '../calc/sparks.js'
+import MarketSpark from './MarketSpark.vue'
 import { useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
 
@@ -185,19 +206,21 @@ const props = defineProps({
   period: { type: String, default: 'YTD' },
 })
 
+// 'chart' is the sparkline column (not sortable).
 const DAY_COLS = [
-  { key: 'ticker' }, { key: 'price' }, { key: 'dayChangePct' }, { key: 'dayChangeUsd' },
-  { key: 'qty', narrow: true }, { key: 'valueUsd' }, { key: 'weight', narrow: true },
+  { key: 'ticker' }, { key: 'chart' }, { key: 'price' }, { key: 'dayChangePct' }, { key: 'dayChangeUsd' },
+  { key: 'qty' }, { key: 'valueUsd' }, { key: 'weight' },
 ]
 const PERIOD_COLS = [
-  { key: 'ticker' }, { key: 'status', narrow: true }, { key: 'qty_start', narrow: true }, { key: 'qty_end' },
-  { key: 'price_end', narrow: true }, { key: 'change_pct' }, { key: 'pnl' }, { key: 'value' }, { key: 'weight' },
+  { key: 'ticker' }, { key: 'chart' }, { key: 'status', narrow: true }, { key: 'qty_start', narrow: true }, { key: 'qty_end' },
+  { key: 'price_end' }, { key: 'change_pct' }, { key: 'pnl' }, { key: 'value' }, { key: 'weight' },
 ]
 const CLOSED_COLS = [{ key: 'ticker' }, { key: 'qty_start' }, { key: 'change_pct' }, { key: 'pnl' }]
 const TEXT_KEYS = new Set(['ticker', 'status'])
 // computeCore reports status in Russian; mapped to English labels (closed rows are listed separately).
 const STATUS = { 'новая': 'new', 'докуплена': 'added', 'сокращена': 'reduced' }
 const CLOSED_ID = 'hold-closed'
+const EMPTY = Object.freeze([])
 const FLASH_MS = 600
 
 const app = useApp()
@@ -206,6 +229,10 @@ const { prefs, live } = app
 const mode = computed(() => (prefs.holdingsMode === 'period' ? 'period' : 'day'))
 const periodLabel = computed(() => PERIOD_LABELS[props.period] || props.period)
 const statusText = (s) => (STATUS[s] ? t(`hold.status.${STATUS[s]}`) : '')
+const headClass = (c) => ({ 'h-narrow': c.narrow, 'hc-spark': c.key === 'chart' })
+const pill = (v) => ['pill', `pill--${tone(v) || 'flat'}`]
+// Position card route (Task 20); a no-op until the route exists.
+const posHref = (ticker) => `#/position/${encodeURIComponent(ticker)}`
 
 /** Sort persisted in prefs.sorts[name]; text columns start ascending, numbers descending. */
 function tableSort(name, cols, fallback, valueOf = (r, key) => r[key]) {
@@ -241,12 +268,25 @@ const rows = computed(() => {
 const total = computed(() => holdingsTotal(rows.value || []))
 const daySort = tableSort('holdings', DAY_COLS, { key: 'valueUsd', dir: -1 })
 const daySorted = computed(() => daySort.apply(rows.value || []))
+// Last-session closes from the repo (state.sparks); none yet: an empty spark of the same height.
+const daySpark = (ticker) => app.state.value?.sparks?.[ticker]?.spark || EMPTY
 
 // Period: positions still open at the period end.
 const summary = computed(() => props.core?.summary || null)
 const periodSort = tableSort('holdingsPeriod', PERIOD_COLS, { key: 'pnl', dir: -1 },
   (r, key) => (key === 'status' ? statusText(r.status) : r[key]))
 const periodSorted = computed(() => periodSort.apply((props.core?.positions || []).filter((r) => r.qty_end)))
+const periodValue = computed(() => periodSorted.value.reduce((s, r) => s + (n(r.value) ?? 0), 0))
+// Daily closes (state.closes) between the period base and end, framed by price_start / price_end.
+const periodSparks = computed(() => {
+  const s = summary.value
+  const closes = app.state.value?.closes
+  const out = {}
+  for (const r of periodSorted.value) {
+    out[r.ticker] = periodSpark(closes?.get?.(r.ticker), s?.base_close, s?.end, n(r.price_start), n(r.price_end))
+  }
+  return out
+})
 const current = computed(() => {
   const list = app.state.value?.positions
   if (!list) return null

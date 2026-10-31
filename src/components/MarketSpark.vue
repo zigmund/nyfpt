@@ -1,4 +1,4 @@
-<!-- Sparkline of one market card. -->
+<!-- Sparkline of one market card or holdings row; an empty spark keeps its height. -->
 <template>
   <div ref="el" class="spark" aria-hidden="true" />
 </template>

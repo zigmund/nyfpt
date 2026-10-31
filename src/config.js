@@ -19,6 +19,7 @@ export const TTL = {
   quotes: 60e3,
   markets: 60e3,
   intraday: 60e3,
+  sparks: 5 * 60e3, // holdings sparklines: 15-min candles
 }
 export const POLL_MS = 60e3
 export const LIVE_RECALC_MS = 3000

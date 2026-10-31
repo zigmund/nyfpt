@@ -84,6 +84,7 @@ const en = {
   'hold.title': 'Holdings',
   'hold.today': 'Today',
   'hold.col.ticker': 'Symbol',
+  'hold.col.chart': 'Chart',
   'hold.col.price': 'Price',
   'hold.col.dayChangePct': 'Day %',
   'hold.col.dayChangeUsd': 'Day $',

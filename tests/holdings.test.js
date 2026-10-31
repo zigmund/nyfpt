@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick, reactive, ref } from 'vue'
 import Holdings from '../src/components/Holdings.vue'
+import MarketSpark from '../src/components/MarketSpark.vue'
+import { daySparks, periodSpark } from '../src/calc/sparks.js'
 import { installApp } from '../src/composables/useApp.js'
 import { money, pct } from '../src/format.js'
 import { computeCore } from '../src/calc/portfolio.js'
@@ -49,11 +51,18 @@ const CORE_YTD = computeCore(POSITIONS, TRADES, [], pricesFrom('2025-12-31'))
 const CORE_1D = computeCore(POSITIONS, TRADES, [], pricesFrom('2026-10-29'))
 // No position closed over the period.
 const CORE_OPEN = { ...CORE_YTD, positions: CORE_YTD.positions.filter((r) => r.qty_end) }
+// Day sparks (last session, 15-min closes) as repo.state().sparks; CCC has none.
+const SPARKS = {
+  'AAA.US': { date: '2026-10-30', spark: [98, 99.5, 99, 100] },
+  'BBB.US': { date: '2026-10-30', spark: [52, 51, 50.5, 50] },
+}
+// Daily closes per ticker as repo.state().closes.
+const CLOSES_MAP = new Map(Object.entries(CLOSES).map(([tk, cs]) => [tk, DATES.map((date, i) => ({ date, close: cs[i] }))]))
 
 function setup({ prefs = {}, isLive = false, cores = { '1d': CORE_1D } } = {}) {
   const quotes = new Map()
   const app = {
-    state: ref({ rawPs: PS, positions: POSITIONS, trades: TRADES }),
+    state: ref({ rawPs: PS, positions: POSITIONS, trades: TRADES, sparks: SPARKS, closes: CLOSES_MAP }),
     tick: ref(0),
     live: { isLive: ref(isLive), usOpen: ref(false), quotes },
     prefs: reactive({ hide: false, sorts: {}, ...prefs }),
@@ -74,6 +83,7 @@ const pTickers = (w) => w.findAll('[data-test="hp-row"]').map((r) => r.attribute
 const cTickers = (w) => w.findAll('[data-test="hc-row"]').map((r) => r.attributes('data-ticker'))
 const fWeightOf = (tk) => `${CORE_YTD.positions.find((r) => r.ticker === tk).weight.toFixed(1)}%`
 const mountH = (props = {}) => mount(Holdings, { props: { core: CORE_YTD, period: 'YTD', ...props } })
+const sparkOf = (row) => row.findComponent(MarketSpark).props()
 
 beforeEach(() => { vi.useFakeTimers() })
 afterEach(() => { vi.useRealTimers(); installApp(null) })
@@ -188,7 +198,7 @@ describe('Holdings: Day / period switch', () => {
     setup({ prefs: { holdingsMode: 'period' } })
     const w = mountH()
     const heads = w.findAll('[data-test="hp-table"] thead th').map((x) => x.text())
-    expect(heads).toEqual(['Symbol', 'Status', 'Qty start', 'Qty end', 'Price', 'Range %', 'Range $', 'Value', 'Weight'])
+    expect(heads).toEqual(['Symbol', t('hold.col.chart'), 'Status', 'Qty start', 'Qty end', 'Price', 'Range %', 'Range $', 'Value', 'Weight'])
     // AAA +100, CCC 0, BBB -1 (bought at 50 + commission 1, ends at 50)
     expect(pTickers(w)).toEqual(['AAA.US', 'CCC.US', 'BBB.US'])
     const bbb = w.get('[data-test="hp-row"][data-ticker="BBB.US"]')
@@ -200,8 +210,8 @@ describe('Holdings: Day / period switch', () => {
     expect(aaa.get('[data-test="hp-pct"]').text()).toBe(pct((100 / 90 - 1) * 100))
     expect(aaa.get('[data-test="hp-pnl"]').text()).toBe(money(100, { sign: true }))
     expect(aaa.get('[data-test="hp-value"]').text()).toBe(money(1000))
-    // Status, Qty start and Price are hidden on narrow screens.
-    for (const k of ['status', 'qty_start', 'price_end']) {
+    // Status and Qty start are hidden on narrow screens (the position card has them).
+    for (const k of ['status', 'qty_start']) {
       expect(w.get(`[data-test="hp-table"] [data-sort="${k}"]`).element.closest('th').classList.contains('h-narrow')).toBe(true)
     }
   })
@@ -328,8 +338,8 @@ describe('Holdings: Day / period switch', () => {
     setup({ prefs: { holdingsMode: 'period', hide: true, holdingsClosedOpen: true } })
     const w = mountH()
     const cells = w.get('[data-test="hp-row"][data-ticker="AAA.US"]').findAll('td').map((x) => x.text())
-    // status, start, end, price, Range %, Range $, value, weight
-    expect(cells).toEqual(['', '***', '***', '100.00', pct((100 / 90 - 1) * 100), '***', '***', fWeightOf('AAA.US')])
+    // chart, status, start, end, price, Range %, Range $, value, weight
+    expect(cells).toEqual(['', '', '***', '***', '100.00', pct((100 / 90 - 1) * 100), '***', '***', fWeightOf('AAA.US')])
     const closed = w.get('[data-test="hc-row"][data-ticker="DDD.US"]').findAll('td').map((x) => x.text())
     expect(closed).toEqual(['***', pct((21 / 18 - 1) * 100), '***'])
     const total = w.get('[data-test="h-total"]').text()
@@ -351,7 +361,145 @@ describe('Holdings: Day / period switch', () => {
   })
 })
 
+describe('Holdings: Yahoo-style rows', () => {
+  it('Day row: ticker and name in a link to the position card, price, change pill', () => {
+    setup()
+    const w = mountH()
+    const row = w.get('[data-test="h-row"][data-ticker="AAA.US"]')
+    const link = row.get('a[data-test="h-link"]')
+    expect(link.attributes('href')).toBe('#/position/AAA.US')
+    expect(link.get('[data-test="h-sym"]').text()).toBe('AAA.US')
+    expect(link.get('[data-test="h-name"]').text()).toBe('Alpha')
+    expect(row.get('[data-test="h-price"]').text()).toBe('100.00')
+    const pill = row.get('[data-test="h-daypct"]')
+    expect(pill.text()).toBe(pct(((100 - 98) / 98) * 100))
+    expect(pill.classes()).toEqual(expect.arrayContaining(['pill', 'pill--pos']))
+    expect(w.get('[data-ticker="BBB.US"] [data-test="h-daypct"]').classes()).toContain('pill--neg')
+    expect(w.get('[data-ticker="CCC.US"] [data-test="h-daypct"]').classes()).toContain('pill--flat') // 0 %
+  })
+
+  it('link URL-encodes the ticker', () => {
+    const { app } = setup()
+    app.state.value = { ...app.state.value, rawPs: { ...PS, pos: [{ ...PS.pos[0], i: 'A&B/C.US' }] } }
+    const w = mountH()
+    expect(w.get('[data-test="h-link"]').attributes('href')).toBe('#/position/A%26B%2FC.US')
+  })
+
+  it('Day spark: last-session closes from the repo, previous-close level, tone by the day change', () => {
+    setup()
+    const w = mountH()
+    expect(sparkOf(w.get('[data-ticker="AAA.US"]'))).toEqual({ spark: [98, 99.5, 99, 100], prev: 98, down: false })
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [52, 51, 50.5, 50], prev: 52, down: true })
+    // No data: an empty spark of the same height (no skeleton swap, no jump when it arrives).
+    const ccc = w.get('[data-ticker="CCC.US"]')
+    expect(sparkOf(ccc).spark).toEqual([])
+    expect(ccc.find('.spark').exists()).toBe(true)
+  })
+
+  it('Period spark: closes over the period from the start price to the end price, tone by Range %', () => {
+    setup({ prefs: { holdingsMode: 'period' } })
+    const w = mountH()
+    const aaa = w.get('[data-test="hp-row"][data-ticker="AAA.US"]')
+    expect(aaa.get('a[data-test="h-link"]').attributes('href')).toBe('#/position/AAA.US')
+    expect(aaa.get('[data-test="h-name"]').text()).toBe('Alpha')
+    // base 2025-12-31 (90) -> 95, 96, 98 -> end 2026-10-30 (100)
+    expect(sparkOf(aaa)).toEqual({ spark: [90, 95, 96, 98, 100], prev: null, down: false })
+    const pill = aaa.get('[data-test="hp-pct"]')
+    expect(pill.classes()).toEqual(expect.arrayContaining(['pill', 'pill--pos']))
+    expect(aaa.get('[data-test="hp-price"]').text()).toBe('100.00')
+  })
+
+  it('total line: holdings value, then change $ and %', () => {
+    setup()
+    const w = mountH()
+    expect(w.get('[data-test="h-total-value"]').text()).toBe(money(4000))
+    installApp(null)
+    setup({ prefs: { holdingsMode: 'period' } })
+    const p = mountH()
+    const open = CORE_YTD.positions.filter((r) => r.qty_end).reduce((s, r) => s + r.value, 0)
+    expect(p.get('[data-test="h-total-value"]').text()).toBe(money(open))
+  })
+
+  it('hide amounts: total value and row amounts ***, the pill and price stay', () => {
+    setup({ prefs: { hide: true } })
+    const w = mountH()
+    expect(w.get('[data-test="h-total-value"]').text()).toBe('***')
+    const row = w.get('[data-ticker="AAA.US"]')
+    expect(row.get('[data-test="h-daypct"]').text()).toBe(pct(((100 - 98) / 98) * 100))
+    expect(row.get('[data-test="h-price"]').text()).toBe('100.00')
+    expect(row.text()).not.toContain('$')
+  })
+
+  it('second-line cells carry their labels for the mobile card layout', () => {
+    setup()
+    const w = mountH()
+    const row = w.get('[data-ticker="AAA.US"]')
+    expect(row.get('[data-test="h-dayusd"]').attributes('data-label')).toBe(t('hold.col.dayChangeUsd'))
+    expect(row.get('[data-test="h-value"]').attributes('data-label')).toBe(t('hold.col.valueUsd'))
+  })
+})
+
+describe('sparks calc', () => {
+  // Broker-like 15-min rows: date as parseHloc derives it, ts in seconds.
+  const bar = (ticker, date, hhmm, close) => {
+    const [h, m] = hhmm.split(':').map(Number)
+    return { ticker, date, ts: Date.parse(`${date}T00:00:00Z`) / 1000 + h * 3600 + m * 60, close }
+  }
+  const IDX = [
+    bar('SP500.IDX', '2026-10-29', '09:30', 1), bar('SP500.IDX', '2026-10-29', '15:45', 1),
+    bar('SP500.IDX', '2026-10-30', '09:30', 1), bar('SP500.IDX', '2026-10-30', '15:45', 1),
+  ]
+
+  it('US tickers: the last S&P 500 session, regular hours only', () => {
+    const rows = [
+      bar('AAA.US', '2026-10-29', '10:00', 5),
+      bar('AAA.US', '2026-10-30', '08:00', 9), // pre-market
+      bar('AAA.US', '2026-10-30', '09:30', 10), bar('AAA.US', '2026-10-30', '12:00', 11),
+      bar('AAA.US', '2026-10-30', '15:45', 12),
+      bar('AAA.US', '2026-10-30', '17:00', 13), // post-market
+      bar('AAA.US', '2026-10-31', '08:00', 14), // pre-market of a day without an index session yet
+    ]
+    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
+  })
+
+  it('other markets (KZ): their own last session', () => {
+    const rows = [
+      bar('CCC_KZ.KZ', '2026-10-30', '11:30', 3),
+      bar('CCC_KZ.KZ', '2026-10-31', '11:30', 4), bar('CCC_KZ.KZ', '2026-10-31', '12:00', 5),
+    ]
+    expect(daySparks(rows, IDX)['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
+  })
+
+  it('US tickers without index candles: their own last date', () => {
+    const rows = [bar('AAA.US', '2026-10-29', '10:00', 5), bar('AAA.US', '2026-10-30', '10:00', 6), bar('AAA.US', '2026-10-30', '10:15', 7)]
+    expect(daySparks(rows, [])['AAA.US']).toEqual({ date: '2026-10-30', spark: [6, 7] })
+  })
+
+  it('periodSpark: start price, closes strictly inside (from, to), end price', () => {
+    const cs = [['2026-01-01', 1], ['2026-01-02', 2], ['2026-01-05', 3], ['2026-01-06', 4]].map(([date, close]) => ({ date, close }))
+    expect(periodSpark(cs, '2026-01-01', '2026-01-06', 1.5, 4.5)).toEqual([1.5, 2, 3, 4.5])
+    expect(periodSpark(undefined, '2026-01-01', '2026-01-06', 1.5, 4.5)).toEqual([1.5, 4.5])
+    expect(periodSpark(cs, '2026-01-01', '2026-01-06', null, 4.5)).toEqual([2, 3, 4.5])
+  })
+})
+
 describe('dev mock (?mock)', () => {
+  it('serves intraday candles for position tickers (sparks under ?mock)', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { parseHloc } = await import('../src/calc/portfolio.js')
+    const b = createMockBroker()
+    const tickers = ['AAA.US', 'BBB.US', 'CCC_KZ.KZ']
+    const today = new Date().toISOString().slice(0, 10)
+    const from = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10)
+    const to = new Date(Date.now() + 864e5).toISOString().slice(0, 10)
+    const pending = Promise.all([b.hlocIntraday(tickers, from, to, 15), b.hlocIntraday(['SP500.IDX'], from, to, 15)])
+    await vi.advanceTimersByTimeAsync(1000)
+    const [pos, idx] = (await pending).map((a) => parseHloc({ answer: a }).rows)
+    const sp = daySparks(pos, idx)
+    for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
+  })
+
+
   it('positions carry close_price, so Day % and Day $ show outside live mode', async () => {
     const { createMockBroker } = await import('../src/dev/mock.js')
     const { holdingsRows, holdingsTotal } = await import('../src/calc/live.js')

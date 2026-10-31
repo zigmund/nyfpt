@@ -28,7 +28,7 @@ function fixtureSeries() {
 function fakeBroker() {
   const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [] }
   const b = {
-    calls, fail: {}, series: fixtureSeries(), gate: null,
+    calls, fail: {}, series: fixtureSeries(), intraday: {}, gate: null,
     async positions() {
       calls.positions++; await b.gate
       if (b.fail.positions) throw b.fail.positions
@@ -54,9 +54,18 @@ function fakeBroker() {
         return i < 0 ? [] : rows.slice(Math.max(0, i + count + 1))
       })
     },
+    // b.intraday: {ticker: [[date, 'HH:MM', close]]}
     async hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
       calls.hlocIntraday.push({ tickers: [...tickers], dateFrom, dateTo, timeframe }); await b.gate
-      return { hloc: {}, xSeries: {} }
+      if (b.fail.hlocIntraday) throw b.fail.hlocIntraday
+      const a = { hloc: {}, xSeries: {} }
+      for (const t of tickers) {
+        const rows = b.intraday[t] || []
+        if (!rows.length) continue
+        a.hloc[t] = rows.map(([, , c]) => [c, c, c, c])
+        a.xSeries[t] = rows.map(([d, hm]) => tsOf(d) + Number(hm.slice(0, 2)) * 3600 + Number(hm.slice(3)) * 60)
+      }
+      return a
     },
   }
   function answer(tickers, pick) {
@@ -79,7 +88,9 @@ describe('repo', () => {
     clock = T0
   })
   const mk = (broker) => createRepo({ broker, db, now: () => clock })
-  const counts = (b) => [b.calls.positions, b.calls.cashflows, b.calls.hlocIntraday.length]
+  const stripIntraday = (b) => b.calls.hlocIntraday.filter((c) => c.tickers[0] === STRIP[0])
+  const sparkCalls = (b) => b.calls.hlocIntraday.filter((c) => c.tickers[0] !== STRIP[0])
+  const counts = (b) => [b.calls.positions, b.calls.cashflows, stripIntraday(b).length]
 
   it('load emits cached state before network', async () => {
     const old = { ticker: 'OLD.US', name: 'Old', kind: 'position', qty: 1, price: 1, value: 1 }
@@ -332,9 +343,72 @@ describe('repo', () => {
     repo.subscribe((s) => { st = s })
     await repo.load()
     expect(b.calls.hlocDaily).toEqual([{ tickers: STRIP, dateFrom: '2026-10-02', count: -1 }])
-    expect(b.calls.hlocIntraday).toEqual([{ tickers: STRIP, dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
+    expect(stripIntraday(b)).toEqual([{ tickers: STRIP, dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
     expect(repo.marketsStrip()[0]).toMatchObject({ ticker: 'SP500.IDX', last: 6060, prev: 6000, change_pct: 1 })
     expect(st.markets).toEqual(repo.marketsStrip())
+  })
+
+  it('position sparks: one multi-ticker 15-min request for the positions, day sparks in state', async () => {
+    const b = fakeBroker()
+    b.intraday = {
+      'SP500.IDX': [['2026-10-09', '09:30', 1], ['2026-10-09', '15:45', 1], ['2026-10-12', '09:30', 1], ['2026-10-12', '15:45', 1]],
+      'AAA.US': [['2026-10-09', '10:00', 7], ['2026-10-12', '09:30', 8], ['2026-10-12', '15:45', 9], ['2026-10-12', '17:00', 10]],
+      'CCC_KZ.KZ': [['2026-10-12', '11:30', 3], ['2026-10-13', '11:30', 4], ['2026-10-13', '11:45', 5]],
+    }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    // Positions only (cash rows skipped), sorted; the same window as the markets strip.
+    expect(sparkCalls(b)).toEqual([{ tickers: ['AAA.US', 'BBB.US', 'CCC_KZ.KZ'], dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
+    expect(st.sparks['AAA.US']).toEqual({ date: '2026-10-12', spark: [8, 9] }) // US: S&P 500 session, regular hours
+    expect(st.sparks['CCC_KZ.KZ']).toEqual({ date: '2026-10-13', spark: [4, 5] }) // KZ: its own last session
+    expect(st.sparks['BBB.US']).toBeUndefined()
+    expect((await db.getKv('sparks')).data.tickers).toEqual(['AAA.US', 'BBB.US', 'CCC_KZ.KZ'])
+  })
+
+  it('position sparks: cached with a 5-minute TTL, refetched when the positions change', async () => {
+    const b = fakeBroker()
+    await mk(b).load()
+    expect(sparkCalls(b)).toHaveLength(1)
+    clock += 100e3 // positions and markets stale, sparks fresh
+    let repo = mk(b)
+    await repo.load()
+    expect(counts(b)).toEqual([2, 1, 2])
+    expect(sparkCalls(b)).toHaveLength(1)
+    clock += 200e3 // 5 min since the first fetch
+    repo = mk(b)
+    await repo.load()
+    expect(sparkCalls(b)).toHaveLength(2)
+
+    const ps = clone(fx.getPositionJson.result.ps)
+    ps.pos.push({ i: 'DDD.US', name: 'Delta', q: 2, mkt_price: 22, market_value: 44 })
+    await repo.applyPortfolio(ps)
+    await repo.refresh()
+    expect(sparkCalls(b)).toHaveLength(3)
+    expect(sparkCalls(b).at(-1).tickers).toEqual(['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'DDD.US'])
+  })
+
+  it('position sparks: a failure is reported and keeps the cached sparks', async () => {
+    const b = fakeBroker()
+    b.intraday = { 'AAA.US': [['2026-10-12', '10:00', 1], ['2026-10-12', '10:15', 2]] }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    b.fail.hlocIntraday = new Error('Bad request')
+    await repo.refresh({ force: true, only: ['sparks'] })
+    expect(st.errors.sparks).toBe('Bad request')
+    expect(st.sparks['AAA.US'].spark).toEqual([1, 2])
+  })
+
+  it('state.closes: cached daily closes per ticker (period sparks)', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(st.closes.get('AAA.US')).toEqual(await db.getCandles('AAA.US'))
   })
 
   it('derives today in America/New_York', async () => {
