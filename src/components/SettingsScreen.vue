@@ -23,6 +23,16 @@
 
     <section class="card" aria-labelledby="set-display">
       <h2 id="set-display" class="label">{{ t('settings.display') }}</h2>
+      <div class="field">
+        <span id="set-theme" class="toggle__title">{{ t('settings.theme') }}</span>
+        <div class="seg" role="group" aria-labelledby="set-theme">
+          <button
+            v-for="o in THEME_OPTIONS" :key="o.value" type="button" class="seg__btn"
+            :aria-pressed="prefs.theme === o.value ? 'true' : 'false'" :data-test="`theme-${o.value}`"
+            @click="prefs.theme = o.value"
+          >{{ t(o.label) }}</button>
+        </div>
+      </div>
       <label class="toggle">
         <span class="toggle__text">
           <span class="toggle__title">{{ t('settings.hide') }}</span>
@@ -55,6 +65,12 @@
 import { computed, ref } from 'vue'
 import { t } from '../i18n.js'
 import { useApp } from '../composables/useApp.js'
+
+const THEME_OPTIONS = [
+  { value: 'system', label: 'settings.themeSystem' },
+  { value: 'light', label: 'settings.themeLight' },
+  { value: 'dark', label: 'settings.themeDark' },
+]
 
 const app = useApp()
 const { session, prefs, logout } = app

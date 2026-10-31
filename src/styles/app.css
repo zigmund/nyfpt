@@ -1,7 +1,7 @@
 /* Shared tokens, base styles, shell, login, settings, main and compare screens. */
 
 :root {
-  /* Color: light theme only (see docs/UI.md) */
+  /* Color: light theme (default); dark overrides follow in :root[data-theme="dark"] */
   --c-bg: #F1F3F2;
   --c-panel: #FFFFFF;
   --c-fg: #17201C;
@@ -22,6 +22,12 @@
   --c-series-ndx: #6B7378;      /* compare chart: Nasdaq 100 */
   --c-bar-pos: #6DBE8C;         /* contribution bars */
   --c-bar-neg: #EC8A82;
+  --c-on-accent: #FFFFFF;       /* text on accent buttons */
+  --c-thumb: #FFFFFF;           /* switch thumb */
+  --c-shadow: rgba(23, 32, 28, .25);
+  --c-shadow-soft: rgba(23, 32, 28, .1);
+  --c-neg-line: rgba(217, 83, 79, .45);
+  --c-overlay: rgba(241, 243, 242, .86);
 
   /* Type */
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -48,6 +54,38 @@
   --safe-l: env(safe-area-inset-left, 0px);
 
   color-scheme: light;
+}
+
+/* Dark palette: near-black neutral, WCAG AA (small text >= 4.5:1, graphics >= 3:1); checked in tests/theme.test.js */
+:root[data-theme="dark"] {
+  --c-bg: #0D0F0E;
+  --c-panel: #161A18;
+  --c-fg: #E9EDEB;
+  --c-muted: #9DAAA3;
+  --c-line: #2A312E;
+  --c-line-strong: #454E4A;
+  --c-accent: #3FBF76;
+  --c-accent-ink: #52CC85;
+  --c-accent-soft: rgba(63, 191, 118, .16);
+  --c-amber: #E8A53C;
+  --c-amber-soft: rgba(232, 165, 60, .14);
+  --c-pos: #3FBF76;
+  --c-neg: #FF7B73;
+  --c-neg-ink: #FF8F88;
+  --c-neg-soft: rgba(255, 123, 115, .14);
+  --c-skel: #222825;
+  --c-series-spy: #A3ACB1;
+  --c-series-ndx: #7F8A91;
+  --c-bar-pos: #3FBF76;
+  --c-bar-neg: #FF7B73;
+  --c-on-accent: #06140C;
+  --c-thumb: #E9EDEB;
+  --c-shadow: rgba(0, 0, 0, .5);
+  --c-shadow-soft: rgba(0, 0, 0, .5);
+  --c-neg-line: rgba(255, 123, 115, .5);
+  --c-overlay: rgba(13, 15, 14, .86);
+
+  color-scheme: dark;
 }
 
 /* ---------- base ---------- */
@@ -273,14 +311,14 @@ button, input, select { font: inherit; color: inherit; }
 .btn--primary {
   background: var(--c-accent);
   border-color: var(--c-accent);
-  color: #FFFFFF;
+  color: var(--c-on-accent);
 }
 
 .btn--primary:hover:not(:disabled) { background: var(--c-accent-ink); border-color: var(--c-accent-ink); }
 
 .btn--danger {
   color: var(--c-neg-ink);
-  border-color: rgba(217, 83, 79, .45);
+  border-color: var(--c-neg-line);
 }
 
 .btn--danger:hover:not(:disabled) { background: var(--c-neg-soft); border-color: var(--c-neg); }
@@ -430,8 +468,8 @@ button, input, select { font: inherit; color: inherit; }
   width: calc(1.625rem - 6px);
   height: calc(1.625rem - 6px);
   border-radius: 50%;
-  background: #FFFFFF;
-  box-shadow: 0 1px 2px rgba(23, 32, 28, .25);
+  background: var(--c-thumb);
+  box-shadow: 0 1px 2px var(--c-shadow);
   transition: transform .2s;
 }
 
@@ -459,7 +497,7 @@ button, input, select { font: inherit; color: inherit; }
   inset: 0;
   z-index: 10;
   overflow-y: auto;
-  background: rgba(241, 243, 242, .86);
+  background: var(--c-overlay);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
@@ -771,7 +809,7 @@ button, input, select { font: inherit; color: inherit; }
   background: var(--c-panel);
   border: 1px solid var(--c-line);
   border-radius: var(--radius-sm);
-  box-shadow: 0 4px 14px rgba(23, 32, 28, .1);
+  box-shadow: 0 4px 14px var(--c-shadow-soft);
   padding: var(--gap-xs) var(--gap);
   font-size: var(--fs-caption);
   white-space: nowrap;

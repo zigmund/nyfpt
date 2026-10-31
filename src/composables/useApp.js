@@ -10,6 +10,10 @@ import { loadSession, saveSession, clearSession, loadPrefs, savePrefs } from '..
 import { createRepo } from '../data/repo.js'
 import { createLive } from '../data/live.js'
 
+export const THEMES = ['system', 'light', 'dark']
+// Page background per resolved theme, mirrored into <meta name="theme-color"> (keep in sync with app.css --c-bg).
+const THEME_BG = { light: '#F1F3F2', dark: '#0D0F0E' }
+
 export const ROUTES = ['/', '/login', '/compare', '/settings']
 
 const defaultDeps = () => ({
@@ -65,7 +69,7 @@ export const parseHash = (h) => {
  *   state        ShallowRef     latest repo state (see data/repo.js), null before an account is open
  *   tick         Ref<number>    bumped on every repo emit and live 'update'
  *   live         { isLive: Ref<boolean>, usOpen: Ref<boolean>, quotes: Map }
- *   prefs        reactive prefs (persisted)
+ *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
  *   route        Ref<'/' | '/login' | '/compare' | '/settings'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
@@ -97,6 +101,19 @@ export function createAppState(overrides = {}) {
   let started = false
 
   watch(prefs, (p) => deps.prefsStore.save({ ...p }), { deep: true })
+
+  // --- theme: prefs.theme -> <html data-theme>, meta tags; 'system' follows prefers-color-scheme
+  if (!THEMES.includes(prefs.theme)) prefs.theme = 'light'
+  const media = win?.matchMedia ? win.matchMedia('(prefers-color-scheme: dark)') : null
+  function applyTheme() {
+    if (!doc) return
+    const resolved = prefs.theme === 'system' ? (media?.matches ? 'dark' : 'light') : prefs.theme
+    doc.documentElement.setAttribute('data-theme', resolved)
+    doc.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_BG[resolved])
+    doc.querySelector('meta[name="color-scheme"]')?.setAttribute('content', resolved)
+  }
+  watch(() => prefs.theme, applyTheme, { flush: 'sync' })
+  applyTheme()
 
   function bump() {
     const on = !!liveObj && !expired.value
@@ -195,6 +212,7 @@ export function createAppState(overrides = {}) {
     started = true
     win?.addEventListener('hashchange', onHash)
     doc?.addEventListener('visibilitychange', onVisibility)
+    media?.addEventListener('change', applyTheme)
     let s = deps.sessionStore.load()
     // A session from a removed cabinet (older builds) is unusable.
     if (s && !CABINETS.some((c) => c.id === s.cabinetId)) {
@@ -228,6 +246,7 @@ export function createAppState(overrides = {}) {
     started = false
     win?.removeEventListener('hashchange', onHash)
     doc?.removeEventListener('visibilitychange', onVisibility)
+    media?.removeEventListener('change', applyTheme)
     detach()
   }
 
