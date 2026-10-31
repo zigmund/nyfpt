@@ -702,13 +702,17 @@ POST https://tradernet.kz/api/getHloc
 - **`getCrossRatesForDate`** — публичная [ПРОВЕРЕНО]. Параметры: `base_currency`*, `currencies`* (массив), `date` (`YYYY-MM-DD`, опц., иначе сегодня). Ответ `{rates:{KZT:440.86, EUR:0.885…}}`, то есть единиц валюты за 1 базовую.
 - Раздел «Список валют» — статическая таблица кодов.
 
-### 5.11. Новости (V3)
+### 5.11. Новости (спайк Task 15, 2026-11-01)
 
-- `getNewsProvidersList {lang}` → `{list:[{alias, name, newsLanguage}]}`. Провайдеры: `fbrokerkz`, `Oninvest`, `OninvestCompanyNews`.
-- `getNewsList {ticker, provider, lang, take 1..100, skip}` → `{list:[{id, title, provider, providerAlias, lang, date, url, sentiment, tickers[], images[]}], total, take, skip}`.
-- `getNewsDetail {id}` → `{id, title, text (HTML), …, dateTime, timeZone}`.
-- Ошибки `{error:"Validation failed",code:400}`, `{error:"Новость не найдена",code:404}`.
-- [MCP] есть ещё `getCombinedNews` (ответ `items`).
+Проверено из браузера с чужого origin (`http://localhost:5173`), form POST `q={cmd,SID,params}` на `tradernet.global`, реальный счёт (viewOnly).
+
+- **Доступ**: через SID работает, CORS проходит **[ПРОВЕРЕНО]**. Анонимно (без SID) любой тикер/язык: HTTP 200 и `{"error":"Invalid CSRF","code":12}` **[НЕ РАБОТАЕТ]**. Вход нужен.
+- `getNewsList {ticker, lang, take, skip}` **[ПРОВЕРЕНО]** → `{list:[{id, title, provider, providerAlias, lang, date, url, sentiment (строка), tickers[], images[]}], total, take, skip}`. Тикер в формате `AAPL.US`. Сортировка: новые первыми. `take:10` — ~3.8 КБ, ~0.8 с. `date` — строка `YYYY-MM-DD HH:MM:SS` без зоны (в detail зона `+0300`). `url` бывает пустым/относительным или внешним (например, `finance.yahoo.com`). `images[]` — хост `tradernet.global` (при `img-src 'self' data:` блокируются, не показывать). Параметр `provider` не проверялся.
+- `getNewsDetail {id}` **[ПРОВЕРЕНО]** → `{id, title, text, provider, providerAlias, lang, dateTime, timeZone:"+0300", url, sentiment, tickers, images}`. ~7 КБ, ~0.24 с. `text` — полный текст, не тизер (HTML 4–11 тыс. знаков). Теги в выборке: `a, b, h2, i, p`; атрибуты `href, target`; `img/script/iframe/style/object/form` не встречались; относительных ссылок нет; ссылки ведут на `tap.tradernet.global`. Для KZ-новости текст без тегов (plain text).
+- **Языки** **[ПРОВЕРЕНО]**: `en` и `ru`. US-тикеры: AAPL.US en 3711 / ru 4186, SPY.US en 40 / ru 31 (разные наборы, не переводы). KZTO.KZ: en `total=0`, ru `total=3` (2024 год). Провайдеры: `Oninvest`, `OninvestCompanyNews`.
+- **Свежесть**: AAPL — новейшая 2026-10-31 11:01 (выходные), 10 штук за ~2 суток; SPY — новейшая 2026-10-19 (за ~13 дней до проверки), 40 за ~3 недели; KZTO — старые (2024).
+- `sentiment`: тип строка; набор значений **не проверен**.
+- Не проверено: `getNewsProvidersList`, `getCombinedNews`, пагинация дальше `skip=0`, лимиты частоты, ошибки 400 `Validation failed` / 404 `Новость не найдена` (взяты из документации), фильтр `provider`.
 
 ### 5.12. Списки бумаг (watchlists) и алерты
 
@@ -888,5 +892,10 @@ POST https://tradernet.kz/api/getHloc
 ### 8.5. Что отсутствует
 - Команды `getCorpActions, getDividends, getNews, getAnalytics, getFinancials, getEarnings, getFundamentals, getRecommendations, getIdeas, getFundComposition, getEtfHoldings` — `Command not found` (code 5). Отчётности, EPS, прогнозов, состава ETF нет.
 - `getReadyList` — `Command not found` анонимно.
-- `getNewsList` анонимно: `Invalid credentials` (code 12), нужен SID (Task 15).
+- `getNewsList` анонимно: `Invalid CSRF` (code 12), нужен SID, см. §5.11.
 - `getPlannedCorpActions {reception:35}` анонимно работает, но отдаёт **весь корпоративный календарь одним ответом: 254 474 записи, ~150 МБ, 504 по таймауту при повторных вызовах**. Фильтры `ticker`, `tickers`, `date_from/to`, `from/till`, `take` не сработали (ответ пустой по таймауту или `Incorrect request parameters`). Запись: `{type: dividend|split|coupon|maturity|stock_dividend|spin_off|…, ticker, ex_date, pay_date, currency, amount_per_one (строка), …}`. Для браузера непригодно. Повторно не вызывать без идеи фильтра.
+
+### 8.6. SID против анонимного доступа и поля WS `quotes` (Task 22/15, 2026-11-01)
+- `getSecurityInfo` с SID **идентичен** анонимному: AAPL.US и SPY.US по 150 полей, различий нет. Полей пре/пост-цены нет.
+- WS (`mode=prod`) подписка `quotes` на AAPL.US/SPY.US/QQQ.US за 20 с в воскресенье: 1 `userData`, по 3 сообщения `q`. Имена полей: `c ltp ltt lts ltr bbp bbs bbt bap bas bat bbf baf op pp pcp chg ClosePrice TradingReferencePrice mintp maxtp vol vlt marketStatus TradingSessionSubID(строка) chg1w/1m/6m/1y/5/22/110/220 p1w/p1m/p6m/p1y volatility{7..365} target{7..365}_p{0.05..0.95} x_curr x_descr x_lot x_min x_max x_min_lot_q x_istrade kind type name name2 codesub_nm issue_nb UTCOffset acc_srv_tm` и др. (опционные `delta gamma theta vega rho iv strike_price`, облигационные `yld*`, служебные `*_source`). Сравнение с полями `getSecurityInfo` не делалось.
+- Значения `marketStatus` / `TradingSessionSubID` в пре/пост-сессии **не проверены** (выходной), нужна US-сессия.
