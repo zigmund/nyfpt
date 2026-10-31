@@ -20,7 +20,7 @@ describe('format', () => {
   })
   it('dates', () => {
     expect(dateShort('2026-10-30')).toBe('Oct 30')
-    expect(dateRange('2026-03-15', '2026-09-01')).toBe('Mar 15 – Sep 1')
+    expect(dateRange('2026-03-03', '2026-07-01')).toBe('Mar 3 – Jul 1')
   })
 })
 
