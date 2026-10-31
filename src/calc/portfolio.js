@@ -139,8 +139,12 @@ export const computeMarkets = (mkt_daily, mkt_intraday) => {
     const order = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'];
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
+    // Anchor on the last intraday session: some tickers (NASDAQ.IDX) carry an extra daily bar dated after it
+    // (weekend), which would otherwise pick a date with no candles.
+    const anchor = idx.length ? idx[idx.length - 1].date : null;
     return order.map((t) => {
-      const d = by(mkt_daily, t);
+      const all = by(mkt_daily, t);
+      const d = anchor ? all.filter((r) => r.date <= anchor) : all;
       if (d.length < 2) return { ticker: t, date: null, last: null, prev: null, change_pct: null, spark: [] };
       const last = d[d.length - 1], prev = d[d.length - 2];
       const sess = idx.filter((r) => r.date === last.date);
