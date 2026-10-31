@@ -2,7 +2,7 @@
 // Чистые функции: на вход — ответы API Tradernet или строки, на выход — строки/объекты.
 // Не зависят от браузера и от среды дашборда (dash.*).
 
-import { axisDate } from './marketTime.js';
+import { axisDate, barSeconds, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
 
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
@@ -138,8 +138,11 @@ export const computeCore = (positions, trades, cashflows, prices) => {
     };
   };
 
-/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей. */
-export const computeMarkets = (mkt_daily, mkt_intraday) => {
+/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей.
+ *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
+ *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
+ *  по барам SP500.IDX за этот день. */
+export const computeMarkets = (mkt_daily, mkt_intraday, clock, today) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     const order = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'];
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
@@ -152,9 +155,17 @@ export const computeMarkets = (mkt_daily, mkt_intraday) => {
       const d = anchor ? all.filter((r) => r.date <= anchor) : all;
       if (d.length < 2) return { ticker: t, date: null, last: null, prev: null, change_pct: null, spark: [] };
       const last = d[d.length - 1], prev = d[d.length - 2];
-      const sess = idx.filter((r) => r.date === last.date);
-      const lo = sess.length ? sess[0].ts : -Infinity, hi = sess.length ? sess[sess.length - 1].ts : Infinity;
-      const spark = by(mkt_intraday, t).filter((r) => r.date === last.date && r.ts >= lo && r.ts <= hi).map((r) => r.close);
+      const bars = by(mkt_intraday, t);
+      let lo = -Infinity, hi = Infinity;
+      const mkt = (bars.find((r) => r.mkt) || {}).mkt;
+      const idxMkt = (idx.find((r) => r.mkt) || {}).mkt;
+      const win = clock ? sessionWindow(mkt && mkt === idxMkt ? sessionBounds(idx) : null, marketClockFor(clock, mkt), today, barSeconds(bars)) : null;
+      if (win && win(last.date)) [lo, hi] = win(last.date);
+      else if (!clock) {
+        const sess = idx.filter((r) => r.date === last.date);
+        if (sess.length) { lo = sess[0].ts; hi = sess[sess.length - 1].ts; }
+      }
+      const spark = bars.filter((r) => r.date === last.date && r.ts >= lo && r.ts <= hi).map((r) => r.close);
       return { ticker: t, date: last.date, last: last.close, prev: prev.close, change_pct: r2((last.close / prev.close - 1) * 100), spark };
     });
   };

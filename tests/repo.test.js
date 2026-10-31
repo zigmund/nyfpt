@@ -31,6 +31,11 @@ function fixtureSeries() {
 // Its server runs on UTC (axis = exchange wall clock, daily bar = UTC midnight); FIX = New York
 // in summer time (dt 240), KASE = UTC+5 (dt -300). `b.now` = the repo's clock.
 const mktOf = (t) => (String(t).endsWith('.KZ') ? 'KASE' : 'FIX')
+// getHloc info.mrkt of the fake server (UTC): FIX = NY summer (dt 240), KASE = UTC+5 (dt -300).
+const MRKT = {
+  FIX: { p: '11:10:00', o: '13:30:00', post: '20:00:00', c: '00:00:00', dt: 240 },
+  KASE: { p: '06:20:00', o: '06:30:00', c: '17:00:00', dt: -300 },
+}
 const srvTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
 function fakeBroker() {
   const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [], marketStatus: 0 }
@@ -38,6 +43,7 @@ function fakeBroker() {
     calls, fail: {}, series: fixtureSeries(), intraday: {}, gate: null, now: () => T0,
     async marketStatus() {
       calls.marketStatus++; await b.gate
+      if (b.fail.marketStatus) throw b.fail.marketStatus
       return { result: { markets: { t: srvTime(b.now()), m: [
         { i: '1', n: 'FIX', n2: 'FIX', s: 'CLOSE', o: '13:30:00', c: '00:00:00', dt: '240' },
         { i: '2', n: 'KASE', n2: 'KASE', s: 'CLOSE', o: '06:30:00', c: '17:00:00', dt: '-300' },
@@ -76,7 +82,7 @@ function fakeBroker() {
       for (const t of tickers) {
         const rows = b.intraday[t] || []
         if (!rows.length) continue
-        a.info[t] = { mkt_name: mktOf(t) }
+        a.info[t] = { mkt_name: mktOf(t), mrkt: MRKT[mktOf(t)] }
         a.hloc[t] = rows.map(([, , c]) => [c, c, c, c])
         a.xSeries[t] = rows.map(([d, hm]) => tsOf(d) + Number(hm.slice(0, 2)) * 3600 + Number(hm.slice(3)) * 60)
       }
@@ -88,7 +94,7 @@ function fakeBroker() {
     for (const t of tickers) {
       const rows = pick(b.series[t] || [])
       if (!rows.length) continue
-      a.info[t] = { mkt_name: mktOf(t) }
+      a.info[t] = { mkt_name: mktOf(t), mrkt: MRKT[mktOf(t)] }
       a.hloc[t] = rows.map(([, c]) => [c, c, c, c])
       a.xSeries[t] = rows.map(([d]) => tsOf(d))
     }
@@ -425,6 +431,37 @@ describe('repo', () => {
     repo.subscribe((s) => { st = s })
     await repo.ensurePrices('7d', '2026-10-13')
     expect(st.closes.get('AAA.US')).toEqual(await db.getCandles('AAA.US'))
+  })
+
+  it('getMarketStatus down: closes, portfolio numbers, markets strip and sparks still work, no error banner', async () => {
+    const b = fakeBroker()
+    b.fail.marketStatus = new BrokerError('Something wrong, service unavailable', { code: 14 })
+    b.series['SP500.IDX'] = [['2026-10-09', 6000], ['2026-10-12', 6060]]
+    b.intraday['SP500.IDX'] = [['2026-10-12', '09:30', 1], ['2026-10-12', '10:00', 2]]
+    b.intraday['AAA.US'] = [['2026-10-12', '09:30', 5], ['2026-10-12', '10:00', 6]]
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.ensurePrices('7d', '2026-10-12')
+    const direct = computeCore(parsePositions({ answer: fx.getPositionJson }).rows, parseTrades({ answer: fx.getTradesHistory }).rows,
+      parseCashflows({ answer: fx.getUserCashFlows }).rows,
+      parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }, SRV3).rows)
+    expect(repo.coreFor('7d', '2026-10-12')).toEqual(direct)
+    await repo.refresh()
+    expect(st.markets[0].date).toBe('2026-10-12')
+    expect(st.sparks['AAA.US'].spark).toEqual([5, 6])
+    expect(st.errors).toEqual({})
+  })
+
+  it('a device clock 8 min fast does not move candle dates (offset from the daily bars)', async () => {
+    const b = fakeBroker()
+    b.now = () => clock // broker time is true time
+    const repo = createRepo({ broker: b, db, now: () => clock + 8 * 60e3 })
+    await repo.refresh({ only: ['clock'] }) // status read with the skewed clock
+    await repo.ensurePrices('7d', '2026-10-12')
+    const prices = parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }, SRV3).rows
+    expect(repo.coreFor('7d', '2026-10-12')).toEqual(computeCore(parsePositions({ answer: fx.getPositionJson }).rows,
+      parseTrades({ answer: fx.getTradesHistory }).rows, parseCashflows({ answer: fx.getUserCashFlows }).rows, prices))
   })
 
   it('today = trading date of the session index market, from the broker status (no fixed zone)', async () => {

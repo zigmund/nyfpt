@@ -1,7 +1,7 @@
 // Position card: candles, chart windows, key statistics and My holdings. Pure functions over
 // broker answers (getSecurityInfo, getHloc, getPositionJson `ps`); numbers may come as strings.
 import { positionFactor } from './live.js'
-import { axisDate, axisToUtc, localParts, sessionWindow } from './marketTime.js'
+import { axisDate, axisToUtc, barSeconds, localParts, sessionWindow } from './marketTime.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -67,17 +67,7 @@ export function candleZone(answer, ticker) {
   return { mkt: i.mkt_name || null, tz: (i.mrkt && i.mrkt.tz) || null }
 }
 
-/** Index bars per date (an index trades only in the main session): Map date -> [firstTs, lastTs].
- *  Turned into session bounds by marketTime.sessionWindow. */
-export function sessionBounds(indexRows) {
-  const m = new Map()
-  for (const r of indexRows || []) {
-    const b = m.get(r.date)
-    if (!b) m.set(r.date, [r.ts, r.ts])
-    else { b[0] = Math.min(b[0], r.ts); b[1] = Math.max(b[1], r.ts) }
-  }
-  return m
-}
+export { sessionBounds } from './marketTime.js'
 
 const addDays = (s, n) => {
   const d = new Date(`${s}T00:00:00Z`)
@@ -102,10 +92,12 @@ export function chartStart(period, today) {
 
 /**
  * Rows to draw for a chart period.
- * Intraday (1D: last session, 5D: last 5 sessions): only bars inside the regular session
- * (marketTime.sessionWindow over `sessions`, the market `clock` and `today`), each with the user's local
+ * Intraday (1D: last session, 5D: last 5 sessions): only bars inside the session window, from
+ * the broker's pre-open to the regular close (marketTime.sessionWindow over `sessions`, the
+ * market `clock` and `today`), each with the user's local
  * `min` (minutes since midnight), `ldate` and `zone` label; the sessions are the last dates that
- * still have such bars (a pre-market-only today is skipped). Without any bounds all bars stay.
+ * still have such bars (a day with only bars before the pre-open is skipped). Without any
+ * bounds all bars stay.
  * Daily: rows after the period start plus the last close at or before it (the baseline).
  * @param {{today?: string, sessions?: Map|null, clock?: object|null, timeZone?: string}} opts
  *   clock: marketClockFor(...) of the security's market; timeZone: display zone (default: browser)
@@ -113,7 +105,7 @@ export function chartStart(period, today) {
 export function chartRows(period, { intraday, daily, max } = {}, { today, sessions, clock, timeZone } = {}) {
   const src = chartSource(period)
   if (src === 'intraday') {
-    const win = sessionWindow(sessions, clock, today)
+    const win = sessionWindow(sessions, clock, today, barSeconds(intraday))
     const local = (r) => {
       const at = axisToUtc(r.ts, clock)
       if (at === null) return { ...r, min: null }
@@ -144,8 +136,8 @@ const AVG_VOL_CANDLES = 63
 /**
  * Key statistics (Task 22 set). Missing values are null and hidden by the UI.
  *   prevClose  `pp`: the broker's own day change (chg = ltp - pp) is measured from it
- *   open       open of the first regular-session bar of the last intraday session (as on the
- *              1D chart; daily candles start with the pre-market), else of the last daily
+ *   open       open of the first bar of the last intraday session window (from the broker's
+ *              pre-open, as on the 1D chart; owner's choice), else of the last daily
  *              candle (`op` is unreliable); `sessions`: sessionBounds (index-anchored market
  *              only), `clock`: the market clock (marketClockFor), `today`: its trading date
  *   dayLow/dayHigh  `mintp` / `maxtp`

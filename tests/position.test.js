@@ -53,7 +53,8 @@ const STATUS = {
   t: '2026-10-31 12:00:00', at: Date.parse('2026-10-31T09:00:00Z'),
   m: [{ n: 'FIX', n2: 'FIX', s: 'CLOSE', o: '16:30:00', c: '03:00:00', dt: '420' }],
 }
-const MC = marketClockFor(marketClock(STATUS), 'FIX')
+// getHloc info adds the regular close (post 23:00 server = 16:00 NY); no pre-open here.
+const MC = marketClockFor(marketClock(STATUS, { offset: null, markets: { FIX: { post: 23 * 60 } } }), 'FIX')
 const SRV3 = marketClock(STATUS)
 const NY = 'America/New_York' // display zone of a viewer in New York (the app uses the browser zone)
 const SEC = { info: INFO, intraday: INTRADAY, daily: DAILY, max: null, sessions: SESSIONS, clock: MC, today: '2026-10-31', errors: {}, loading: [] }
@@ -542,7 +543,7 @@ describe('data layer', () => {
       },
       async hlocIntraday(ts, from, to, tf) {
         calls.push(['intraday', ts.join(','), from, to, tf])
-        return { hloc: { [ts[0]]: [[1, 1, 1, 1]] }, xSeries: { [ts[0]]: [TS('2026-10-30', 7)] }, info: { [ts[0]]: { mkt_name: 'FIX', mrkt: { tz: NY } } } }
+        return { hloc: { [ts[0]]: [[1, 1, 1, 1]] }, xSeries: { [ts[0]]: [TS('2026-10-30', 7)] }, info: { [ts[0]]: { mkt_name: 'FIX', mrkt: { o: '16:30:00', c: '03:00:00', post: '23:00:00', dt: 420, tz: NY } } } }
       },
     }
     const db = await openAccountDb('global:1', new IDBFactory())
@@ -562,8 +563,9 @@ describe('data layer', () => {
     expect(s.intraday).toHaveLength(1)
     expect(s.max).toHaveLength(1)
     expect(s.sessions).toBeInstanceOf(Map)
-    // the card's market clock: server offset from the status, hours of FIX, the broker's zone
-    expect(s.clock).toMatchObject({ offset: 10800, dt: 420, open: 570, tz: NY })
+    // the card's market clock: server offset from its daily bars (21:00 UTC), FIX hours and zone
+    // from getHloc info (regular close = post - dt = 16:00), no getMarketStatus needed
+    expect(s.clock).toMatchObject({ offset: 10800, dt: 420, open: 570, regular: 960, tz: NY })
     expect(s.today).toBe('2026-10-30')
     expect(seen.length).toBeGreaterThan(1)
 

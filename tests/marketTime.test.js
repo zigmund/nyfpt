@@ -5,11 +5,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   serverOffset, marketClock, marketClockFor, axisDate, axisAt, wallToUtc, axisToUtc, marketDay,
-  localDay, localParts, formatLocal, sessionWindow, hmsMinutes,
+  localDay, localParts, formatLocal, sessionWindow, hmsMinutes, dailyOffset, hlocMarkets,
 } from '../src/calc/marketTime.js'
 import { candleZone, chartRows, keyStats, parseCandles, sessionBounds } from '../src/calc/position.js'
 import { daySparks } from '../src/calc/sparks.js'
-import { parseHloc, parsePricesForPeriod } from '../src/calc/portfolio.js'
+import { computeMarkets, parseHloc, parsePricesForPeriod } from '../src/calc/portfolio.js'
 
 const ALMATY = 'Asia/Almaty' // the viewer's zone in display tests (browser zone in the app)
 const NY = 'America/New_York' // broker-supplied `mrkt.tz` in synthetic answers
@@ -32,6 +32,11 @@ const winter = () => ({
     { n: 'FIX', n2: 'FIX', s: 'OPEN', o: '17:30:00', c: '04:00:00', dt: '480' },
     { n: 'KASE', n2: 'KASE', s: 'OPEN', o: '09:30:00', c: '20:00:00', dt: '-120' },
   ],
+})
+// Market hours as getHloc `info.mrkt` carries them (server time), learned next to a status.
+const withInfo = (status, markets) => marketClock(status, {
+  offset: null,
+  markets: Object.fromEntries(Object.entries(markets).map(([n, m]) => [n, Object.fromEntries(Object.entries(m).map(([k, v]) => [k, k === 'dt' ? v : hmsMinutes(v)]))])),
 })
 function shift(hms, h) {
   const m = ((hmsMinutes(hms) + h * 60) % 1440 + 1440) % 1440
@@ -135,19 +140,22 @@ describe('regular sessions', () => {
   // Index bars 09:30-15:45 New York: past days full, today (11-02) partial up to 11:00.
   const idx = (dates, offset = OFF) => dates.flatMap(([d, to]) => bars(offset, 'SP500.IDX', d, '09:30', to, 'FIX'))
 
-  it('past days from index bars; today opens at o and stays open to the learned close', () => {
-    const mc = marketClockFor(marketClock(winter()), 'FIX')
+  it('window [open, post - dt); complete index days end at their last index bar (half days)', () => {
+    const mc = marketClockFor(withInfo(winter(), { FIX: { post: '00:00:00' } }), 'FIX') // 16:00 EST
+    expect(mc).toMatchObject({ open: 570, regular: 960, pre: null })
     const win = sessionWindow(sessionBounds(idx([['2026-10-29', '15:45'], ['2026-10-30', '15:45'], ['2026-11-02', '11:00']])), mc)
     expect(win('2026-10-30')).toEqual([axis(OFF, '2026-10-30', '09:30'), axis(OFF, '2026-10-30', '15:45')])
-    expect(win('2026-11-02')).toEqual([axis(OFF, '2026-11-02', '09:30'), axis(OFF, '2026-11-02', '15:45')])
-    // an older day without index bars: same wall-clock session
-    expect(win('2026-10-27')).toEqual([axis(OFF, '2026-10-27', '09:30'), axis(OFF, '2026-10-27', '15:45')])
-    // with today's date: an index date before it is complete, today runs to the learned close
+    expect(win('2026-11-02')).toEqual([axis(OFF, '2026-11-02', '09:30'), axis(OFF, '2026-11-02', '16:00') - 1])
+    // an older day without index bars: the same broker hours
+    expect(win('2026-10-27')).toEqual([axis(OFF, '2026-10-27', '09:30'), axis(OFF, '2026-10-27', '16:00') - 1])
+    // with today's date: an index date before it is complete (half day ends at 13:00)
     const s2 = sessionBounds(idx([['2026-10-29', '15:45'], ['2026-10-30', '13:00']])) // 10-30: half day
     expect(sessionWindow(s2, mc, '2026-11-02')('2026-10-30')).toEqual([axis(OFF, '2026-10-30', '09:30'), axis(OFF, '2026-10-30', '13:00')])
-    expect(sessionWindow(s2, mc, '2026-10-30')('2026-10-30')).toEqual([axis(OFF, '2026-10-30', '09:30'), axis(OFF, '2026-10-30', '15:45')])
-    // no complete session yet: open-ended
-    expect(sessionWindow(sessionBounds(idx([['2026-11-02', '11:00']])), mc, '2026-11-02')('2026-11-02')[1]).toBe(Infinity)
+    expect(sessionWindow(s2, mc, '2026-10-30')('2026-10-30')).toEqual([axis(OFF, '2026-10-30', '09:30'), axis(OFF, '2026-10-30', '16:00') - 1])
+    // no post: the extended close c - dt; neither: learned from the index, else open-ended
+    expect(sessionWindow(s2, marketClockFor(marketClock(winter()), 'FIX'), '2026-11-02')('2026-11-02')[1]).toBe(axis(OFF, '2026-11-02', '20:00') - 1)
+    expect(sessionWindow(s2, { ...mc, regular: null, close: null }, '2026-11-02')('2026-11-02')[1]).toBe(axis(OFF, '2026-11-02', '15:45'))
+    expect(sessionWindow(sessionBounds(idx([['2026-11-02', '11:00']])), { ...mc, regular: null, close: null }, '2026-11-02')('2026-11-02')[1]).toBe(Infinity)
     // market unknown (no o/dt): open learned from the index on complete dates
     const unknown = marketClockFor(marketClock(winter()), 'NOPE')
     expect(sessionWindow(s2, unknown, '2026-11-02')('2026-11-02')).toEqual([axis(OFF, '2026-11-02', '09:30'), axis(OFF, '2026-11-02', '15:45')])
@@ -233,7 +241,7 @@ describe('holdings day sparks per market session', () => {
     expect(s.spark).toEqual(bars(OFF, 'EEE.EU', '2026-10-30', '08:00', '16:30', 'EU', 70).map((r) => r.close))
   })
 
-  it('KASE: own last session, the pre-open bar before o is dropped, in-session prints stay', () => {
+  it('KASE without the broker pre-open (status only): bars from o; in-session prints stay', () => {
     const rows = [
       { ticker: 'KKK_KZ.KZ', mkt: 'KASE', ts: axis(OFF, '2026-10-29', '21:15'), date: '2026-10-29', close: 52 },
       { ticker: 'KKK_KZ.KZ', mkt: 'KASE', ts: axis(OFF, '2026-10-30', '11:15'), date: '2026-10-30', close: 51 }, // pre-open
@@ -244,11 +252,11 @@ describe('holdings day sparks per market session', () => {
     expect(daySparks(rows, IDX, clock)['KKK_KZ.KZ']).toEqual({ date: '2026-10-30', spark: [50.25, 54.75, 48.5] })
   })
 
-  it('US: last index session; the running session is open-ended to the learned close, post-market out', () => {
+  it('US: last index session; the running session runs to the regular close, post-market out', () => {
     const today = [
       ...bars(OFF, 'SP500.IDX', '2026-11-02', '09:30', '10:00', 'FIX', 1), // index cache lags
     ]
-    const c = marketClock(winter())
+    const c = withInfo(winter(), { FIX: { post: '00:00:00' } })
     const stock = [
       ...bars(OFF, 'AAA.US', '2026-10-30', '04:00', '19:45', 'FIX', 10),
       ...bars(OFF, 'AAA.US', '2026-11-02', '04:00', '11:00', 'FIX', 500),
@@ -279,5 +287,97 @@ describe('parsers use the server offset', () => {
     // a server at UTC: the same instant is the previous day's 21:00
     expect(parseHloc({ answer }, marketClock(summer(0))).rows[0].date).toBe('2026-10-29')
     expect(() => parseHloc({ answer }, null)).toThrow()
+  })
+})
+
+describe('fix round 1: server offset from the candles, status optional', () => {
+  const daily = (tsList, info = {}) => ({ hloc: { 'X.US': tsList.map(() => [1, 1, 1, 1]) }, xSeries: { 'X.US': tsList }, info })
+
+  it('daily bars sit at server midnight: offset = -ts mod 1 day, whatever the device clock says', () => {
+    expect(dailyOffset(daily([utc('2026-10-29T21:00:00'), utc('2026-10-30T21:00:00')]))).toBe(10800)
+    expect(dailyOffset(daily([utc('2026-10-30T00:00:00')]))).toBe(0)
+    expect(dailyOffset(daily([utc('2026-10-30T18:30:00')]))).toBe(19800)
+    expect(dailyOffset(daily([utc('2026-10-30T04:00:00')]))).toBe(-14400)
+    // majority wins over a stray bar
+    expect(dailyOffset(daily([utc('2026-10-27T21:00:00'), utc('2026-10-28T21:00:00'), utc('2026-10-29T13:00:00')]))).toBe(10800)
+    expect(dailyOffset({ hloc: {}, xSeries: {} })).toBeNull()
+    expect(dailyOffset(null)).toBeNull()
+  })
+
+  it('status fallback tolerates a device clock off by 8 min (30-min step)', () => {
+    const fast = Date.parse('2026-10-31T19:28:41Z') + 8 * 60e3
+    expect(serverOffset('2026-10-31 22:28:40', fast)).toBe(10800)
+    expect(serverOffset('2026-10-31 22:28:40', Date.parse('2026-10-31T19:28:41Z') - 12 * 60e3)).toBe(10800)
+  })
+
+  it('learned offset and market hours from candles; status only fills gaps', () => {
+    const info = { 'X.US': { mkt_name: 'FIX', mrkt: { o: '16:30:00', c: '03:00:00', post: '23:00:00', dt: 420, tz: NY } },
+      'K.KZ': { mkt_name: 'KASE', mrkt: { p: '09:20:00', o: '09:30:00', c: '20:00:00', dt: -120 } } }
+    const learned = { offset: 10800, markets: hlocMarkets({ info }) }
+    expect(learned.markets.FIX).toEqual({ p: null, o: 990, c: 180, dt: 420, post: 1380 })
+    expect(learned.markets.KASE).toEqual({ p: 560, o: 570, c: 1200, dt: -120, post: null })
+    // no status at all
+    const c = marketClock(null, learned)
+    expect(c.offset).toBe(10800)
+    expect(marketClockFor(c, 'FIX')).toMatchObject({ open: 570, close: 1200, regular: 960 })
+    expect(marketClockFor(c, 'KASE')).toMatchObject({ pre: 680, open: 690, regular: null })
+    // a status read with a skewed device clock does not override the data offset
+    const skewed = { ...summer(), at: summer().at + 40 * 60e3 }
+    expect(marketClock(skewed, learned).offset).toBe(10800)
+    expect(marketClock(skewed).offset).toBe(9000) // status alone: 2.5 h
+    // status fills markets the candles have not shown yet
+    expect(marketClockFor(marketClock(summer(), learned), 'EU')).toMatchObject({ open: 480 })
+    expect(marketClock(null, { offset: null, markets: {} })).toBeNull()
+  })
+
+  it('running session ends at the broker regular close (post - dt), not open-ended', () => {
+    const mc = { ...marketClockFor(marketClock(summer()), 'FIX'), regular: 16 * 60 }
+    const s = sessionBounds(bars(10800, 'SP500.IDX', '2026-11-02', '09:30', '11:00', 'FIX'))
+    expect(sessionWindow(s, mc, '2026-11-02')('2026-11-02')).toEqual([axis(10800, '2026-11-02', '09:30'), axis(10800, '2026-11-02', '16:00') - 1])
+    // no index: [o - dt, post - dt) when the market has a regular close
+    expect(sessionWindow(null, mc)('2026-11-02')).toEqual([axis(10800, '2026-11-02', '09:30'), axis(10800, '2026-11-02', '16:00') - 1])
+  })
+})
+
+describe('owner rule: sessions start at the broker pre-open (p - dt), end at the regular close', () => {
+  const OFF = 10800
+  // getHloc info.mrkt as probed 2026-10-31: FIX p 14:10 o 16:30 post 23:00 c 03:00 dt 420; KASE p 09:20 o 09:30 c 20:00 dt -120
+  const clock = withInfo(summer(), {
+    FIX: { p: '14:10:00', o: '16:30:00', post: '23:00:00', c: '03:00:00', dt: 420 },
+    KASE: { p: '09:20:00', o: '09:30:00', c: '20:00:00', dt: -120 },
+  })
+  const IDX = [
+    ...bars(OFF, 'SP500.IDX', '2026-10-29', '09:30', '15:45', 'FIX', 1),
+    ...bars(OFF, 'SP500.IDX', '2026-10-30', '09:30', '15:45', 'FIX', 1),
+  ]
+
+  it('market clock: pre-open 07:10 NY / 11:20 Almaty, regular close 16:00 NY', () => {
+    expect(marketClockFor(clock, 'FIX')).toMatchObject({ pre: 430, open: 570, regular: 960 })
+    expect(marketClockFor(clock, 'KASE')).toMatchObject({ pre: 680, open: 690, regular: null, close: 1320 })
+  })
+
+  it('KASE: the 11:15 bar (11:15-11:30 overlaps the 11:20 pre-open) is kept; 11:00 is not', () => {
+    const k = (hhmm, close, d = '2026-10-30') => ({ ticker: 'KKK_KZ.KZ', mkt: 'KASE', ts: axis(OFF, d, hhmm), date: d, close })
+    const rows = [k('21:15', 52, '2026-10-29'), k('11:00', 1), k('11:15', 51), k('11:30', 50.25), k('13:45', 54.75), k('21:30', 48.5)]
+    expect(daySparks(rows, IDX, clock)['KKK_KZ.KZ']).toEqual({ date: '2026-10-30', spark: [51, 50.25, 54.75, 48.5] })
+  })
+
+  it('US 1D: 07:15 (and the 07:00 bar overlapping 07:10) kept; 05:00, 06:45, 16:00 and 17:00 dropped; Open = first bar', () => {
+    const mc = marketClockFor(clock, 'FIX', { tz: NY })
+    const stock = bars(OFF, 'AAA.US', '2026-10-30', '04:00', '19:45', 'FIX', 100)
+    const d1 = chartRows('1D', { intraday: stock }, { today: '2026-10-31', sessions: sessionBounds(IDX), clock: mc, timeZone: NY })
+    const at = (hhmm) => axis(OFF, '2026-10-30', hhmm)
+    const kept = new Set(d1.map((r) => r.ts))
+    for (const h of ['07:00', '07:15', '09:30', '15:45']) expect(kept.has(at(h)), h).toBe(true)
+    for (const h of ['05:00', '06:45', '16:00', '17:00']) expect(kept.has(at(h)), h).toBe(false)
+    expect(d1[0].min).toBe(7 * 60)
+    expect(keyStats({ intraday: stock, sessions: sessionBounds(IDX), clock: mc, today: '2026-10-31' }).open)
+      .toBe(stock.find((r) => r.ts === at('07:00')).open)
+    // Day sparks and the markets strip use the same window
+    const sp = daySparks(stock, IDX, clock, '2026-10-31')['AAA.US']
+    expect(sp.spark).toEqual(d1.map((r) => r.close))
+    const daily = ['SP500.IDX', 'USO.US'].flatMap((t) => [{ ticker: t, date: '2026-10-29', ts: 1, close: 1 }, { ticker: t, date: '2026-10-30', ts: 2, close: 2 }])
+    const strip = computeMarkets(daily, [...IDX, ...stock.map((r) => ({ ...r, ticker: 'USO.US' }))], clock, '2026-10-31')
+    expect(strip.find((r) => r.ticker === 'USO.US').spark).toEqual(d1.map((r) => r.close))
   })
 })

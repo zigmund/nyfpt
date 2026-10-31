@@ -1,18 +1,22 @@
 // Market time from the broker, with no zone or session constants.
 //
-// getMarketStatus: `t` = server wall clock; per market `o`/`c` (open / close, server time) and
-// `dt` = server minus exchange local time, minutes. The server offset is `t` minus Date.now()
-// when the answer arrived. getHloc axis (`xSeries`) + server offset = exchange wall clock
-// written as UTC (daily bars: server midnight). So:
+// getHloc axis (`xSeries`) + server offset = exchange wall clock written as UTC; daily bars sit
+// at server midnight, so the server offset comes from the daily candles themselves
+// (dailyOffset), independent of the device clock. getHloc `info[ticker].mrkt` gives the
+// market's `o`/`c` (open / extended close), `post` (regular close, US only), server time, and
+// `dt` = server minus exchange local time, minutes. getMarketStatus (`t` = server wall clock,
+// same o/c/dt per market) is only a fallback for markets / offset not seen in candles yet. So:
 //   date of a bar          = UTC date of (ts + offset)
 //   exchange wall time     = ts + offset
-//   regular open / close   = o - dt / c - dt (exchange wall minutes; c is the extended close)
+//   session window         = [p - dt, post - dt) in exchange wall minutes (p: broker pre-open,
+//                            else o; post: regular close, else c = extended close); owner rule:
+//                            every trade from the pre-open on counts, post-market does not
 //   real UTC of a bar      = wall - exchange UTC offset; the broker's IANA zone (`mrkt.tz` in
 //                            getHloc `info`) gives it for any day, else offset - dt*60 (today's)
 // Display: the user's browser zone (Intl default), with the zone label.
 
 export const DAY_S = 86400 // seconds per calendar day (unit, not a zone)
-const ROUND_S = 15 * 60 // server offset step: zones are whole quarter hours
+const STATUS_ROUND_S = 30 * 60 // status offset step: tolerates a device clock off by < 15 min
 
 const ymd = (sec) => new Date(sec * 1000).toISOString().slice(0, 10)
 const mod = (v, m) => ((v % m) + m) % m
@@ -24,37 +28,76 @@ export function hmsMinutes(s) {
   return m ? Number(m[1]) * 60 + Number(m[2]) : null
 }
 
-/** Server clock offset (seconds, quarter hours) from `t` ('YYYY-MM-DD HH:MM:SS') received at `at` (ms). */
+/** Fallback server offset (seconds, half hours) from status `t` ('YYYY-MM-DD HH:MM:SS') received at `at` (ms). */
 export function serverOffset(t, at) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(t ?? ''))
   if (!m || !Number.isFinite(at)) return null
   const srv = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])
-  return Math.round((srv - at) / 1000 / ROUND_S) * ROUND_S || 0 // no -0
+  return Math.round((srv - at) / 1000 / STATUS_ROUND_S) * STATUS_ROUND_S || 0 // no -0
 }
 
-/** Market clock from a getMarketStatus snapshot {t, m, at}: {offset, markets: {NAME: {o, c, dt}}}. */
-export function marketClock(status) {
-  if (!status) return null
-  const offset = serverOffset(status.t, status.at)
-  if (offset === null) return null
-  const markets = {}
-  for (const x of status.m || []) {
-    const e = { o: hmsMinutes(x.o), c: hmsMinutes(x.c), dt: num(x.dt) }
-    for (const n of [x.n, x.n2]) if (n) markets[String(n).toUpperCase()] = e
+/** Server offset (seconds) from a daily getHloc answer: bars sit at server midnight, so
+ *  -ts mod 1 day, in (-12 h, 12 h]; the most frequent value over all bars; null without bars. */
+export function dailyOffset(answer) {
+  const n = new Map()
+  for (const xs of Object.values((answer && answer.xSeries) || {})) {
+    for (const ts of xs || []) {
+      if (!Number.isFinite(+ts)) continue
+      let o = mod(-ts, DAY_S)
+      if (o > DAY_S / 2) o -= DAY_S
+      n.set(o, (n.get(o) || 0) + 1)
+    }
   }
-  return { offset, markets }
+  let best = null
+  for (const [o, k] of n) if (best === null || k > n.get(best)) best = o
+  return best === null ? null : best || 0
+}
+
+const entry = (x) => ({ p: hmsMinutes(x.p), o: hmsMinutes(x.o), c: hmsMinutes(x.c), dt: num(x.dt), post: hmsMinutes(x.post) })
+
+/** Market hours per market name from a getHloc answer's `info[ticker]` ({mkt_name, mrkt}). */
+export function hlocMarkets(answer) {
+  const out = {}
+  for (const i of Object.values((answer && answer.info) || {})) {
+    if (i && i.mkt_name && i.mrkt) out[String(i.mkt_name).toUpperCase()] = entry(i.mrkt)
+  }
+  return out
 }
 
 /**
- * One market's clock: {offset, dt, tz, open, close}; open/close in exchange wall minutes
- * (null when the market or its dt is unknown). `tz`: the broker's zone for the market, if known.
+ * Market clock {offset, markets: {NAME: {o, c, dt, post}}} from what the candles taught
+ * (`learned` {offset, markets}: dailyOffset / hlocMarkets) and, as a fallback, a
+ * getMarketStatus snapshot {t, m, at}. null when no offset is known.
+ */
+export function marketClock(status, learned) {
+  const markets = {}
+  for (const x of (status && status.m) || []) {
+    const e = { ...entry(x), p: null, post: null }
+    for (const n of [x.n, x.n2]) if (n) markets[String(n).toUpperCase()] = e
+  }
+  for (const [n, e] of Object.entries((learned && learned.markets) || {})) {
+    const known = Object.fromEntries(Object.entries(e).filter(([, v]) => v !== null && v !== undefined))
+    markets[n] = { p: null, o: null, c: null, dt: null, post: null, ...markets[n], ...known }
+  }
+  const own = learned && Number.isFinite(learned.offset) ? learned.offset : null
+  const offset = own !== null ? own : status ? serverOffset(status.t, status.at) : null
+  return offset === null ? null : { offset, markets }
+}
+
+/**
+ * One market's clock: {offset, dt, tz, pre, open, close, regular}; pre-open (`p`) / open /
+ * extended close / regular close (`post`, US) in exchange wall minutes (null when unknown).
+ * `tz`: the broker's zone.
  */
 export function marketClockFor(clock, name, { tz = null } = {}) {
   if (!clock || !Number.isFinite(clock.offset)) return null
   const m = (name && clock.markets && clock.markets[String(name).toUpperCase()]) || null
   const dt = m ? m.dt : null
   const wall = (v) => (v === null || v === undefined || dt === null ? null : mod(v - dt, 1440))
-  return { offset: clock.offset, dt, tz: tz || null, open: wall(m && m.o), close: wall(m && m.c) }
+  return {
+    offset: clock.offset, dt, tz: tz || null,
+    pre: wall(m && m.p), open: wall(m && m.o), close: wall(m && m.c), regular: wall(m && m.post),
+  }
 }
 
 /** Calendar date of a candle (axis seconds). */
@@ -141,42 +184,65 @@ export function formatLocal(sec, timeZone) {
   return `${MONTHS[+p.month - 1]} ${+p.day}, ${p.year}, ${h % 12 || 12}:${p.minute} ${h < 12 ? 'AM' : 'PM'} ${p.timeZoneName}`
 }
 
-/**
- * Regular-session bounds (axis seconds, inclusive) per date: (date) => [lo, hi] | null.
- * `sessions` (Map date -> [first, last] index bar, see sessionBounds) marks the session of an
- * index-anchored market (US: SP500.IDX trades only in the main session). `today`: the market's
- * current trading date (marketDay); index dates before it are complete sessions (without
- * `today`: all but the latest index date).
- *   - complete index dates: their own index bars;
- *   - the running session, later dates and older dates without index bars: from the market open
- *     (o - dt; unknown market: the earliest index open on complete dates) to the last index bar's
- *     time of day on complete dates (learned close), extended to the latest index bar of that
- *     date; open-ended while no complete session is known.
- * Without index bars: the market's own hours [o - dt, c - dt). null = no bounds known.
- */
-export function sessionWindow(sessions, mc, today) {
-  const off = mc && Number.isFinite(mc.offset) ? mc.offset : null
-  const open = off !== null && mc.open !== null && mc.open !== undefined ? mc.open : null
-  if (sessions && sessions.size) {
-    const dates = [...sessions.keys()].sort()
-    const done = new Set(today ? dates.filter((d) => d < today) : dates.slice(0, -1))
-    const ends = off === null ? [] : [...done].map((d) => wallMinute(off, sessions.get(d)[1]))
-    const close = ends.length ? Math.max(...ends) : null
-    // Market unknown (no o/dt): the earliest index open on complete dates.
-    const starts = off === null || open !== null ? [] : [...done].map((d) => wallMinute(off, sessions.get(d)[0]))
-    const start = open !== null ? open : starts.length ? Math.min(...starts) : null
-    return (date) => {
-      const b = sessions.get(date)
-      if (b && done.has(date)) return b
-      const o = start !== null ? axisAt(off, date, start) : null
-      const lo = b ? (o === null ? b[0] : Math.min(o, b[0])) : o
-      if (lo === null) return null
-      let hi = close !== null ? axisAt(off, date, close) : b && off === null ? b[1] : Infinity
-      if (b) hi = Math.max(hi, b[1])
-      return [lo, hi]
-    }
+/** Index bars per date (an index trades only in the main session): Map date -> [firstTs, lastTs]. */
+export function sessionBounds(indexRows) {
+  const m = new Map()
+  for (const r of indexRows || []) {
+    const b = m.get(r.date)
+    if (!b) m.set(r.date, [r.ts, r.ts])
+    else { b[0] = Math.min(b[0], r.ts); b[1] = Math.max(b[1], r.ts) }
   }
-  if (open === null) return null
-  const close = mc.close !== null && mc.close > open ? mc.close : null
-  return (date) => [axisAt(off, date, open), close === null ? Infinity : axisAt(off, date, close) - 1]
+  return m
+}
+
+/** Bar length (seconds) of intraday rows: the smallest step between bars; 0 if unknown. */
+export function barSeconds(rows) {
+  const ts = [...new Set((rows || []).map((r) => r.ts).filter(Number.isFinite))].sort((a, b) => a - b)
+  let best = 0
+  for (let i = 1; i < ts.length; i++) {
+    const d = ts[i] - ts[i - 1]
+    if (d > 0 && (!best || d < best)) best = d
+  }
+  return best
+}
+
+const first = (...v) => {
+  for (const x of v) if (x !== null && x !== undefined) return x
+  return null
+}
+
+/**
+ * Session bounds of bar start times (axis seconds, inclusive) per date: (date) => [lo, hi] | null.
+ * One rule for every market (owner): [p - dt, post - dt) in exchange wall time; without `p` the
+ * open (o - dt), without `post` the extended close (c - dt). A bar counts when its interval
+ * [ts, ts + bar) overlaps the window (the 11:15 bar of an 11:20 pre-open stays).
+ * `sessions` (sessionBounds of an index of the same market) and `today` (marketDay): index dates
+ * before today are complete; their last index bar caps the day (half days). Last fallbacks when
+ * the broker gives no hours: the earliest index bar / latest index bar time of day on complete
+ * dates; without an offset the index bars themselves. null = no bounds known (keep all bars).
+ */
+export function sessionWindow(sessions, mc, today, bar = 0) {
+  const off = mc && Number.isFinite(mc.offset) ? mc.offset : null
+  const idx = sessions && sessions.size ? sessions : null
+  const dates = idx ? [...idx.keys()].sort() : []
+  const done = new Set(today ? dates.filter((d) => d < today) : dates.slice(0, -1))
+  const start = off === null ? null : first(mc.pre, mc.open)
+  let end = off === null ? null : first(mc.regular, mc.close)
+  if (end !== null && start !== null && end <= start) end = null // crosses midnight: open-ended
+  const learn = (pickTs, agg) => {
+    if (off === null || !done.size) return null
+    return agg(...[...done].map((d) => wallMinute(off, pickTs(idx.get(d)))))
+  }
+  const s0 = start !== null ? start : learn((b) => b[0], Math.min)
+  const e0 = end === null ? learn((b) => b[1], Math.max) : null
+  if (s0 === null && !idx) return null
+  const back = bar > 0 ? bar - 1 : 0
+  return (date) => {
+    const b = idx && idx.get(date)
+    const lo = s0 !== null ? axisAt(off, date, s0) - back : b ? b[0] : null
+    if (lo === null) return null
+    let hi = end !== null ? axisAt(off, date, end) - 1 : e0 !== null ? axisAt(off, date, e0) : Infinity
+    if (b && (done.has(date) || off === null)) hi = Math.min(hi, b[1])
+    return [lo, hi]
+  }
 }
