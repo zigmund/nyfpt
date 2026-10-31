@@ -11,10 +11,9 @@ import { useChart } from '../composables/useChart.js'
 const props = defineProps({
   spark: { type: Array, default: () => [] },
   prev: { type: Number, default: null },
-  down: { type: Boolean, default: false },
 })
 
 const el = ref(null)
-const key = () => `${props.down}|${props.prev}|${props.spark.length}|${props.spark[props.spark.length - 1]}`
-useChart(el, key, (node) => drawSparkline(node, props.spark, { prev: props.prev, down: props.down }))
+const key = () => `${props.prev}|${props.spark.length}|${props.spark[props.spark.length - 1]}`
+useChart(el, key, (node) => drawSparkline(node, props.spark, { prev: props.prev }))
 </script>

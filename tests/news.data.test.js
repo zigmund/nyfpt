@@ -6,7 +6,7 @@ import { createBroker } from '../src/api/broker.js'
 import { BrokerError, SessionExpiredError } from '../src/api/transport.js'
 import { createNews, NEWS_TTL } from '../src/data/news.js'
 import { openAccountDb } from '../src/store/db.js'
-import { CABINETS } from '../src/config.js'
+import { CABINETS, CACHE_VERSION } from '../src/config.js'
 
 const cabinet = CABINETS[0]
 const ok = (body) => ({ ok: true, status: 200, json: async () => body })
@@ -82,6 +82,15 @@ describe('news store', () => {
     expect(broker.newsList).toHaveBeenCalledTimes(2)
     await news.list({ ...LIST, force: true })
     expect(broker.newsList).toHaveBeenCalledTimes(3)
+  })
+
+  it('a fresh row of another cache version is refetched (same rule as the repo kv rows)', async () => {
+    const old = await openAccountDb('global:1', idb, { version: CACHE_VERSION - 1 })
+    await old.putKv('news:list:AAA.US:en:0', page([9], 1), clock)
+    expect(await news.peekList(LIST)).toBeNull()
+    const a = await news.list(LIST)
+    expect(broker.newsList).toHaveBeenCalledTimes(1)
+    expect(a.data.list.map((x) => x.id)).toEqual([1, 2])
   })
 
   it('cache key per ticker, language and skip; rows survive a new store (IndexedDB)', async () => {

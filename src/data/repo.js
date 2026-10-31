@@ -10,6 +10,9 @@
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
+// Rows of another CACHE_VERSION read as missing (store/db.js) and are purged on the first load.
+// Candle history has no TTL: a top-up re-requests the last 2 stored days (the newest may have been
+// saved before its session closed) and checks the oldest overlapping stored close for a split.
 // Position card data (security info, full candles per ticker) is kept in memory only, TTL-gated.
 import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
@@ -22,13 +25,22 @@ import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { SessionExpiredError } from '../api/transport.js'
 
-const DATASETS = ['clock', 'positions', 'cashflows', 'trades', 'markets', 'sparks']
+/** Dataset names: kv rows and state.errors / state.loading keys (one source for components). */
+export const DATASET = Object.freeze({
+  clock: 'clock', positions: 'positions', cashflows: 'cashflows', trades: 'trades', markets: 'markets', sparks: 'sparks',
+  candles: 'candles',
+})
+const DATASETS = Object.values(DATASET).filter((n) => n !== DATASET.candles) // kv datasets
 const TTL_OF = {
   clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
+const REFETCH_DAYS = 2 // last stored days re-requested on every top-up
+// Split / adjustment: a stored close off the broker's by more than this share (same day) means the
+// broker rewrote the ticker's history; 0.5% is far above rounding and far below any split ratio.
+const ADJUST_TOLERANCE = 0.005
 
 // Position card datasets: TTL per part; daily reaches back far enough for 1Y, YTD and 52 weeks.
 const SEC_TTL = { info: TTL.quotes, intraday: TTL.intraday, daily: 5 * 60e3, max: 60 * 60e3 }
@@ -44,6 +56,22 @@ const addDays = (s, n) => {
 }
 const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
+
+/** True when the broker's closes no longer match the stored history: the oldest stored day that
+ *  the answer also has differs by more than ADJUST_TOLERANCE. The last REFETCH_DAYS stored days
+ *  are never compared (possibly saved mid-session); with no older day there is nothing to check. */
+function historyAdjusted(stored, fresh) {
+  if (stored.length <= REFETCH_DAYS || !fresh.length) return false
+  const got = new Map(fresh.map((c) => [c.date, c.close]))
+  for (const c of stored.slice(0, stored.length - REFETCH_DAYS)) {
+    if (!got.has(c.date)) continue // holiday on one side, or before the answer starts
+    const b = Number(got.get(c.date))
+    const a = Number(c.close)
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return false
+    return Math.abs(a - b) > ADJUST_TOLERANCE * Math.abs(b)
+  }
+  return false
+}
 
 export function createRepo({ broker, db, now = () => Date.now() }) {
   const cache = { clock: null, positions: null, cashflows: null, trades: null, markets: null, sparks: null }
@@ -336,6 +364,11 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
 
   function loadCache() {
     cacheLoaded ||= (async () => {
+      try {
+        await db.purgeStale([...DATASETS, 'candleCover', 'marketInfo'])
+      } catch {
+        // housekeeping only: rows of another version read as missing anyway
+      }
       for (const name of DATASETS) {
         const kv = await db.getKv(name)
         if (kv) { cache[name] = kv.data; fetchedAt[name] = kv.fetchedAt }
@@ -357,19 +390,57 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     ...BENCHMARKS,
   ])].filter((t) => !String(t).includes('/')).sort()
 
+  // Daily closes of `tickers` from `from` (plus CLOSES_BEFORE - 1 earlier bars), per ticker.
+  async function dailyCloses(tickers, from) {
+    const a = await broker.hlocDaily(tickers, from, -CLOSES_BEFORE)
+    await learn(a, true)
+    const rows = parseHloc({ answer: a }, dailyClock(a)).rows
+    return new Map(tickers.map((t) => [t, rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))]))
+  }
+  async function storeCloses(t, own, from) {
+    if (own.length) await db.putCandles(t, own)
+    candles.set(t, await db.getCandles(t))
+    if (!cover[t] || from < cover[t]) cover[t] = from
+  }
+
   function fetchCandles(tickers, from) {
-    return task(`candles:${from}:${tickers.join(',')}`, 'candles', async () => {
-      const a = await broker.hlocDaily(tickers, from, -CLOSES_BEFORE)
-      await learn(a, true)
-      const rows = parseHloc({ answer: a }, dailyClock(a)).rows
+    return task(`candles:${from}:${tickers.join(',')}`, DATASET.candles, async () => {
+      const got = await dailyCloses(tickers, from)
+      const again = new Map() // old cover -> tickers whose adjusted history starts before `from`
       for (const t of tickers) {
-        const own = rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))
-        if (own.length) await db.putCandles(t, own)
-        candles.set(t, await db.getCandles(t))
-        if (!cover[t] || from < cover[t]) cover[t] = from
+        const own = got.get(t)
+        if (historyAdjusted(candles.get(t) || [], own)) {
+          // Split / adjustment: the stored history is stale as a whole.
+          const back = cover[t]
+          await db.deleteCandles(t)
+          candles.delete(t)
+          delete cover[t]
+          if (back && back < from) {
+            if (!again.has(back)) again.set(back, [])
+            again.get(back).push(t)
+            continue
+          }
+        }
+        await storeCloses(t, own, from)
       }
       await db.putKv('candleCover', { ...cover }, now())
+      // Dropped tickers: their whole covered range again, one request per old cover date.
+      for (const [back, ts] of again) {
+        const re = await dailyCloses(ts, back)
+        for (const t of ts) await storeCloses(t, re.get(t), back)
+        await db.putKv('candleCover', { ...cover }, now())
+      }
     })
+  }
+
+  // Top-up start per covered ticker: the oldest of its last REFETCH_DAYS stored days. Tickers
+  // whose starts lie within PAD_DAYS of the newest share the earliest one, so market calendars
+  // (a US vs a KASE holiday) do not split the request.
+  function topUpFroms(need) {
+    if (!need.size) return need
+    const newest = [...need.values()].sort().at(-1)
+    const near = [...need.values()].filter((d) => d >= addDays(newest, -PAD_DAYS)).sort()[0]
+    return new Map([...need].map(([t, d]) => [t, d >= near ? near : d]))
   }
 
   async function doEnsurePrices(period, day) {
@@ -381,12 +452,18 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     if (!start) return // 'All' without any cashflows: nothing to price
     const tf = tradesFrom(period, start)
     if (isExpired(await ensureTrades(tf))) return
-    // Incremental from the last cached date (it is re-fetched: the current day may be partial);
+    // Covered tickers: top-up from the last REFETCH_DAYS stored days (re-fetched and overwritten);
     // tickers not covered back to `start` are fetched from start - PAD_DAYS.
+    const tickers = tickersFor(tf)
+    const need = new Map()
+    for (const t of tickers) {
+      const cs = candles.get(t) || []
+      if (cs.length && cover[t] && cover[t] <= start) need.set(t, cs[Math.max(0, cs.length - REFETCH_DAYS)].date)
+    }
+    const topUp = topUpFroms(need)
     const groups = new Map()
-    for (const t of tickersFor(tf)) {
-      const last = await db.lastCandleDate(t)
-      const from = last && cover[t] && cover[t] <= start ? last : addDays(start, -PAD_DAYS)
+    for (const t of tickers) {
+      const from = topUp.get(t) || addDays(start, -PAD_DAYS)
       if (!groups.has(from)) groups.set(from, [])
       groups.get(from).push(t)
     }

@@ -22,5 +22,9 @@ export const TTL = {
   intraday: 60e3,
   sparks: 5 * 60e3, // holdings sparklines: 15-min candles
 }
+// IndexedDB row format. Bump when a stored shape or its parsing changes: rows of another version
+// (or without one: version 1) read as missing, so kv data is refetched at once and daily candles are
+// downloaded again once. 2: `mkt` on sparks/markets rows, kv clock/marketInfo (20261101).
+export const CACHE_VERSION = 2
 export const POLL_MS = 60e3
 export const LIVE_RECALC_MS = 3000

@@ -108,7 +108,7 @@
                   <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>{{ ' ' }}<span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                 </a>
               </th>
-              <td class="hc-spark"><MarketSpark :spark="periodSparks[r.ticker] || EMPTY" :prev="null" :down="(n(r.change_pct) ?? 0) < 0" /></td>
+              <td class="hc-spark"><MarketSpark :spark="periodSparks[r.ticker] || EMPTY" :prev="null" /></td>
               <td data-test="hp-status" class="h-narrow ptable__st">{{ statusText(r.status) }}</td>
               <td data-test="hp-qstart" class="h-narrow">{{ fQty(r.qty_start, prefs.hide) }}</td>
               <td data-test="hp-qend" class="hc-meta hc-qty" :data-label="t('hold.col.qty')">{{ fQty(r.qty_end, prefs.hide) }}</td>
@@ -305,13 +305,12 @@ const dayCash = computed(() => cashList.value.map((c) => ({ ...c, weight: dayTot
 const daySort = tableSort('holdings', DAY_COLS, { key: 'valueUsd', dir: -1 })
 const daySorted = computed(() => daySort.apply(rows.value || []))
 // Last-session closes from the repo (state.sparks); none yet: an empty spark of the same height.
-// Dashed level at the previous close, tone by the day change. A `prior` session (US, right after
-// the open) is not what they refer to: no level, tone by the drawn line's own direction.
+// Waterline at the previous close (green above, red below). A `prior` session (US, right after
+// the open) is not what it refers to: no level, the line splits at its own first close.
 function daySpark(r) {
   const s = app.state.value?.sparks?.[r.ticker]
   const spark = s?.spark || EMPTY
-  if (s?.prior) return { spark, prev: null, down: spark[spark.length - 1] < spark[0] }
-  return { spark, prev: n(r.prevClose), down: (n(r.dayChangePct) ?? 0) < 0 }
+  return { spark, prev: s?.prior ? null : n(r.prevClose) }
 }
 
 // Period: positions still open at the period end.

@@ -13,7 +13,7 @@
     <ul class="mkts__row">
       <li v-for="c in cards" :key="c.ticker" class="mcard">
         <p class="mcard__name">{{ c.label }}<small v-if="c.note">{{ c.note }}</small></p>
-        <MarketSpark v-if="c.ready" :spark="c.spark" :prev="c.prev" :down="c.change < 0" />
+        <MarketSpark v-if="c.ready" :spark="c.spark" :prev="c.prev" />
         <div v-else class="spark skel" aria-hidden="true" />
         <template v-if="c.ready">
           <p class="mcard__last num">{{ fPrice(c.last) }}</p>

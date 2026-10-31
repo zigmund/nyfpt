@@ -4,7 +4,7 @@ import { money, pct, num } from './format.js'
 export const DASH = '—'
 const MINUS = '\u2212'
 const minus = (s) => s.replace('-', MINUS) // en-US numbers use U+2212 for negatives
-export const HIDDEN = '***'
+export const HIDDEN = '***' // hidden quantities only; money keeps sign and $ (format.js money)
 
 /** Finite number or null (broker fields may be null, '', strings or NaN). */
 export const n = (v) => {

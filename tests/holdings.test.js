@@ -387,34 +387,34 @@ describe('Holdings: Yahoo-style rows', () => {
     expect(w.get('[data-test="h-link"]').attributes('href')).toBe('#/position/A%26B%2FC.US')
   })
 
-  it('Day spark: last-session closes from the repo, previous-close level, tone by the day change', () => {
+  it('Day spark: last-session closes from the repo, previous-close level', () => {
     setup()
     const w = mountH()
-    expect(sparkOf(w.get('[data-ticker="AAA.US"]'))).toEqual({ spark: [98, 99.5, 99, 100], prev: 98, down: false })
-    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [52, 51, 50.5, 50], prev: 52, down: true })
+    expect(sparkOf(w.get('[data-ticker="AAA.US"]'))).toEqual({ spark: [98, 99.5, 99, 100], prev: 98 })
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [52, 51, 50.5, 50], prev: 52 })
     // No data: an empty spark of the same height (no skeleton swap, no jump when it arrives).
     const ccc = w.get('[data-ticker="CCC.US"]')
     expect(sparkOf(ccc).spark).toEqual([])
     expect(ccc.find('.spark').exists()).toBe(true)
   })
 
-  it('Day spark of the previous session (prior): no previous-close level, tone by its own direction', () => {
+  it('Day spark of the previous session (prior): no previous-close level (split at its own first close)', () => {
     const { app } = setup()
     app.state.value = { ...app.state.value, sparks: { ...SPARKS, 'BBB.US': { date: '2026-10-29', spark: [49, 51], prior: true } } }
     const w = mountH()
     // BBB is down today (pill), but the drawn session rose: the line is not measured against today's base.
-    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [49, 51], prev: null, down: false })
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [49, 51], prev: null })
     expect(w.get('[data-ticker="BBB.US"] [data-test="h-daypct"]').classes()).toContain('pill--neg')
   })
 
-  it('Period spark: closes over the period from the start price to the end price, tone by Range %', () => {
+  it('Period spark: closes over the period from the start price to the end price', () => {
     setup({ prefs: { holdingsMode: 'period' } })
     const w = mountH()
     const aaa = w.get('[data-test="hp-row"][data-ticker="AAA.US"]')
     expect(aaa.get('a[data-test="h-link"]').attributes('href')).toBe('#/position/AAA.US')
     expect(aaa.get('[data-test="h-name"]').text()).toBe('Alpha')
     // base 2025-12-31 (90) -> 95, 96, 98 -> end 2026-10-30 (100)
-    expect(sparkOf(aaa)).toEqual({ spark: [90, 95, 96, 98, 100], prev: null, down: false })
+    expect(sparkOf(aaa)).toEqual({ spark: [90, 95, 96, 98, 100], prev: null })
     const pill = aaa.get('[data-test="hp-pct"]')
     expect(pill.classes()).toEqual(expect.arrayContaining(['pill', 'pill--pos']))
     expect(aaa.get('[data-test="hp-price"]').text()).toBe('100.00')

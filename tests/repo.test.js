@@ -10,6 +10,7 @@ import {
 } from '../src/calc/portfolio.js'
 import { livePriceRows } from '../src/calc/live.js'
 import { createAppState } from '../src/composables/useApp.js'
+import { CACHE_VERSION } from '../src/config.js'
 
 // Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
 const SRV3 = { offset: 10800, markets: {} }
@@ -104,11 +105,16 @@ function fakeBroker() {
 }
 
 describe('repo', () => {
-  let db, clock
+  let db, idb, clock
   beforeEach(async () => {
-    db = await openAccountDb('global:1', new IDBFactory())
+    idb = new IDBFactory()
+    db = await openAccountDb('global:1', idb)
     clock = T0
   })
+  // The same account written by a bundle with an older cache format.
+  const oldDb = () => openAccountDb('global:1', idb, { version: CACHE_VERSION - 1 })
+  const scale = (series, k, pick = () => true) => series.map(([d, c]) => [d, pick(d) ? c * k : c])
+  const asCandles = (rows) => rows.map(([date, close]) => ({ date, close }))
   const mk = (broker) => { broker.now = () => clock; return createRepo({ broker, db, now: () => clock }) }
   const stripIntraday = (b) => b.calls.hlocIntraday.filter((c) => c.tickers[0] === STRIP[0])
   const sparkCalls = (b) => b.calls.hlocIntraday.filter((c) => c.tickers[0] !== STRIP[0])
@@ -178,7 +184,8 @@ describe('repo', () => {
     b.series = full
     b.calls.hlocDaily.length = 0
     await repo.ensurePrices('7d', '2026-10-13') // start 10-06, already covered
-    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-09', count: -6 }])
+    // From the earliest of the last 2 stored days (CCC_KZ has no 10-08: 10-07), one request.
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-07', count: -6 }])
     expect(await db.getCandles('AAA.US')).toEqual(full['AAA.US'].map(([date, close]) => ({ date, close })))
     expect(b.calls.trades).toEqual(['2026-10-02'])
   })
@@ -195,7 +202,7 @@ describe('repo', () => {
     expect((await db.getKv('positions')).data.rawPs.pos).toHaveLength(4)
     await repo.ensurePrices('7d', '2026-10-13')
     expect(b.calls.hlocDaily).toEqual([
-      { tickers: PORTFOLIO, dateFrom: '2026-10-13', count: -6 },
+      { tickers: PORTFOLIO, dateFrom: '2026-10-12', count: -6 },
       { tickers: ['DDD.US'], dateFrom: '2026-09-26', count: -6 },
     ])
     expect((await db.getCandles('DDD.US')).map((c) => c.close)).toEqual([20, 21, 22])
@@ -213,7 +220,97 @@ describe('repo', () => {
     expect(b.calls.hlocDaily.map((c) => c.dateFrom)).toEqual(['2026-10-02', '2026-09-03'])
     await repo.ensurePrices('7d', '2026-10-13')
     expect(b.calls.trades).toHaveLength(2)
-    expect(b.calls.hlocDaily.at(-1).dateFrom).toBe('2026-10-13')
+    expect(b.calls.hlocDaily.at(-1).dateFrom).toBe('2026-10-12')
+  })
+
+  // --- Task 31: release-safe cache, immutable history, split check
+  it('kv rows of another cache version are refetched at once, TTL ignored', async () => {
+    const b = fakeBroker()
+    await createRepo({ broker: b, db: await oldDb(), now: () => clock }).load() // previous release
+    expect([...counts(b), sparkCalls(b).length]).toEqual([1, 1, 1, 1])
+    clock += 30e3 // every row still within its TTL
+    await mk(b).load()
+    expect([...counts(b), sparkCalls(b).length]).toEqual([2, 2, 2, 2])
+    clock += 30e3
+    await mk(b).load() // rows of this version: cached again
+    expect([...counts(b), sparkCalls(b).length]).toEqual([2, 2, 2, 2])
+  })
+
+  it('candles of another cache version are downloaded again once, stale rows purged', async () => {
+    const b = fakeBroker()
+    const old = await oldDb()
+    await createRepo({ broker: b, db: old, now: () => clock }).ensurePrices('7d', '2026-10-13')
+    await old.putCandles('AAA.US', [{ date: '2026-01-02', close: 1 }])
+    b.calls.hlocDaily.length = 0
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-09-26', count: -6 }])
+    expect(await db.getCandles('AAA.US')).toEqual(asCandles(b.series['AAA.US']))
+    expect(await old.getCandles('AAA.US')).toEqual([]) // old-format rows deleted, not just hidden
+    expect(repo.coreFor('7d', '2026-10-13')).not.toBeNull()
+    b.calls.hlocDaily.length = 0
+    await mk(b).ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-12', count: -6 }])
+  })
+
+  it('top-up re-requests the last 2 stored days and overwrites them (no full refetch)', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    // 10-12 revised slightly, 10-13 was partial: both differ from what is stored.
+    b.series = Object.fromEntries(Object.entries(b.series).map(([t, rows]) => [t,
+      scale(scale(rows, 1.002, (d) => d === '2026-10-12'), 1.1, (d) => d === '2026-10-13')]))
+    b.calls.hlocDaily.length = 0
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-12', count: -6 }])
+    for (const t of PORTFOLIO) expect(await db.getCandles(t)).toEqual(asCandles(b.series[t]))
+  })
+
+  it('split: an adjusted earliest overlapping close drops the ticker and downloads it again in one request', async () => {
+    const b = fakeBroker()
+    await mk(b).ensurePrices('7d', '2026-10-13') // covered from 09-26
+    await db.putCandles('AAA.US', [{ date: '2026-09-28', close: 99 }]) // stored day the new answer lacks
+    b.series['AAA.US'] = scale(b.series['AAA.US'], 0.5) // 2:1 split
+    b.series['CCC_KZ.KZ'] = scale(b.series['CCC_KZ.KZ'], 3) // 1:3 reverse split, KZ calendar
+    b.calls.hlocDaily.length = 0
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([
+      { tickers: PORTFOLIO, dateFrom: '2026-10-12', count: -6 },
+      { tickers: ['AAA.US', 'CCC_KZ.KZ'], dateFrom: '2026-09-26', count: -6 },
+    ])
+    expect(await db.getCandles('AAA.US')).toEqual(asCandles(b.series['AAA.US']))
+    expect(await db.getCandles('CCC_KZ.KZ')).toEqual(asCandles(b.series['CCC_KZ.KZ']))
+    expect((await db.getKv('candleCover')).data).toMatchObject({ 'AAA.US': '2026-09-26', 'CCC_KZ.KZ': '2026-09-26' })
+    expect(repo.coreFor('7d', '2026-10-13')).not.toBeNull()
+  })
+
+  it('split check: within 0.5% keeps the history; a single stored day is never compared', async () => {
+    const b = fakeBroker()
+    b.series['SPY.US'] = [['2026-10-13', 520]] // one stored day only
+    await mk(b).ensurePrices('7d', '2026-10-13')
+    await db.putCandles('AAA.US', [{ date: '2026-09-28', close: 99 }])
+    b.series['AAA.US'] = scale(b.series['AAA.US'], 1.004)
+    b.series['SPY.US'] = [['2026-10-13', 260]]
+    b.calls.hlocDaily.length = 0
+    await mk(b).ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-12', count: -6 }])
+    expect(await db.getCandles('AAA.US')).toEqual([{ date: '2026-09-28', close: 99 }, ...asCandles(b.series['AAA.US'])])
+    expect(await db.getCandles('SPY.US')).toEqual([{ date: '2026-10-13', close: 260 }])
+  })
+
+  it('split on a longer-period backfill: the answer already reaches back, no extra request', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    await db.putCandles('AAA.US', [{ date: '2026-09-28', close: 99 }])
+    b.series['AAA.US'] = scale(b.series['AAA.US'], 0.5)
+    b.calls.hlocDaily.length = 0
+    const r2 = mk(b)
+    await r2.ensurePrices('1m', '2026-10-13') // start 09-13: everything from 09-03
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-09-03', count: -6 }])
+    expect(await db.getCandles('AAA.US')).toEqual(asCandles(b.series['AAA.US']))
+    expect((await db.getKv('candleCover')).data['AAA.US']).toBe('2026-09-03')
   })
 
   it('refresh failure keeps cached data and reports error', async () => {
@@ -481,7 +578,7 @@ describe('repo', () => {
 })
 
 describe('useApp + repo: closes after the session', () => {
-  it('live -> not live on the same NY day re-requests closes from today', async () => {
+  it('live -> not live on the same NY day re-requests the last stored closes', async () => {
     const db = await openAccountDb('global:1', new IDBFactory())
     const b = fakeBroker()
     const full = b.series
@@ -516,7 +613,7 @@ describe('useApp + repo: closes after the session', () => {
     b.series = Object.fromEntries(Object.entries(full).map(([t, rows]) => [t, rows.filter(([d]) => d <= '2026-10-12')]))
     live = false
     onUpdate() // the session closed
-    await vi.waitFor(() => expect(b.calls.hlocDaily.map((c) => c.dateFrom)).toContain('2026-10-12'))
+    await vi.waitFor(() => expect(b.calls.hlocDaily.map((c) => c.dateFrom)).toContain('2026-10-09'))
     await vi.waitFor(async () => expect((await db.getCandles('AAA.US')).at(-1)).toEqual({
       date: '2026-10-12', close: full['AAA.US'].find(([d]) => d === '2026-10-12')[1],
     }))
