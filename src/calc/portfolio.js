@@ -142,8 +142,8 @@ export const computeCore = (positions, trades, cashflows, prices) => {
  *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
  *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
  *  по барам SP500.IDX за этот день.
- *  `order`: tickers of the rows (default: the original five); a ticker without bars gets an empty row. */
-export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US']) => {
+ *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row. */
+export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');

@@ -50,7 +50,7 @@ const en = {
   'main.err.sparks': 'charts',
   'main.err.other': 'other data',
 
-  'mkts.label': 'US markets',
+  'mkts.label': 'Markets',
   'mkts.open': 'US markets open',
   'mkts.closed': 'US markets closed',
   'mkts.dataFor': 'data for {date}',

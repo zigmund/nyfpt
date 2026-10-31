@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import fx from './fixtures/synthetic-api.json'
 import { openAccountDb } from '../src/store/db.js'
 import { createRepo } from '../src/data/repo.js'
-import { BrokerError, SessionExpiredError } from '../src/api/transport.js'
+import { BrokerError, NetworkError, SessionExpiredError } from '../src/api/transport.js'
 import {
   parseHloc, parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js'
@@ -44,6 +44,7 @@ function fakeBroker() {
   const b = {
     calls, fail: {}, series: fixtureSeries(), intraday: {}, gate: null, now: () => T0,
     unknown: new Set(), // tickers the broker does not know: a request naming one fails as a whole
+    hlocError: null, // (tickers) => Error | null: thrown by both getHloc calls
     finder: [],
     async marketStatus() {
       calls.marketStatus++; await b.gate
@@ -73,7 +74,7 @@ function fakeBroker() {
     // count -N: N-1 candles before dateFrom, then everything after.
     async hlocDaily(tickers, dateFrom, count = -6) {
       calls.hlocDaily.push({ tickers: [...tickers], dateFrom, count }); await b.gate
-      if (tickers.some((t) => b.unknown.has(t))) throw new BrokerError('Instruments not found')
+      hlocCheck(tickers)
       return answer(tickers, (rows) => {
         const i = rows.findIndex(([d]) => d >= dateFrom)
         return i < 0 ? [] : rows.slice(Math.max(0, i + count + 1))
@@ -87,7 +88,7 @@ function fakeBroker() {
     async hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
       calls.hlocIntraday.push({ tickers: [...tickers], dateFrom, dateTo, timeframe }); await b.gate
       if (b.fail.hlocIntraday) throw b.fail.hlocIntraday
-      if (tickers.some((t) => b.unknown.has(t))) throw new BrokerError('Instruments not found')
+      hlocCheck(tickers)
       const a = { hloc: {}, xSeries: {}, info: {} }
       for (const t of tickers) {
         const rows = b.intraday[t] || []
@@ -98,6 +99,13 @@ function fakeBroker() {
       }
       return a
     },
+  }
+  // Like the broker (verified 2026-11-01): an unknown ticker fails the whole request, named in the text.
+  function hlocCheck(tickers) {
+    const e = b.hlocError?.(tickers)
+    if (e) throw e
+    const bad = tickers.filter((t) => b.unknown.has(t))
+    if (bad.length) throw new BrokerError(`Failed to find instruments by tickers: ${bad.join(', ')}`)
   }
   function answer(tickers, pick) {
     const a = { hloc: {}, xSeries: {}, info: {} }
@@ -562,6 +570,89 @@ describe('repo', () => {
       expect(repo.marketsStrip().map((r) => r.ticker)).toEqual(['SP500.IDX', 'BAD.US', 'AAA.US'])
     })
 
+    it('tickers named by the error are dropped and the rest asked again: no per-ticker requests', async () => {
+      const b = fakeBroker()
+      b.unknown.add('BAD.US').add('WORSE.US')
+      const repo = mkStrip(b, ['BAD.US', 'AAA.US', 'WORSE.US'])
+      await repo.load()
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([
+        ['SP500.IDX', 'BAD.US', 'AAA.US', 'WORSE.US'], ['SP500.IDX', 'AAA.US'],
+      ])
+      expect(stripIntraday(b).map((c) => c.tickers)).toEqual([
+        ['SP500.IDX', 'BAD.US', 'AAA.US', 'WORSE.US'], ['SP500.IDX', 'AAA.US'],
+      ])
+    })
+
+    it('fallback without names: one request at a time; the session index is never dropped', async () => {
+      const b = fakeBroker()
+      // Combined rejected without naming anything, the index rejected alone too (e.g. a 429 with a JSON body).
+      b.hlocError = (ts) => (ts.length > 1 || ts[0] === 'SP500.IDX' ? new BrokerError('Too many requests') : null)
+      let active = 0
+      let peak = 0
+      const daily = b.hlocDaily
+      b.hlocDaily = async (...args) => {
+        peak = Math.max(peak, ++active)
+        try { return await daily(...args) } finally { active-- }
+      }
+      const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
+      await repo.load()
+      expect(stripDaily(b).map((c) => c.tickers)).toEqual([
+        ['SP500.IDX', 'AAA.US', 'BBB.US'], ['SP500.IDX'], ['AAA.US'], ['BBB.US'],
+      ])
+      expect(peak).toBe(1)
+      expect(repo.marketsStrip().find((r) => r.ticker === 'AAA.US').last).not.toBeNull()
+      b.hlocError = null
+      clock += TTL_MARKETS
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'AAA.US', 'BBB.US'])
+    })
+
+    it('a network error in the fallback drops nothing', async () => {
+      const b = fakeBroker()
+      b.hlocError = (ts) => (ts.length > 1 ? new BrokerError('Busy') : ts[0] === 'AAA.US' ? new NetworkError() : null)
+      const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
+      await repo.load()
+      expect(repo.marketsStrip().find((r) => r.ticker === 'AAA.US').last).toBeNull()
+      b.hlocError = null
+      clock += TTL_MARKETS
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'AAA.US', 'BBB.US'])
+    })
+
+    it('a ticker rejected alone without being named is skipped for a while, then asked again', async () => {
+      const b = fakeBroker()
+      b.hlocError = (ts) => (ts.length > 1 || ts[0] === 'BBB.US' ? new BrokerError('Nope') : null)
+      const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
+      await repo.load()
+      b.hlocError = null
+      clock += TTL_MARKETS
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'AAA.US'])
+      clock += 5 * 60e3
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b).at(-1).tickers).toEqual(['SP500.IDX', 'AAA.US', 'BBB.US'])
+    })
+
+    it('every fallback call failing (maintenance): an error, then combined requests only for a while', async () => {
+      const b = fakeBroker()
+      b.hlocError = () => new BrokerError('Maintenance')
+      const repo = mkStrip(b, ['AAA.US', 'BBB.US'])
+      let st
+      repo.subscribe((s) => { st = s })
+      await repo.load()
+      expect(st.errors.markets).toBeTruthy()
+      expect(stripDaily(b)).toHaveLength(4) // combined + 3 single
+      clock += TTL_MARKETS
+      const intraBefore = b.calls.hlocIntraday.length
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b)).toHaveLength(5) // combined only
+      expect(b.calls.hlocIntraday.length - intraBefore).toBe(1)
+      clock += 5 * 60e3
+      await repo.refresh({ only: ['markets'] })
+      expect(stripDaily(b)).toHaveLength(9) // fallback allowed again; no ticker was dropped
+      expect(stripDaily(b).slice(-3).map((c) => c.tickers)).toEqual([['SP500.IDX'], ['AAA.US'], ['BBB.US']])
+    })
+
     it('a strip request failing for every ticker is an error and keeps the cache', async () => {
       const b = fakeBroker()
       const repo = mkStrip(b, ['GLD.US'])
@@ -579,17 +670,17 @@ describe('repo', () => {
   it('findTickers: tickerFinder results as {ticker, name, market}; currency pairs and rows without a ticker dropped', async () => {
     const b = fakeBroker()
     b.finder = [
-      { t: 'GLD.US', nm: 'Gold Trust', mkt: 'FIX', type: 1, kind: 7 },
+      { t: 'GLD.US', nm: 'Gold Trust', n: 'Gold Trust', ln: null, code_nm: 'GLD', mkt: 'FIX', x_curr: 'USD', type: 1, kind: 7 },
       { t: 'EUR/USD', nm: 'Euro', mkt: 'FX' },
       { nm: 'No ticker' },
-      { t: 'KKK.KZ', n: 'Kappa', mkt: 'KASE' },
+      { t: 'KKK.KZ', n: 'Kappa', ln: 'Kappa Holdi', code_nm: 'KKK_KZ', mkt: 'KASE' },
       { t: 'ZZZ.US' },
     ]
     const repo = mk(b)
     expect(await repo.findTickers('  gold ')).toEqual([
-      { ticker: 'GLD.US', name: 'Gold Trust', market: 'FIX' },
-      { ticker: 'KKK.KZ', name: 'Kappa', market: 'KASE' },
-      { ticker: 'ZZZ.US', name: 'ZZZ.US', market: '' },
+      { ticker: 'GLD.US', name: 'Gold Trust', market: 'FIX', code: 'GLD' },
+      { ticker: 'KKK.KZ', name: 'Kappa', market: 'KASE', code: 'KKK_KZ' },
+      { ticker: 'ZZZ.US', name: 'ZZZ.US', market: '', code: '' },
     ])
     expect(b.calls.finder).toEqual(['gold'])
     expect(await repo.findTickers('   ')).toEqual([])

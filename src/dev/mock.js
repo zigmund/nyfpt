@@ -153,12 +153,15 @@ const FINDER = [
 function tickerFinder(text) {
   const q = String(text || '').trim().toLowerCase()
   const found = FINDER.filter(([t, nm]) => t.toLowerCase().includes(q) || nm.toLowerCase().includes(q))
-    .slice(0, 30).map(([t, nm, mkt], i) => ({ instr_id: 1000 + i, t, nm, n: nm, mkt, type: 1, kind: 1 }))
+    .slice(0, 30).map(([t, nm, mkt], i) => ({
+      instr_id: 1000 + i, t, nm, n: nm, ln: null, code_nm: t.includes('/') ? t : t.replace(/\.KZ$/, '_KZ').replace(/\.[^.]+$/, ''),
+      mkt, x_curr: mkt === 'KASE' ? 'KZT' : 'USD', type: 1, kind: 1,
+    }))
   return { found }
 }
 const known = (tickers) => {
   const bad = tickers.filter((t) => UNKNOWN.has(t))
-  if (bad.length) throw new BrokerError(`Instruments not found: ${bad.join(', ')}`, { cmd: 'getHloc' })
+  if (bad.length) throw new BrokerError(`Failed to find instruments by tickers: ${bad.join(', ')}`, { cmd: 'getHloc' })
 }
 
 /** getSecurityInfo-like flat object (subset of fields the card reads). */

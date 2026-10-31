@@ -111,6 +111,8 @@ describe('MarketsStrip', () => {
   it('default: the current cards in order, with labels and notes', () => {
     makeApp({ markets: DEFAULT_TICKERS.map((t, i) => row(t, 100 + i)) })
     const w = mount(MarketsStrip)
+    expect(w.get('[data-test="markets"]').attributes('aria-label')).toBe('Markets') // cards may be anything
+    expect(w.get('.status').text()).toContain('US markets') // the status line stays about the US
     const names = w.findAll('.mcard__name').map((n) => [n.element.firstChild.textContent, n.find('small').exists() ? n.get('small').text() : null])
     expect(names).toEqual(MARKET_STRIP.map((m) => [m.label, m.note ?? null]))
     w.unmount()
@@ -287,6 +289,18 @@ describe('MarketStripEditor', () => {
       expect(saved.at(-1).marketStrip.at(-1)).toEqual({ ticker: 'DDD.US', label: 'Delta Corp', note: 'DDD' })
       expect(app.marketStrip.value).toHaveLength(6)
       expect(results()[1].attributes('disabled')).toBeDefined()
+      w.unmount()
+    })
+
+    it('the note is the broker code (code_nm) when it has one', async () => {
+      const findTickers = vi.fn(async () => [{ ticker: 'NNN.KZ', name: 'Nu Corp', market: 'KASE', code: 'NNN_KZ' }])
+      const { saved } = makeApp({ findTickers })
+      const w = mount(MarketStripEditor)
+      await w.get('[data-test="strip-search"]').setValue('n')
+      await vi.advanceTimersByTimeAsync(400)
+      await flushPromises()
+      await w.get('[data-test="strip-result"]').trigger('click')
+      expect(saved.at(-1).marketStrip.at(-1)).toEqual({ ticker: 'NNN.KZ', label: 'Nu Corp', note: 'NNN_KZ' })
       w.unmount()
     })
 

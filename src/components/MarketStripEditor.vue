@@ -119,12 +119,13 @@ function rename(i, e) {
   save(items.value.map((m, k) => (k === i ? { ...m, label } : { ...m })))
 }
 
-// Note: the ticker code without its market suffix, like the default cards (USO.US -> USO).
-const noteOf = (ticker) => ticker.replace(/\.[^.]+$/, '') || ticker
+// Note: the broker's code_nm (the ticker without its suffix, e.g. DIA, NVDA_KZ), else the ticker with
+// its market suffix stripped, like the default cards (USO.US -> USO).
+const noteOf = (r) => r.code || r.ticker.replace(/\.[^.]+$/, '') || r.ticker
 
 function add(r) {
   if (full.value || has(r.ticker)) return
-  save([...items.value, { ticker: r.ticker, label: r.name || r.ticker, note: noteOf(r.ticker) }])
+  save([...items.value, { ticker: r.ticker, label: r.name || r.ticker, note: noteOf(r) }])
 }
 
 function reset() {

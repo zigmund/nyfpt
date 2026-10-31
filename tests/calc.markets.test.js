@@ -22,14 +22,14 @@ describe('computeMarkets', () => {
       daily('NASDAQ.IDX', '2026-10-29', D1 - 86400, 198), daily('NASDAQ.IDX', '2026-10-30', D1, 204),
       daily('NASDAQ.IDX', '2026-10-31', D2, 203),
     ]
-    const nq = computeMarkets(dly, intraday).find((r) => r.ticker === 'NASDAQ.IDX')
+    const nq = computeMarkets(dly, intraday, undefined, undefined, ['SP500.IDX', 'NASDAQ.IDX']).find((r) => r.ticker === 'NASDAQ.IDX')
     expect(nq.spark).toEqual([200, 202, 204])
     expect(nq).toMatchObject({ date: '2026-10-30', last: 204, prev: 198 })
   })
 
   it('without intraday anchor keeps the latest daily bars', () => {
     const dly = [daily('SP500.IDX', '2026-10-29', D1 - 86400, 99), daily('SP500.IDX', '2026-10-30', D1, 102)]
-    expect(computeMarkets(dly, [])[0]).toMatchObject({ date: '2026-10-30', last: 102, prev: 99, spark: [] })
+    expect(computeMarkets(dly, [], undefined, undefined, ['SP500.IDX'])[0]).toMatchObject({ date: '2026-10-30', last: 102, prev: 99, spark: [] })
   })
 
   it('rows follow the given tickers and their order; a ticker without bars gets an empty row', () => {

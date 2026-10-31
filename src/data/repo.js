@@ -7,7 +7,7 @@
 //   cashflows    rows                 parseCashflows rows (whole history)
 //   trades       {from, rows}         parseTrades rows since `from` (beginDate watermark)
 //   markets      {tickers, daily, intraday}  parseHloc rows of the session index + strip tickers
-//                                    (no `tickers`: rows cached before the setting, the default set)
+//                                    (no `tickers`: rows cached before Task 38, LEGACY_STRIP)
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
@@ -50,6 +50,13 @@ const SEC_INTRADAY_DAYS = 8 // 5 sessions back, weekends and a holiday included
 const SEC_MAX_FROM = '1990-01-01'
 const SESSION_INDEX = 'SP500.IDX' // its intraday bars mark the regular US session
 const DEFAULT_STRIP = MARKET_STRIP.map((m) => m.ticker)
+// Tickers of markets rows cached before the strip became customizable (no `tickers` field). Frozen:
+// a later MARKET_STRIP change must not make those rows look complete.
+const LEGACY_STRIP = Object.freeze(['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'])
+// After a per-ticker fallback: a ticker rejected alone (without being named) is skipped this long;
+// when every call of a fallback failed, no fallback for this long either (combined requests only).
+const HLOC_RETRY_MS = 5 * 60e3
+const NAME_ROUNDS = 3 // combined retries after dropping the tickers an error names
 const FINDER_MAX = 30
 const HLOC_KEYS = ['hloc', 'xSeries', 'vl', 'info', 'maxSeries']
 
@@ -60,6 +67,10 @@ const addDays = (s, n) => {
 }
 const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
+// Tickers of `tickers` named as whole tokens in a broker error text, e.g. "Failed to find instruments
+// by tickers: ZZZQX.US" (no error code seen for it; matching our own tickers keeps it independent of the text's language).
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const namedIn = (msg, tickers) => tickers.filter((t) => new RegExp(`(^|[^\\w.-])${esc(t)}(?![\\w-])`, 'i').test(String(msg || '')))
 // getHloc answers of disjoint ticker sets as one answer.
 const mergeHloc = (answers) => Object.fromEntries(HLOC_KEYS.map((k) => [k, Object.assign({}, ...answers.map((a) => (a && a[k]) || {}))]))
 
@@ -94,7 +105,9 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   let cacheLoaded = null
   let loaded = false
   let strip = [...new Set(initialStrip)]
-  const badTickers = new Set() // strip tickers the broker rejected on their own: not requested again
+  const badTickers = new Set() // strip tickers a broker error named as unknown: not requested again
+  const skipUntil = new Map() // ticker -> ms: rejected alone without being named, skipped until then
+  let fanOutPausedUntil = 0 // every call of the last per-ticker fallback failed: no fallback until then
 
   // Market clock: server offset from daily candles and market hours from getHloc `info`
   // (`learned`, kv marketInfo); the getMarketStatus snapshot only fills what is not learned yet.
@@ -134,7 +147,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
 
   // Markets dataset tickers: the session index (the app's trading date) + the strip cards.
   const marketTickers = () => [...new Set([SESSION_INDEX, ...strip])]
-  const cachedMarketTickers = () => cache.markets?.tickers || DEFAULT_STRIP
+  const cachedMarketTickers = () => cache.markets?.tickers || LEGACY_STRIP
   // A strip ticker is missing from the cached rows: fetch at once (removed ones need nothing).
   const marketsOutdated = () => !!cache.markets && marketTickers().some((t) => !cachedMarketTickers().includes(t))
 
@@ -145,22 +158,48 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       : null
   }
 
-  // One getHloc for `tickers`; when the broker rejects it (an unknown ticker fails the whole request),
-  // one request per ticker: those it rejects alone are remembered and skipped, the rest is merged.
-  // All of them failing is the dataset's error.
+  // One getHloc for `tickers` that an unknown ticker does not break (the broker fails the whole request
+  // for it). A rejected request: tickers the error names are remembered and dropped, and the rest is
+  // asked again; with none named, one request per ticker, one at a time (no burst), merged. Only a
+  // named ticker is dropped for good; one rejected alone without being named is skipped for
+  // HLOC_RETRY_MS; network errors record nothing. SESSION_INDEX is never dropped or skipped (trading
+  // date, status date, spark windows). Every fallback call failing is the dataset's error and pauses
+  // the fallback for HLOC_RETRY_MS.
   async function hlocTolerant(call, tickers) {
-    const ask = tickers.filter((t) => !badTickers.has(t))
-    if (!ask.length) return { hloc: {} }
-    try {
-      return await call(ask)
-    } catch (e) {
-      if (!(e instanceof BrokerError) || ask.length < 2) throw e
-      const each = await Promise.allSettled(ask.map((t) => call([t])))
-      const ok = each.filter((r) => r.status === 'fulfilled').map((r) => r.value)
-      if (!ok.length) throw e
-      each.forEach((r, i) => { if (r.status === 'rejected' && r.reason instanceof BrokerError) badTickers.add(ask[i]) })
-      return mergeHloc(ok)
+    const usable = (t) => t === SESSION_INDEX || (!badTickers.has(t) && !(skipUntil.get(t) > now()))
+    let ask = tickers.filter(usable)
+    for (let round = 0; ask.length; round++) {
+      let e
+      try { return await call(ask) } catch (err) { e = err }
+      if (!(e instanceof BrokerError)) throw e
+      const named = namedIn(e.message, ask).filter((t) => t !== SESSION_INDEX)
+      if (named.length && round < NAME_ROUNDS) {
+        for (const t of named) badTickers.add(t)
+        ask = ask.filter((t) => !named.includes(t))
+        continue
+      }
+      if (ask.length < 2 || now() < fanOutPausedUntil) throw e
+      return hlocEach(call, ask, e)
     }
+    return { hloc: {} }
+  }
+  async function hlocEach(call, ask, first) {
+    const ok = []
+    for (const t of ask) {
+      try {
+        ok.push(await call([t]))
+      } catch (err) {
+        if (!(err instanceof BrokerError) || t === SESSION_INDEX) continue
+        if (namedIn(err.message, [t]).length) badTickers.add(t)
+        else skipUntil.set(t, now() + HLOC_RETRY_MS)
+      }
+    }
+    if (!ok.length) {
+      fanOutPausedUntil = now() + HLOC_RETRY_MS
+      for (const t of ask) skipUntil.delete(t) // nothing worked: not the tickers' fault
+      throw first
+    }
+    return mergeHloc(ok)
   }
 
   // Day sparks, recomputed only when their inputs change (state() runs on every emit).
@@ -594,7 +633,8 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       await refresh({ only: ['markets'] })
     },
 
-    /** Broker search (tickerFinder, anonymous): [{ticker, name, market}], at most 30;
+    /** Broker search (tickerFinder, anonymous): [{ticker, name, market, code}] (code: code_nm, the
+     *  ticker without its suffix, '' when absent), at most 30;
      *  currency pairs skipped. Rejects on errors. */
     async findTickers(text) {
       const q = String(text || '').trim()
@@ -605,7 +645,8 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
         .slice(0, FINDER_MAX)
         .map((x) => {
           const name = [x.nm, x.n, x.ln].find((v) => typeof v === 'string' && v.trim())
-          return { ticker: x.t.trim(), name: name ? name.trim() : x.t.trim(), market: typeof x.mkt === 'string' ? x.mkt : '' }
+          const code = typeof x.code_nm === 'string' && x.code_nm.trim() ? x.code_nm.trim() : ''
+          return { ticker: x.t.trim(), name: name ? name.trim() : x.t.trim(), market: typeof x.mkt === 'string' ? x.mkt : '', code }
         })
     },
 
