@@ -71,6 +71,7 @@ export function sessionBounds(indexRows) {
 }
 
 const SESSION_OPEN_MIN = 9 * 60 + 30 // 09:30 New York
+const FULL_SESSION_S = 6.5 * 3600 - 1 // 09:30 to 16:00 NY: bars starting before the close
 
 const addDays = (s, n) => {
   const d = new Date(`${s}T00:00:00Z`)
@@ -103,13 +104,21 @@ export function chartStart(period, today) {
 export function chartRows(period, { intraday, daily, max } = {}, { today, sessions } = {}) {
   const src = chartSource(period)
   if (src === 'intraday') {
-    // Dates without index bars (older ones, or today before the open): the latest known
-    // session's time of day.
-    const known = sessions && sessions.size ? [...sessions.keys()].sort().pop() : null
-    const off = known ? sessions.get(known).map((v) => v % 86400) : null
-    const inSession = (intraday || []).flatMap((r) => {
+    // Bounds per date: past sessions their own index bounds; the latest (possibly running)
+    // session is open-ended up to a full session, so bars newer than the cached index bars
+    // stay; dates without index bars (older ones, today before the open) get a full session
+    // from the known opening time of day.
+    const latest = sessions && sessions.size ? [...sessions.keys()].sort().pop() : null
+    const open0 = latest ? sessions.get(latest)[0] % 86400 : null
+    const boundsOf = (r) => {
+      const b = sessions && sessions.get(r.date)
+      if (b) return r.date === latest ? [b[0], Math.max(b[1], b[0] + FULL_SESSION_S)] : b
+      if (open0 === null) return null
       const day = r.ts - (r.ts % 86400)
-      const b = (sessions && sessions.get(r.date)) || (off && [day + off[0], day + off[1]])
+      return [day + open0, day + open0 + FULL_SESSION_S]
+    }
+    const inSession = (intraday || []).flatMap((r) => {
+      const b = boundsOf(r)
       if (!b) return [{ ...r, min: null }]
       if (r.ts < b[0] || r.ts > b[1]) return []
       return [{ ...r, min: SESSION_OPEN_MIN + Math.round((r.ts - b[0]) / 60) }]

@@ -368,6 +368,31 @@ describe('calc', () => {
     expect(keyStats({ info: INFO, daily: DAILY, intraday, sessions: SESSIONS }).open).toBe(122)
   })
 
+  // During a session: 10-29 full index session, 10-30 index bars only up to 08:00 (11:00 NY).
+  const LIVE_SESSIONS = sessionBounds([
+    { date: '2026-10-29', ts: TS('2026-10-29', 6, 30) }, { date: '2026-10-29', ts: TS('2026-10-29', 12, 45) },
+    { date: '2026-10-30', ts: TS('2026-10-30', 6, 30) }, { date: '2026-10-30', ts: TS('2026-10-30', 8, 0) },
+  ])
+
+  it('chartRows 5D during a session: older days keep a full session, not today\'s time of day', () => {
+    const intraday = [...bars('2026-10-28', 80), ...INTRADAY] // 10-28: no index bars
+    const d5 = chartRows('5D', { intraday }, { today: '2026-10-30', sessions: LIVE_SESSIONS })
+    const on = (d) => d5.filter((r) => r.date === d)
+    expect(on('2026-10-28')).toHaveLength(26)
+    expect(on('2026-10-28').at(-1).min).toBe(15 * 60 + 45)
+    expect(on('2026-10-29')).toHaveLength(26)
+    // today is open-ended up to a full session, post-market still excluded
+    expect(on('2026-10-30')).toHaveLength(26)
+    expect(on('2026-10-30').at(-1).ts).toBe(TS('2026-10-30', 12, 45))
+  })
+
+  it('chartRows 1D: today\'s newest bars stay while the index bars lag', () => {
+    const today = bars('2026-10-30', 100).filter((r) => r.ts <= TS('2026-10-30', 8, 30)) // stock up to 11:30 NY
+    const d1 = chartRows('1D', { intraday: [...bars('2026-10-29', 90), ...today] }, { today: '2026-10-30', sessions: LIVE_SESSIONS })
+    expect(d1).toHaveLength(9) // 09:30 .. 11:30 NY
+    expect(d1.at(-1).min).toBe(11 * 60 + 30)
+  })
+
   it('chartRows: daily periods keep the last close before the start as the baseline', () => {
     expect(chartStart('YTD', '2026-03-10')).toBe('2025-12-31')
     expect(chartStart('1M', '2026-03-10')).toBe('2026-02-10')
