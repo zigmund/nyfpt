@@ -14,8 +14,9 @@ import { createLive } from '../data/live.js'
 import { createNews } from '../data/news.js'
 
 export const THEMES = ['system', 'light', 'dark']
-// Page background per resolved theme, mirrored into <meta name="theme-color"> (keep in sync with app.css --c-bg).
-const THEME_BG = { light: '#F1F3F2', dark: '#0D0F0E' }
+// Page background per resolved theme, mirrored into <meta name="theme-color">.
+// Same values in app.css --c-bg and public/theme-boot.js (tests/theme-boot.test.js keeps them in sync).
+export const THEME_BG = { light: '#F1F3F2', dark: '#0D0F0E' }
 
 export const ROUTES = ['/', '/login', '/compare', '/settings']
 

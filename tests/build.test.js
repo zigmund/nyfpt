@@ -61,4 +61,13 @@ describe.skipIf(!built && !required)('production build', () => {
     expect(html).not.toMatch(/<style|\sstyle=/i)
     expect(html).not.toMatch(/<script(?![^>]*\ssrc=)[^>]*>/i)
   })
+
+  it('ships the theme boot script and runs it before the stylesheet and the app entry', () => {
+    expect(existsSync(join(dist, 'theme-boot.js'))).toBe(true)
+    const html = readFileSync(join(dist, 'index.html'), 'utf8')
+    const boot = html.indexOf('<script src="/theme-boot.js"></script>')
+    expect(boot).toBeGreaterThan(-1)
+    expect(boot).toBeLessThan(html.search(/<link rel="stylesheet"/))
+    expect(boot).toBeLessThan(html.search(/<script type="module"/))
+  })
 })

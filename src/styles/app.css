@@ -56,6 +56,7 @@
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
+  --edge-t: 0px;                /* top edge guard height; set on phones (see body::before) */
 
   color-scheme: light;
 }
@@ -102,6 +103,8 @@ html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   overflow-x: hidden;
+  /* Root canvas: overscroll areas and Safari's sampled toolbar tint use the page colour. */
+  background: var(--c-bg);
 }
 
 body {
@@ -113,6 +116,27 @@ body {
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overflow-x: clip;
+}
+
+/* Top edge guard. iOS 26 Safari and Home Screen apps no longer use theme-color: the bar under the
+   status bar / compact tab bar takes the background of the fixed or sticky element touching the top
+   edge and keeps that colour after the element leaves (the stuck Holdings header left a panel-coloured
+   band). A page-coloured strip is always that element, so the bar stays --c-bg in both themes; sticky
+   headers stick below it. Phones only: wider layouts have no viewport-sticky headers. */
+@media (max-width: 47.99rem) {
+  :root { --edge-t: calc(var(--safe-t) + .75rem); }
+
+  body::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--edge-t);
+    z-index: 5;
+    background: var(--c-bg);
+    pointer-events: none;
+  }
 }
 
 #app { min-width: 0; }
@@ -1217,7 +1241,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .ptable.htable thead {
     position: sticky;
-    top: 0;
+    top: var(--edge-t);
     z-index: 1;
     background: var(--c-panel);
     border-bottom: 1px solid var(--c-line);
@@ -1308,7 +1332,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 /* position card */
 .pcard__bar {
   position: sticky;
-  top: 0;
+  top: var(--edge-t);
   z-index: 3;
   background: var(--c-bg);
   padding: var(--gap-xs) 0;
