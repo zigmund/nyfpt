@@ -280,7 +280,7 @@ describe('Summary', () => {
     await flushPromises()
     expect(w.get('[data-cperiod="7d"]').attributes('aria-pressed')).toBe('true')
     expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday'], { force: false })
-    expect(w.get('[data-test="p-chart"]').attributes('aria-label')).toContain('5D')
+    expect(w.get('[data-test="p-chart"]').attributes('aria-label')).toContain('7D')
   })
 
   it('draws the 1D chart with the previous close level and volume bars', () => {

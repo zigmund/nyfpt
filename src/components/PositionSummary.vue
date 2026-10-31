@@ -24,7 +24,7 @@
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
       </p>
 
-      <div v-if="rows.length > 1" class="pchart" :aria-label="t('pos.chartLabel', { period })" role="img" data-test="p-chart">
+      <div v-if="rows.length > 1" class="pchart" :aria-label="t('pos.chartLabel', { period: periodLabel })" role="img" data-test="p-chart">
         <PriceChart :rows="rows" :base="base" :intraday="intraday" />
       </div>
       <div v-else-if="chartLoading" class="pchart skel" aria-hidden="true" data-test="p-chart-skel" />
