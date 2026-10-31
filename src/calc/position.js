@@ -130,16 +130,20 @@ const AVG_VOL_CANDLES = 63
 /**
  * Key statistics (Task 22 set). Missing values are null and hidden by the UI.
  *   prevClose  `pp`: the broker's own day change (chg = ltp - pp) is measured from it
- *   open       open of the last daily candle (`op` is unreliable)
+ *   open       open of the first regular-session bar of the last intraday session (as on the
+ *              1D chart; daily candles start with the pre-market), else of the last daily
+ *              candle (`op` is unreliable); `sessions`: sessionBounds, null for non-US
  *   dayLow/dayHigh  `mintp` / `maxtp`
  *   low52/high52    min low / max high over the last 252 daily candles
  *   volume     `vol`; avgVolume  mean `vl` of the last 63 daily candles
  *   kind       'stock' | 'preferred' | 'fund' | null
  */
-export function keyStats({ info, daily } = {}) {
+export function keyStats({ info, daily, intraday, sessions } = {}) {
   const i = info || {}
   const d = daily || []
   const last = d.length ? d[d.length - 1] : null
+  const session = intraday && intraday.length ? chartRows('1D', { intraday }, { sessions }) : []
+  const first = session.find((r) => posNum(r.open) !== null)
   const year = d.slice(-YEAR_CANDLES)
   const lows = year.map((r) => posNum(r.low)).filter((v) => v !== null)
   const highs = year.map((r) => posNum(r.high)).filter((v) => v !== null)
@@ -147,7 +151,7 @@ export function keyStats({ info, daily } = {}) {
   const vol = num(i.vol)
   return {
     prevClose: posNum(i.pp),
-    open: posNum(last && last.open),
+    open: first ? posNum(first.open) : posNum(last && last.open),
     dayLow: posNum(i.mintp),
     dayHigh: posNum(i.maxtp),
     low52: lows.length ? Math.min(...lows) : null,

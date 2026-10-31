@@ -25,7 +25,7 @@ export function lastTradeTime(ltt) {
 
 /**
  * @param {string} ticker
- * @param {{parts: () => string[]}} opts repo parts the current view needs besides 'info' and 'daily'
+ * @param {{parts: () => string[]}} opts repo parts the current view needs besides 'info', 'daily', 'intraday'
  */
 export function usePosition(ticker, { parts = () => [] } = {}) {
   const app = useApp()
@@ -51,7 +51,9 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   const changePct = computed(() => (change.value === null ? null : (change.value / prevClose.value) * 100))
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
-  const stats = computed(() => keyStats({ info: info.value, daily: sec.value.daily }))
+  const stats = computed(() => keyStats({
+    info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions,
+  }))
 
   const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || ticker)
   const currency = computed(() => info.value?.x_curr || raw.value?.curr || null)
@@ -66,7 +68,8 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   })
 
   function load(force = false) {
-    const want = ['info', 'daily', ...parts()]
+    // intraday: the regular-session Open in Key statistics, whatever the chart period
+    const want = ['info', 'daily', 'intraday', ...parts()]
     return Promise.resolve(app.loadSecurity?.(ticker, [...new Set(want)], { force })).catch(() => {})
   }
   // A repo without this ticker's data (account attached after the card opened, cache cleared): load.

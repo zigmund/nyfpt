@@ -219,7 +219,8 @@ describe('Summary', () => {
     const w = mountCard()
     const stats = w.get('[data-test="p-stats"]')
     expect(stats.get('[data-test="pk-prevClose"]').text()).toContain('100.00')
-    expect(stats.get('[data-test="pk-open"]').text()).toContain('348.00')
+    // regular-session open: the 06:30 bar (k = 22) of the last session, not the daily candle (348)
+    expect(stats.get('[data-test="pk-open"]').text()).toContain('122.00')
     expect(stats.get('[data-test="pk-volume"]').text()).toContain('1,234,567')
     expect(stats.get('[data-test="pk-kind"]').text()).toContain(t('pos.kind.stock'))
     expect(stats.get('[data-test="pk-day"]').text()).toContain('99.00')
@@ -245,10 +246,11 @@ describe('Summary', () => {
     await w.get('[data-cperiod="5Y"]').trigger('click')
     await flushPromises()
     expect(app.prefs.cardPeriod).toBe('5Y')
-    expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'max'], { force: false })
+    expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday', 'max'], { force: false })
     await w.get('[data-cperiod="6M"]').trigger('click')
     await flushPromises()
-    expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily'], { force: false })
+    // intraday bars are always needed: Key statistics' Open
+    expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday'], { force: false })
   })
 
   it('draws the 1D chart with the previous close level and volume bars', () => {
@@ -295,7 +297,15 @@ describe('calc', () => {
     expect(s.avgVolume).toBe(1000 + (237 + 299) / 2) // last 63 candles: i = 237..299
     expect(s.kind).toBe('stock')
     expect(keyStats({ info: { kind: 7 } }).kind).toBe('fund')
+    // no intraday bars: the daily candle open is the fallback
+    expect(keyStats({ info: INFO, daily: DAILY, intraday: [] }).open).toBe(348)
     expect(keyStats({})).toMatchObject({ prevClose: null, open: null, low52: null, avgVolume: null, kind: null })
+  })
+
+  it('keyStats: Open = first regular-session bar of the last session (pre-market skipped)', () => {
+    expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: SESSIONS }).open).toBe(122)
+    // no session bounds (KASE and others): the session's own first bar, as on the 1D chart
+    expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: null }).open).toBe(100)
   })
 
   it('positionHolding: USD and foreign-currency positions, zero qty', () => {
