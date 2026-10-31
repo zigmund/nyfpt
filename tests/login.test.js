@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import LoginScreen from '../src/components/LoginScreen.vue'
+import App from '../src/App.vue'
 import { createAppState, installApp, isUsdAccount } from '../src/composables/useApp.js'
 import { BrokerError, NetworkError } from '../src/api/transport.js'
 import { t } from '../src/i18n.js'
@@ -236,6 +237,79 @@ describe('useApp login flow', () => {
     expect(app.liveQuotesForCalc()).toBeUndefined()
     live = true
     expect(app.liveQuotesForCalc()).toBe(quotes)
+  })
+})
+
+describe('session expiry and storage failures', () => {
+  it('drops live state on session expiry', async () => {
+    const { deps, app, expire } = setup()
+    const quotes = new Map([['AAA.US', { ltp: 1 }]])
+    let onUpdate = null
+    deps.createLive.mockImplementationOnce(() => ({
+      quotes, isLive: () => true, marketsOpen: () => ({ us: true }),
+      on: (e, fn) => { if (e === 'update') onUpdate = fn; return () => {} },
+      start: vi.fn(), stop: vi.fn(), pause: vi.fn(), resume: vi.fn(),
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(app.live.isLive.value).toBe(true)
+    expect(app.liveQuotesForCalc()).toBe(quotes)
+
+    expire()
+    expect(deps.createLive.mock.results[0].value.stop).toHaveBeenCalled()
+    expect(app.live.isLive.value).toBe(false)
+    expect(app.live.usOpen.value).toBe(false)
+    expect(app.liveQuotesForCalc()).toBeUndefined()
+    onUpdate() // a late update must not bring it back
+    expect(app.live.isLive.value).toBe(false)
+    expect(app.liveQuotesForCalc()).toBeUndefined()
+  })
+
+  it('shows a retryable error instead of endless loading when storage fails on start', async () => {
+    const f = makeDeps()
+    f.deps.sessionStore.load.mockReturnValue({ cabinetId: 'global', sid: 's', userId: 7, loggedAt: 1 })
+    f.deps.openAccountDb.mockRejectedValueOnce(new Error('InvalidStateError'))
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    const wrapper = mount(App)
+    await flushPromises()
+    expect(app.fatal.value).toBe(t('error.storage'))
+    expect(wrapper.get('[data-test="fatal"]').text()).toContain(t('error.storage'))
+    expect(wrapper.text()).not.toContain(t('main.loading'))
+
+    await wrapper.get('[data-test="fatal"] .btn--primary').trigger('click')
+    await flushPromises()
+    expect(f.deps.openAccountDb).toHaveBeenCalledTimes(2)
+    expect(app.fatal.value).toBe('')
+    expect(wrapper.find('[data-test="fatal"]').exists()).toBe(false)
+  })
+
+  it('offers log out from the storage error', async () => {
+    const f = makeDeps()
+    f.deps.sessionStore.load.mockReturnValue({ cabinetId: 'global', sid: 's', userId: 7, loggedAt: 1 })
+    f.deps.openAccountDb.mockRejectedValueOnce(new Error('InvalidStateError'))
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    const wrapper = mount(App)
+    await flushPromises()
+    const out = wrapper.findAll('[data-test="fatal"] button').find((b) => b.text() === t('settings.logout'))
+    await out.trigger('click')
+    expect(f.deps.sessionStore.clear).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.fatal.value).toBe('')
+  })
+
+  it('persists nothing and shows the error on the login screen when storage fails during login', async () => {
+    const { wrapper, deps, app } = setup()
+    deps.openAccountDb.mockRejectedValueOnce(new Error('InvalidStateError'))
+    await wrapper.get('input[autocomplete="username"]').setValue('me')
+    await wrapper.get('input[type="password"]').setValue('pw')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe(t('error.storage'))
+    expect(deps.sessionStore.save).not.toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.route.value).toBe('/login')
+    expect(wrapper.get('input[type="password"]').element.value).toBe('')
   })
 })
 

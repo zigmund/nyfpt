@@ -4,6 +4,8 @@ const en = {
   'status.updated': 'Updated {time}',
   'error.usdOnly': 'Only USD accounts are supported for now.',
   'error.network': "Can't reach the broker. Check your connection and try again.",
+  'error.storage': "Can't open local storage. Private browsing mode may block it.",
+  'error.retry': 'Try again',
   'error.noUser': "The broker didn't return an account ID. Try logging in again.",
 
   'nav.settings': 'Settings',

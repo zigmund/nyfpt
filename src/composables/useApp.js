@@ -32,6 +32,14 @@ export class AccountError extends Error {
   }
 }
 
+/** Local storage (IndexedDB) could not be opened, e.g. in some private browsing modes. */
+export class StorageError extends Error {
+  constructor(message = t('error.storage')) {
+    super(message)
+    this.name = 'StorageError'
+  }
+}
+
 export const cabinetOf = (id) => CABINETS.find((c) => c.id === id) || CABINETS.find((c) => c.id === DEFAULT_CABINET)
 
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
@@ -53,6 +61,7 @@ export const parseHash = (h) => {
  * Public API:
  *   session      Ref<{cabinetId, sid, userId, loggedAt} | null>
  *   expired      Ref<boolean>   session expired: login shown over the cached data
+ *   fatal        Ref<string>    account could not be opened (storage failure); '' when fine
  *   state        ShallowRef     latest repo state (see data/repo.js), null before an account is open
  *   tick         Ref<number>    bumped on every repo emit and live 'update'
  *   live         { isLive: Ref<boolean>, usOpen: Ref<boolean>, quotes: Map }
@@ -62,7 +71,7 @@ export const parseHash = (h) => {
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout(), clearCache(), go(path), start(), stop()
+ *   logout(), clearCache(), retry(), go(path), start(), stop()
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -71,6 +80,7 @@ export function createAppState(overrides = {}) {
 
   const session = shallowRef(null)
   const expired = ref(false)
+  const fatal = ref('')
   const state = shallowRef(null)
   const tick = ref(0)
   const route = ref(parseHash(win?.location?.hash))
@@ -89,8 +99,9 @@ export function createAppState(overrides = {}) {
   watch(prefs, (p) => deps.prefsStore.save({ ...p }), { deep: true })
 
   function bump() {
-    live.isLive.value = !!liveObj?.isLive()
-    live.usOpen.value = !!liveObj?.marketsOpen()?.us
+    const on = !!liveObj && !expired.value
+    live.isLive.value = on && !!liveObj.isLive()
+    live.usOpen.value = on && !!liveObj.marketsOpen()?.us
     tick.value++
   }
 
@@ -138,11 +149,14 @@ export function createAppState(overrides = {}) {
 
   function onExpired() {
     expired.value = true
-    liveObj?.stop() // the SID is dead: no sockets or polling until the next login
+    // The SID is dead: no sockets or polling, and no live state until the next login.
+    liveObj?.stop()
+    liveObj = null
     bump()
   }
 
-  /** Open (or reuse) the account partition and start repo + live for session `s`. */
+  /** Open (or reuse) the account partition and start repo + live for session `s`.
+   *  Throws StorageError when the partition cannot be opened. */
   async function attach(s, broker) {
     const my = ++gen
     const cabinet = cabinetOf(s.cabinetId)
@@ -151,7 +165,12 @@ export function createAppState(overrides = {}) {
     if (accountKey !== key) {
       closeDb()
       state.value = null
-      const opened = await deps.openAccountDb(key)
+      let opened
+      try {
+        opened = await deps.openAccountDb(key)
+      } catch {
+        throw new StorageError()
+      }
       if (my !== gen) { opened.close(); return }
       db = opened
       accountKey = key
@@ -183,7 +202,21 @@ export function createAppState(overrides = {}) {
     }
     session.value = s
     if (route.value === '/login') setRoute('/', true)
-    attach(s).catch(() => {})
+    open(s)
+  }
+
+  // Attach for an already persisted session; failures surface through `fatal`.
+  async function open(s) {
+    fatal.value = ''
+    try {
+      await attach(s)
+    } catch (e) {
+      fatal.value = (e && e.message) || t('error.storage')
+    }
+  }
+
+  function retry() {
+    return session.value ? open(session.value) : Promise.resolve()
   }
 
   function stop() {
@@ -207,12 +240,13 @@ export function createAppState(overrides = {}) {
     let userId = res.userId
     if (userId == null) userId = (await broker.checkSession())?.user_id ?? null
     if (userId == null) throw new AccountError(t('error.noUser'))
-    // The new session is persisted only after the account check passes.
     if (!isUsdAccount(await broker.positions())) throw new AccountError(t('error.usdOnly'))
     const s = { cabinetId: cabinet.id, sid: res.sid, userId, loggedAt: deps.now() }
+    // Persist only after the account check passed and its storage opened.
+    await attach(s, broker)
     deps.sessionStore.save(s)
     session.value = s
-    await attach(s, broker)
+    fatal.value = ''
     setRoute('/')
   }
 
@@ -223,6 +257,7 @@ export function createAppState(overrides = {}) {
     deps.sessionStore.clear()
     session.value = null
     expired.value = false
+    fatal.value = ''
     state.value = null
     bump()
     setRoute('/login')
@@ -231,19 +266,19 @@ export function createAppState(overrides = {}) {
   async function clearCache() {
     if (!db || !session.value) return
     await db.clear()
-    await attach(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
+    await open(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
   }
 
   function liveQuotesForCalc() {
-    return liveObj && liveObj.isLive() ? liveObj.quotes : undefined
+    return liveObj && !expired.value && liveObj.isLive() ? liveObj.quotes : undefined
   }
 
   return {
-    session, expired, state, tick, live, prefs, route,
+    session, expired, fatal, state, tick, live, prefs, route,
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,
-    start, stop, go, login, requestCode, logout, clearCache,
+    start, stop, go, login, requestCode, logout, clearCache, retry,
     liveQuotesForCalc,
     getRepo: () => repo,
     coreFor: (period, day) => (repo ? repo.coreFor(period, day, liveQuotesForCalc()) : null),
