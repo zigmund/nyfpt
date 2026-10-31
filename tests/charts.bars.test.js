@@ -172,10 +172,15 @@ describe('Task 37: two columns on desktop', () => {
       // equal |pnl| in different columns -> equal width
       const eq = [{ ticker: 'A', pnl: 500 }, { ticker: 'B', pnl: 400 }, { ticker: 'C', pnl: -400 }, { ticker: 'D', pnl: 300 }, { ticker: 'E', pnl: 1000 }, { ticker: 'F', pnl: -300 }]
       const e = boxW(W); drawBarsChart(e, eq)
-      const ep = pairs(e) // sorted: E500? -> 1000,500,400,300,-300,-400
+      // sorted desc: 1000, 500, 400 | 300, -300, -400 (left column | right column)
+      const order = [1000, 500, 400, 300, -300, -400]
+      const ep = pairs(e)
       expect(ep).toHaveLength(6)
-      const ws = (v) => ep.filter((r, i) => Math.abs([1000, 500, 400, 300, -300, -400][i]) === v).map((r) => r.w)
-      for (const v of [300, 400]) { const [w1, w2] = ws(v); expect(w1).toBeCloseTo(w2, 5) }
+      const widthsOf = (v) => ep.filter((r, i) => Math.abs(order[i]) === v).map((r) => r.w)
+      const [w400left, w400right] = widthsOf(400) // +400 left, -400 right: same |pnl| across columns
+      expect(w400left).toBeCloseTo(w400right, 5)
+      const [w300, w300neg] = widthsOf(300) // same column, opposite signs
+      expect(w300).toBeCloseTo(w300neg, 5)
       const axes = [...e.querySelectorAll('line.chart-axis')].map((l) => num(l, 'x1'))
       const colOff = ep.map((r, i) => r.x - axes[i < 3 ? 0 : 1])
       expect(colOff.every((o) => o === 0)).toBe(true)
@@ -198,8 +203,10 @@ describe('Task 37: two columns on desktop', () => {
       const rightColLeft = Math.min(...tkR.map((t) => num(t, 'x')))
       expect(rightColLeft - leftColRight).toBeGreaterThanOrEqual(24) // gap between columns
       expect(b).toBeGreaterThan(a)
+      // The global max bar sits in the left column and ends where its amount column begins;
+      // right bars must leave at least the same room before the right amounts.
       const rightEnd = Math.max(...p.slice(half).map((r) => r.x + r.w))
-      expect(rightEnd).toBeLessThan(svgW)
+      expect(svgW - rightEnd).toBeGreaterThanOrEqual(leftColRight - leftEnd - 1e-6)
       expect(el.querySelector('line.bars__div')).not.toBeNull()
     })
     it('hidden amounts in both columns, no style attrs', () => {
