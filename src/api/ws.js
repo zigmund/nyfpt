@@ -111,9 +111,11 @@ export class LiveSocket {
   }
 
   // A demo/unauthenticated session never recovers with the same SID: stop instead of retrying.
+  // Emitted before close() so listeners see the auth error ahead of the 'closed' status.
   authError() {
-    this.close()
+    const ws = this.ws
     this.emit('auth-error')
+    if (this.ws === ws) this.close()
   }
 
   handle(raw) {

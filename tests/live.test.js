@@ -35,8 +35,11 @@ function fakeRepo(tickers = ['AAA.US']) {
 }
 function fakeBroker() {
   return {
-    quotes: vi.fn(async (ts) => ({ result: { q: ts.map((c) => ({ c, ltp: 100, pp: 99, ltr: c.endsWith('.US') ? 'NYSE' : 'IDX' })) } })),
+    status: 'CLOSE',
+    quotes: vi.fn(async (ts) => ({ result: { q: ts.map((c) => ({ c, ltp: 100, pp: 99, ltr: c.endsWith('.KZ') ? 'KASE' : 'FIX' })) } })),
     positions: vi.fn(async () => ({ result: { ps: { acc: [], pos: [{ i: 'AAA.US' }] } } })),
+    // REST getMarketStatus uses `i` where the WS uses `mkt_id`.
+    marketStatus: vi.fn(async function () { return { result: { markets: { t: 'x', m: [{ i: 1, n: 'FIX', n2: 'FIX', s: this.status }] } } } }),
   }
 }
 function setup({ tickers, broker = fakeBroker() } = {}) {
@@ -44,8 +47,8 @@ function setup({ tickers, broker = fakeBroker() } = {}) {
   const live = createLive({ repo, broker, socketFactory: socket, now: () => Date.now(), ...timers })
   return { repo, broker, live }
 }
-const OPEN = { t: 'x', m: [{ mkt_id: 1, n: 'NYSE', n2: 'NYSE', s: 'OPEN' }, { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE' }] }
-const CLOSED = { t: 'x', m: [{ mkt_id: 1, n: 'NYSE', n2: 'NYSE', s: 'CLOSE' }] }
+const OPEN = { t: 'x', m: [{ mkt_id: 1, n: 'FIX', n2: 'FIX', s: 'OPEN' }, { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE' }] }
+const CLOSED = { t: 'x', m: [{ mkt_id: 1, n: 'FIX', n2: 'FIX', s: 'CLOSE' }] }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-12T15:00:00Z')); FakeWS.all = [] })
 afterEach(() => { vi.useRealTimers() })
@@ -166,9 +169,9 @@ describe('createLive', () => {
     const { live } = setup()
     live.start()
     last().open()
-    last().push('q', { c: 'AAA.US', ltp: 10, pp: 9, chg: 1, ltr: 'NYSE', name: 'Aaa' })
+    last().push('q', { c: 'AAA.US', ltp: 10, pp: 9, chg: 1, ltr: 'FIX', name: 'Aaa' })
     last().push('q', { c: 'AAA.US', ltp: 11, chg: 2, pp: null })
-    expect(live.quotes.get('AAA.US')).toEqual({ c: 'AAA.US', ltp: 11, pp: 9, chg: 2, ltr: 'NYSE', name: 'Aaa' })
+    expect(live.quotes.get('AAA.US')).toEqual({ c: 'AAA.US', ltp: 11, pp: 9, chg: 2, ltr: 'FIX', name: 'Aaa' })
   })
 
   it('resubscribes on portfolio change', async () => {
@@ -192,7 +195,7 @@ describe('createLive', () => {
     live.start()
     last().open()
     expect(live.isLive()).toBe(false)
-    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'NYSE' })
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
     expect(live.isLive()).toBe(false) // markets unknown
     last().push('markets', { t: 'x', m: [{ mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'OPEN' }] })
     expect(live.isLive()).toBe(false)
@@ -200,8 +203,11 @@ describe('createLive', () => {
     last().push('markets', OPEN)
     expect(live.isLive()).toBe(true)
     expect(live.marketsOpen()).toEqual({ us: true })
-    last().push('markets', { t: 'y', m: [{ mkt_id: 1, n: 'NYSE', n2: 'NYSE', s: 'CLOSE' }] })
+    // Partial entries merge into the known market.
+    last().push('markets', { t: 'y', m: [{ mkt_id: 1, s: 'CLOSE' }] })
     expect(live.isLive()).toBe(false)
+    last().push('markets', { t: 'z', m: [{ mkt_id: 1, s: 'OPEN' }] })
+    expect(live.isLive()).toBe(true)
   })
 
   it('seeds quotes over REST when markets open but no market codes are known', async () => {
@@ -211,15 +217,16 @@ describe('createLive', () => {
     last().push('markets', OPEN)
     await vi.advanceTimersByTimeAsync(0)
     expect(broker.quotes).toHaveBeenCalledTimes(1)
-    expect(live.quotes.get('AAA.US').ltr).toBe('NYSE')
+    expect(live.quotes.get('AAA.US').ltr).toBe('FIX')
     expect(live.isLive()).toBe(true)
   })
 
   it('falls back to polling', async () => {
     const { live, broker, repo } = setup()
+    broker.status = 'OPEN'
     live.start()
     last().open()
-    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'NYSE' })
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
     last().push('markets', OPEN)
     await vi.advanceTimersByTimeAsync(STALE - 1)
     expect(broker.quotes).not.toHaveBeenCalled()
@@ -252,7 +259,7 @@ describe('createLive', () => {
     const { live, broker } = setup()
     live.start()
     last().open()
-    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'NYSE' })
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
     last().push('markets', CLOSED)
     last().drop()
     await vi.advanceTimersByTimeAsync(STALE + POLL_MS * 2)
@@ -265,7 +272,7 @@ describe('createLive', () => {
     const { live, repo } = setup({ broker })
     live.start()
     last().open()
-    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'NYSE' })
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
     last().push('markets', OPEN)
     last().drop()
     await vi.advanceTimersByTimeAsync(0)
@@ -305,9 +312,10 @@ describe('createLive', () => {
 
   it('pause closes the socket and stops polling; resume reconnects and refreshes', async () => {
     const { live, broker, repo } = setup()
+    broker.status = 'OPEN'
     live.start()
     last().open()
-    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'NYSE' })
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
     last().push('markets', OPEN)
     last().drop()
     await vi.advanceTimersByTimeAsync(0)
@@ -323,5 +331,103 @@ describe('createLive', () => {
     expect(last().closed).toBe(true)
     await vi.advanceTimersByTimeAsync(STALE * 2)
     expect(FakeWS.all).toHaveLength(2)
+  })
+
+  it('auth-error kills live mode: no polling, no reconnect on resume', async () => {
+    const { live, broker } = setup()
+    broker.status = 'OPEN'
+    live.start()
+    last().open()
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
+    last().push('markets', OPEN)
+    expect(live.isLive()).toBe(true)
+    last().push('error', { error: 'Access to portfolio subscription denied', code: 'unauthenticated' })
+    expect(live.isLive()).toBe(false)
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    expect(broker.quotes).not.toHaveBeenCalled()
+    expect(broker.positions).not.toHaveBeenCalled()
+    expect(broker.marketStatus).not.toHaveBeenCalled()
+    live.pause()
+    live.resume()
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    expect(FakeWS.all).toHaveLength(1)
+    expect(broker.quotes).not.toHaveBeenCalled()
+  })
+
+  it('session expiry while polling stops polling', async () => {
+    const broker = fakeBroker()
+    broker.status = 'OPEN'
+    broker.positions.mockRejectedValue(new SessionExpiredError())
+    const { live } = setup({ broker })
+    live.start()
+    last().open()
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
+    last().push('markets', OPEN)
+    last().drop()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(broker.quotes).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    expect(broker.quotes).toHaveBeenCalledTimes(1)
+    expect(broker.marketStatus).not.toHaveBeenCalled()
+    expect(FakeWS.all).toHaveLength(1) // socket not reconnected for a dead session
+    expect(live.isLive()).toBe(false)
+  })
+
+  it('uses REST market status when the WS sends no markets', async () => {
+    const { live, broker } = setup()
+    broker.status = 'OPEN'
+    live.start() // socket does not open (blocked wss)
+    await vi.advanceTimersByTimeAsync(15e3 - 1)
+    expect(broker.marketStatus).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(1)
+    expect(live.isLive()).toBe(true) // REST quotes seeded `ltr`
+    expect(live.marketsOpen()).toEqual({ us: true })
+    expect(broker.positions).toHaveBeenCalledTimes(1) // polling
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(2)
+    expect(broker.positions).toHaveBeenCalledTimes(2)
+    // WS comes up: REST status keeps going until WS markets arrive, then stops.
+    last().open()
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(3)
+    last().push('markets', OPEN)
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(3)
+  })
+
+  it('uses REST market status while the socket is down', async () => {
+    const { live, broker } = setup()
+    live.start()
+    last().open()
+    last().push('markets', CLOSED)
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(broker.marketStatus).not.toHaveBeenCalled()
+    last().drop()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(5e3)
+    last().open()
+    last().push('markets', CLOSED)
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    expect(broker.marketStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('throttles portfolio frames', async () => {
+    const { live, repo } = setup()
+    live.start()
+    last().open()
+    const frame = (n) => ({ acc: [], pos: [{ i: 'AAA.US', q: n }] })
+    for (let i = 1; i <= 10; i++) {
+      last().push('portfolio', frame(i))
+      await vi.advanceTimersByTimeAsync(100)
+    }
+    expect(repo.applyPortfolio).toHaveBeenCalledTimes(1)
+    expect(repo.applyPortfolio).toHaveBeenLastCalledWith(frame(1))
+    await vi.advanceTimersByTimeAsync(LIVE_RECALC_MS)
+    expect(repo.applyPortfolio).toHaveBeenCalledTimes(2)
+    expect(repo.applyPortfolio).toHaveBeenLastCalledWith(frame(10))
+    await vi.advanceTimersByTimeAsync(LIVE_RECALC_MS * 3)
+    expect(repo.applyPortfolio).toHaveBeenCalledTimes(2)
   })
 })
