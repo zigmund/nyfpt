@@ -133,11 +133,13 @@ describe('position route', () => {
     expect(w.get('[data-test="p-ticker"]').text()).toBe('AAA.US')
   })
 
-  it('Back goes to the main screen', async () => {
+  it('Back goes back in the app history (main screen for a deep link: app.back)', async () => {
     const app = setup()
+    app.back = vi.fn()
     const w = mountCard()
     await w.get('[data-test="back"]').trigger('click')
-    expect(app.go).toHaveBeenCalledWith('/')
+    expect(app.back).toHaveBeenCalledTimes(1)
+    expect(app.go).not.toHaveBeenCalled()
   })
 })
 

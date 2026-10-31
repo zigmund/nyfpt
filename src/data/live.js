@@ -100,6 +100,11 @@ export function createLive({
     return !!l && openNames().has(upper(l))
   }
 
+  /** Market `name` (a quote / getSecurityInfo `ltr`) is open: a security without a streamed quote. */
+  function isMarketOpen(name) {
+    return !dead && !!name && openNames().has(upper(name))
+  }
+
   function marketsOpen() {
     const open = openNames()
     return { us: !dead && ltrOf(tickers.filter((t) => t.endsWith('.US'))).some((m) => open.has(m)) }
@@ -286,6 +291,7 @@ export function createLive({
     quotes,
     isLive,
     isOpenFor,
+    isMarketOpen,
     marketsOpen,
 
     on(event, fn) {

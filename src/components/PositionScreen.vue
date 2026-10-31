@@ -1,6 +1,6 @@
-<!-- Position card: back, ticker (plus price once the big price scrolls away), tabs from
-     CARD_TABS filtered by security kind and session; the tab lives in the hash
-     (#/position/<ticker>/<tab>[/<item>], item: a news article). -->
+<!-- Security card of any ticker (held or not): back, search (the search sheet), ticker (plus price
+     once the big price scrolls away), tabs from CARD_TABS filtered by security kind and session; the
+     tab lives in the hash (#/position/<ticker>/<tab>[/<item>], item: a news article). -->
 <template>
   <div class="screen pcard">
     <header class="topbar pcard__bar">
@@ -8,6 +8,12 @@
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
+      </button>
+      <button
+        ref="searchBtn" type="button" class="icon-btn" aria-haspopup="dialog" :aria-label="t('search.open')"
+        :title="t('search.open')" data-test="p-search" @click="searchOpen = true"
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M16 16l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
       </button>
       <div class="pcard__title">
         <h1 class="topbar__title" :class="{ 'pcard__tk--small': compact }" data-test="p-ticker">{{ ticker }}</h1>
@@ -41,11 +47,13 @@
         @close="closeItem"
       />
     </div>
+
+    <SearchSheet v-if="searchOpen" @close="closeSearch" />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fPrice } from '../display.js'
 import { useApp, positionPath, periodOf } from '../composables/useApp.js'
@@ -53,6 +61,7 @@ import { usePosition } from '../composables/usePosition.js'
 import { tabsFor, chartSource, CHART_PERIOD, CARD_TABS } from '../calc/position.js'
 import PositionSummary from './PositionSummary.vue'
 import PositionNews from './PositionNews.vue'
+import SearchSheet from './SearchSheet.vue'
 
 const props = defineProps({
   ticker: { type: String, required: true },
@@ -88,7 +97,16 @@ function closeItem() {
   } else app.go(positionPath(props.ticker, 'news'), { replace: true })
 }
 watch(item, (v) => { if (!v) pushed = false })
-const back = () => (item.value ? closeItem() : app.go('/'))
+// Back: the previous screen (another card, the main screen); a deep-linked card goes home.
+const back = () => (item.value ? closeItem() : app.back())
+
+// Search sheet (the main screen's one); closing it returns focus to the search button.
+const searchOpen = ref(false)
+const searchBtn = ref(null)
+function closeSearch() {
+  searchOpen.value = false
+  nextTick(() => searchBtn.value?.focus())
+}
 
 const compact = ref(false)
 

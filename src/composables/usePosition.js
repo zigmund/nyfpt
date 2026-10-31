@@ -1,5 +1,6 @@
-// Position card data for one ticker: security info + candles (repo, TTL-gated), the live quote,
-// the broker position and the derived price, day change, My holdings and key statistics.
+// Security card data for one ticker (held or not): security info + candles (repo, TTL-gated), the
+// live quote (held / strip / benchmark tickers only), the broker position and the derived price, day
+// change, My holdings and key statistics.
 import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
@@ -62,11 +63,19 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
   }))
 
-  const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || ticker)
+  // A ticker without a position or security info (an index): its strip card label or search name.
+  const known = computed(() => app.marketStrip?.value?.find((m) => m.ticker === ticker)?.label
+    || (app.recent?.value || []).find((r) => r.ticker === ticker)?.name || null)
+  const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || known.value || ticker)
   const currency = computed(() => info.value?.x_curr || raw.value?.curr || null)
   const exchange = computed(() => info.value?.codesub_nm || info.value?.ltr || null)
   const kind = computed(() => n(info.value?.kind))
-  /** 'At close' time: last trade time in the user's zone, else the last daily candle's date. */
+  /** This security's market is open (no streamed quote needed: a ticker the app does not track). */
+  const marketOpen = computed(() => {
+    void app.tick.value
+    return isLive.value || !!app.marketOpen?.(info.value?.ltr || quote.value?.ltr)
+  })
+  /** 'At close' / 'As of' time: last trade time in the user's zone, else the last daily candle's date. */
   const closedAt = computed(() => {
     const at = lastTradeTime(info.value?.ltt, sec.value.clock)
     if (at) return at
@@ -89,6 +98,6 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
 
   return {
     ticker, sec, info, raw, quote, isLive, price, prevClose, change, changePct, holding, stats,
-    name, currency, exchange, kind, closedAt, load,
+    name, currency, exchange, kind, marketOpen, closedAt, load,
   }
 }

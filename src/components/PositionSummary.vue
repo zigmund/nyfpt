@@ -1,6 +1,6 @@
-<!-- Position card, Summary tab: name and price, price chart with periods, My holdings,
-     Key statistics (Task 22 set; a stat without a value is hidden). Broker text is rendered
-     only through interpolation. -->
+<!-- Security card, Summary tab: name and price (Live / As of while its market is open / At close),
+     price chart with periods, My holdings (held or closed positions only, else no block), Key
+     statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation. -->
 <template>
   <div class="psum">
     <p v-if="loadError" class="banner" role="status" data-test="p-error">
@@ -23,6 +23,7 @@
           <span class="dot dot--on" aria-hidden="true" />
           <span>{{ t('pos.live') }}</span>
         </template>
+        <span v-else-if="pos.closedAt && pos.marketOpen">{{ t('pos.asOf', { at: pos.closedAt }) }}</span>
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
       </p>
 

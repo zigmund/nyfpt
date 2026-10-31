@@ -180,7 +180,7 @@ function securityInfo(tk) {
   const now = Date.now()
   return {
     c: tk,
-    name: names[tk] || tk,
+    name: names[tk] || FINDER.find((f) => f[0] === tk)?.[1] || tk, // a ticker without a position: its finder name
     ltp: r2(ltp),
     pp: r2(pp),
     ClosePrice: r2(pp),

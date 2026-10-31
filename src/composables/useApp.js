@@ -120,12 +120,14 @@ export const parseHash = (h) => {
  *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   isLiveFor(ticker)    live and this security's own market is open (position card)
+ *   marketOpen(ltr)      that market is open (market status), for a card without a streamed quote
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
  *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
  *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
+ *   back(fallback = '/')  previous app history entry, or `fallback` on the first entry (deep link)
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -241,13 +243,30 @@ export function createAppState(overrides = {}) {
   }
 
   // --- routing
+  // In-app history depth, kept in each entry's history.state: 0 = the first entry of the app (a deep
+  // link), each push (go() or a followed link) adds 1. back() uses the history only above 0.
+  let depth = 0
+  function markDepth(d, hash) {
+    depth = d
+    const st = { ...(win.history.state || {}), depth: d }
+    try {
+      if (hash === undefined) win.history.replaceState(st, '')
+      else win.history.replaceState(st, '', hash)
+    } catch { /* no history */ }
+  }
+  const depthOf = (st) => (Number.isInteger(st?.depth) && st.depth >= 0 ? st.depth : null)
+
   function setRoute(path, replace = false) {
     route.value = path
     if (!win) return
     const hash = `#${path}`
     if (win.location.hash === hash) return
-    if (replace) win.history.replaceState(null, '', hash)
-    else win.location.hash = hash
+    if (replace) markDepth(depth, hash)
+    else {
+      const d = depth + 1
+      win.location.hash = hash
+      markDepth(d, hash)
+    }
   }
   /** Navigate; login is enforced while there is no session. `replace`: no new history entry. */
   function go(path, { replace = false } = {}) {
@@ -256,6 +275,10 @@ export function createAppState(overrides = {}) {
     setRoute(p === '/login' ? '/' : p, replace)
   }
   function onHash() {
+    // An entry of ours (back / forward) carries its depth; a new one (link, typed URL) is a push.
+    const d = depthOf(win.history.state)
+    if (d === null) markDepth(depth + 1)
+    else depth = d
     const p = parseHash(win.location.hash)
     if (!session.value && p !== '/login') return setRoute('/login', true)
     if (session.value && p === '/login') return setRoute('/', true)
@@ -339,6 +362,7 @@ export function createAppState(overrides = {}) {
   function start() {
     if (started) return
     started = true
+    if (win) markDepth(depthOf(win.history.state) ?? 0)
     win?.addEventListener('hashchange', onHash)
     doc?.addEventListener('visibilitychange', onVisibility)
     media?.addEventListener('change', applyTheme)
@@ -433,6 +457,17 @@ export function createAppState(overrides = {}) {
     await open(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
   }
 
+  /** Back from a screen: the previous app entry when there is one, else `fallback` (deep link). */
+  function back(fallback = '/') {
+    if (depth > 0 && win?.history) win.history.back()
+    else go(fallback)
+  }
+
+  /** Market `name` (getSecurityInfo / quote `ltr`) is open, per the live controller's market status. */
+  function marketOpen(name) {
+    return !!liveObj && !expired.value && !!liveObj.isMarketOpen?.(name)
+  }
+
   /** Live for one security: live mode and its own market open (a KASE card is not live
    *  because the US session is). */
   function isLiveFor(ticker) {
@@ -452,9 +487,10 @@ export function createAppState(overrides = {}) {
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,
-    start, stop, go, login, requestCode, logout, clearCache, retry,
+    start, stop, go, back, login, requestCode, logout, clearCache, retry,
     liveQuotesForCalc,
     isLiveFor,
+    marketOpen,
     getRepo: () => repo,
     coreFor: (period, day) => (repo ? repo.coreFor(period, day, liveQuotesForCalc()) : null),
     ensurePrices: (period, day) => (repo ? repo.ensurePrices(period, day) : Promise.resolve()),

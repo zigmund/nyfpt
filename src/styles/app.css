@@ -996,6 +996,7 @@ html.srch-open { overflow: hidden; }
 .mkts__row::-webkit-scrollbar { display: none; }
 
 .mcard {
+  position: relative;
   background: var(--c-panel);
   border: 1px solid var(--c-line);
   border-radius: var(--radius);
@@ -1004,11 +1005,24 @@ html.srch-open { overflow: hidden; }
 }
 
 .mcard__name {
+  display: block;
+  color: inherit;
+  text-decoration: none;
   font-size: var(--fs-caption);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The name link covers the card: a tap anywhere opens the security card. */
+.mcard__name::after { content: ""; position: absolute; inset: 0; border-radius: var(--radius); }
+.mcard__name:focus-visible { outline: none; }
+/* Inside the card: the scrolling strip would clip an outer ring. */
+.mcard:has(.mcard__name:focus-visible) { outline: 2px solid var(--c-accent); outline-offset: -2px; }
+
+@media (hover: hover) {
+  .mcard:hover { border-color: var(--c-line-strong); }
 }
 
 .mcard__name small {
@@ -1589,7 +1603,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   min-width: 0;
   display: grid;
   justify-items: center;
-  margin-right: 2.5rem; /* balances the back button: centered title */
+  margin-right: calc(5rem + var(--gap)); /* balances the back and search buttons: centered title */
 }
 
 .pcard__tk--small { font-size: var(--fs-caption); font-weight: 500; color: var(--c-muted); }

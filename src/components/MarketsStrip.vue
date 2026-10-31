@@ -1,6 +1,7 @@
 <!-- Markets strip: status line + the cards of prefs.marketStrip (default: S&P 500, Nasdaq 100, oil, gold,
      silver) scrolling inside the strip; hidden when the list is empty. Live quotes (ltp, pcp) override
-     the daily data when present. A card whose ticker was fetched without data shows dashes. -->
+     the daily data when present. A card whose ticker was fetched without data shows dashes. A card is a
+     link to its security card (the name link covers the whole card). -->
 <template>
   <section v-if="items.length" class="mkts" :aria-label="t('mkts.label')" data-test="markets">
     <p class="status">
@@ -13,7 +14,10 @@
     </p>
     <ul class="mkts__row">
       <li v-for="c in cards" :key="c.ticker" class="mcard">
-        <p class="mcard__name" :title="c.note ? `${c.label} ${c.note}` : c.label">{{ c.label }}<small v-if="c.note">{{ c.note }}</small></p>
+        <a
+          class="mcard__name" :href="`#${positionPath(c.ticker)}`" :title="c.note ? `${c.label} ${c.note}` : c.label"
+          data-test="mcard-link"
+        >{{ c.label }}<small v-if="c.note">{{ c.note }}</small></a>
         <MarketSpark v-if="c.ready" :spark="c.spark" :prev="c.prev" />
         <div v-else-if="c.empty" class="spark" aria-hidden="true" />
         <div v-else class="spark skel" aria-hidden="true" />
@@ -39,7 +43,7 @@ import { computed } from 'vue'
 import { t } from '../i18n.js'
 import { dateShort } from '../format.js'
 import { fPct, fPrice, tone, n } from '../display.js'
-import { useApp } from '../composables/useApp.js'
+import { positionPath, useApp } from '../composables/useApp.js'
 import MarketSpark from './MarketSpark.vue'
 
 const app = useApp()

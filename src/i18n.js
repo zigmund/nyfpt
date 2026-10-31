@@ -175,6 +175,7 @@ const en = {
   'pos.quote': 'Quote',
   'pos.live': 'Live',
   'pos.atClose': 'At close: {at}',
+  'pos.asOf': 'As of {at}',
   'pos.chartLabel': 'Price chart, {period}',
   'pos.noChart': 'No price history for this period.',
   'pos.error': "Couldn't load data for this security.",
