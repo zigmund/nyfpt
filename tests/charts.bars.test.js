@@ -78,3 +78,31 @@ describe('bars chart layout', () => {
     expect(el.children).toHaveLength(0)
   })
 })
+
+describe('bars chart label safety and a11y', () => {
+  const long = 'VERYLONGTICKER.1234567890.EXCHANGE.SUFFIX.KZ'
+  const shownOf = (el) => el.querySelector('.bars__tk tspan').textContent
+  it('narrow: long ticker is truncated so it cannot hit a large amount', () => {
+    const el = boxW(360)
+    drawBarsChart(el, [{ ticker: long, pnl: 1234567.89 }, { ticker: 'B', pnl: -5 }])
+    const s = shownOf(el)
+    expect(s.endsWith('…')).toBe(true)
+    const amount = el.querySelector('.bars__val').textContent
+    expect(s.length * 7 + amount.length * 7).toBeLessThanOrEqual(360)
+    expect(el.querySelector('.bars__tk title').textContent).toBe(long)
+  })
+  it('wide: long ticker gets an ellipsis', () => {
+    const el = boxW(1280)
+    drawBarsChart(el, [{ ticker: long, pnl: 100 }])
+    expect(shownOf(el).endsWith('…')).toBe(true)
+  })
+  it('svg has an accessible label and decorative rects are hidden', () => {
+    const el = boxW(360)
+    drawBarsChart(el, [{ ticker: 'AAA', pnl: 5 }, { ticker: 'B', pnl: -5 }])
+    const svg = el.querySelector('svg')
+    expect(svg.getAttribute('role')).toBe('img')
+    expect(svg.getAttribute('aria-label')).toContain('AAA')
+    expect(svg.getAttribute('aria-label')).toContain('B')
+    for (const r of el.querySelectorAll('rect.bars__bar')) expect(r.getAttribute('aria-hidden')).toBe('true')
+  })
+})
