@@ -1,0 +1,291 @@
+import 'fake-indexeddb/auto'
+import { IDBFactory } from 'fake-indexeddb'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import fx from './fixtures/synthetic-api.json'
+import { openAccountDb } from '../src/store/db.js'
+import { createRepo, nyDate } from '../src/data/repo.js'
+import { BrokerError, SessionExpiredError } from '../src/api/transport.js'
+import {
+  parseHloc, parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
+} from '../src/calc/portfolio.js'
+import { livePriceRows } from '../src/calc/live.js'
+
+const T0 = Date.parse('2026-10-12T15:00:00Z') // 11:00 in New York
+const clone = (x) => JSON.parse(JSON.stringify(x))
+const tsOf = (d) => Date.parse(`${d}T00:00:00Z`) / 1000
+const PORTFOLIO = ['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'QQQ.US', 'SPY.US']
+const STRIP = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US']
+
+// Candle table {ticker: [[date, close]]} built from the synthetic fixture.
+function fixtureSeries() {
+  const s = {}
+  for (const r of parseHloc({ answer: fx['getHloc.daily'] }).rows) (s[r.ticker] ||= []).push([r.date, r.close])
+  return s
+}
+
+// Fake broker over synthetic data with call counters. `gate` (a promise) stalls every call.
+function fakeBroker() {
+  const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [] }
+  const b = {
+    calls, fail: {}, series: fixtureSeries(), gate: null,
+    async positions() {
+      calls.positions++; await b.gate
+      if (b.fail.positions) throw b.fail.positions
+      return clone(fx.getPositionJson)
+    },
+    async cashflows() {
+      calls.cashflows++; await b.gate
+      if (b.fail.cashflows) throw b.fail.cashflows
+      return clone(fx.getUserCashFlows)
+    },
+    async trades(beginDate) {
+      calls.trades.push(beginDate); await b.gate
+      if (b.fail.trades) throw b.fail.trades
+      const a = clone(fx.getTradesHistory)
+      a.trades.trade = a.trades.trade.filter((t) => t.date.slice(0, 10) >= beginDate)
+      return a
+    },
+    // count -N: N-1 candles before dateFrom, then everything after.
+    async hlocDaily(tickers, dateFrom, count = -6) {
+      calls.hlocDaily.push({ tickers: [...tickers], dateFrom, count }); await b.gate
+      return answer(tickers, (rows) => {
+        const i = rows.findIndex(([d]) => d >= dateFrom)
+        return i < 0 ? [] : rows.slice(Math.max(0, i + count + 1))
+      })
+    },
+    async hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
+      calls.hlocIntraday.push({ tickers: [...tickers], dateFrom, dateTo, timeframe }); await b.gate
+      return { hloc: {}, xSeries: {} }
+    },
+  }
+  function answer(tickers, pick) {
+    const a = { hloc: {}, xSeries: {} }
+    for (const t of tickers) {
+      const rows = pick(b.series[t] || [])
+      if (!rows.length) continue
+      a.hloc[t] = rows.map(([, c]) => [c, c, c, c])
+      a.xSeries[t] = rows.map(([d]) => tsOf(d))
+    }
+    return a
+  }
+  return b
+}
+
+describe('repo', () => {
+  let db, clock
+  beforeEach(async () => {
+    db = await openAccountDb('global:1', new IDBFactory())
+    clock = T0
+  })
+  const mk = (broker) => createRepo({ broker, db, now: () => clock })
+  const counts = (b) => [b.calls.positions, b.calls.cashflows, b.calls.hlocIntraday.length]
+
+  it('load emits cached state before network', async () => {
+    const old = { ticker: 'OLD.US', name: 'Old', kind: 'position', qty: 1, price: 1, value: 1 }
+    await db.putKv('positions', { rows: [old], rawPs: { pos: [] } }, T0 - 3600e3)
+    const b = fakeBroker()
+    let release
+    b.gate = new Promise((r) => { release = r })
+    const repo = mk(b)
+    const seen = []
+    repo.subscribe((s) => seen.push({ s, calls: b.calls.positions }))
+    const done = repo.load()
+    await vi.waitFor(() => expect(b.calls.positions).toBe(1))
+    const cached = seen.find((x) => x.s.positions?.[0]?.ticker === 'OLD.US')
+    expect(cached.calls).toBe(0)
+    expect(cached.s.updatedAt).toBe(T0 - 3600e3)
+    expect(seen.at(-1).s.loading).toContain('positions')
+    release()
+    await done
+    const last = seen.at(-1).s
+    expect(last.positions.map((p) => p.ticker)).toEqual(['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'USD'])
+    expect(last.rawPs.pos).toHaveLength(3)
+    expect(last.inception).toBe('2026-09-09')
+    expect(last.updatedAt).toBe(T0)
+    expect(last.loading).toEqual([])
+  })
+
+  it('respects TTL', async () => {
+    const b = fakeBroker()
+    await mk(b).load()
+    expect(counts(b)).toEqual([1, 1, 1])
+    clock += 30e3
+    await mk(b).load() // fresh repo over the same cache: everything still fresh
+    expect(counts(b)).toEqual([1, 1, 1])
+    clock += 70e3 // 100 s: positions and markets stale, cashflows (10 min) fresh
+    const repo = mk(b)
+    await repo.load()
+    expect(counts(b)).toEqual([2, 1, 2])
+    await repo.refresh({ force: true, only: ['cashflows'] })
+    expect(counts(b)).toEqual([2, 2, 2])
+    expect(b.calls.trades).toEqual([]) // no period requested yet
+  })
+
+  it('coalesces concurrent refreshes', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await Promise.all([repo.refresh({ force: true }), repo.refresh({ force: true, only: ['positions'] })])
+    expect(counts(b)).toEqual([1, 1, 1])
+    await Promise.all([repo.ensurePrices('7d', '2026-10-13'), repo.ensurePrices('7d', '2026-10-13')])
+    expect(b.calls.trades).toHaveLength(1)
+    expect(b.calls.hlocDaily.filter((c) => c.count === -6)).toHaveLength(1)
+  })
+
+  it('fetches only new candles', async () => {
+    const b = fakeBroker()
+    const full = b.series
+    // Broker as of 10-09: the 10-09 candle is still provisional.
+    b.series = Object.fromEntries(Object.entries(full).map(([t, rows]) => [
+      t, rows.filter(([d]) => d <= '2026-10-09').map(([d, c]) => [d, d === '2026-10-09' ? c - 1 : c]),
+    ]))
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-09') // start 10-02
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-09-22', count: -6 }])
+    b.series = full
+    b.calls.hlocDaily.length = 0
+    await repo.ensurePrices('7d', '2026-10-13') // start 10-06, already covered
+    expect(b.calls.hlocDaily).toEqual([{ tickers: PORTFOLIO, dateFrom: '2026-10-09', count: -6 }])
+    expect(await db.getCandles('AAA.US')).toEqual(full['AAA.US'].map(([date, close]) => ({ date, close })))
+    expect(b.calls.trades).toEqual(['2026-10-02'])
+  })
+
+  it('fetches candles for new ticker', async () => {
+    const b = fakeBroker()
+    b.series['DDD.US'] = [['2026-10-01', 20], ['2026-10-12', 21], ['2026-10-13', 22]]
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    b.calls.hlocDaily.length = 0
+    const ps = clone(fx.getPositionJson.result.ps)
+    ps.pos.push({ i: 'DDD.US', name: 'Delta', q: 2, mkt_price: 22, market_value: 44 })
+    await repo.applyPortfolio(ps)
+    expect((await db.getKv('positions')).data.rawPs.pos).toHaveLength(4)
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(b.calls.hlocDaily).toEqual([
+      { tickers: PORTFOLIO, dateFrom: '2026-10-13', count: -6 },
+      { tickers: ['DDD.US'], dateFrom: '2026-09-26', count: -6 },
+    ])
+    expect((await db.getCandles('DDD.US')).map((c) => c.close)).toEqual([20, 21, 22])
+    const core = repo.coreFor('7d', '2026-10-13')
+    expect(core.summary.missing).toBe('')
+    expect(core.positions.find((p) => p.ticker === 'DDD.US').value).toBe(44)
+  })
+
+  it('longer period refetches trades and backfills candles', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('1d', '2026-10-13') // start 10-12, trades from 10-08
+    await repo.ensurePrices('1m', '2026-10-13') // start 09-13
+    expect(b.calls.trades).toEqual(['2026-10-08', '2026-09-13'])
+    expect(b.calls.hlocDaily.map((c) => c.dateFrom)).toEqual(['2026-10-02', '2026-09-03'])
+    await repo.ensurePrices('7d', '2026-10-13')
+    expect(b.calls.trades).toHaveLength(2)
+    expect(b.calls.hlocDaily.at(-1).dateFrom).toBe('2026-10-13')
+  })
+
+  it('refresh failure keeps cached data and reports error', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.load()
+    let st
+    repo.subscribe((s) => { st = s })
+    b.fail.positions = new BrokerError('Broker is down', { code: 1 })
+    clock += 100e3
+    await repo.refresh()
+    expect(st.errors.positions).toBe('Broker is down')
+    expect(st.positions).toHaveLength(4)
+    expect(st.updatedAt).toBe(T0)
+    expect((await db.getKv('positions')).data.rows).toHaveLength(4)
+    expect(st.loading).toEqual([])
+    delete b.fail.positions
+    await repo.refresh({ force: true, only: ['positions'] })
+    expect(st.errors.positions).toBeUndefined()
+  })
+
+  it('keeps cache on session expiry', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-13')
+    const expired = vi.fn()
+    repo.onSessionExpired(expired)
+    let st
+    repo.subscribe((s) => { st = s })
+    b.fail.positions = b.fail.cashflows = b.fail.trades = new SessionExpiredError()
+    clock += 3600e3
+    await repo.refresh()
+    expect(expired).toHaveBeenCalledTimes(1)
+    expect(st.positions).toHaveLength(4)
+    expect(st.cashflows).toHaveLength(4)
+    expect(st.trades).toHaveLength(1)
+    expect((await db.getKv('positions')).data.rows).toHaveLength(4)
+    // A longer period needs older trades; that fetch fails, so candles are not requested.
+    b.calls.hlocDaily.length = 0
+    await repo.ensurePrices('1m', '2026-10-13')
+    expect(b.calls.trades.at(-1)).toBe('2026-09-13')
+    expect(b.calls.hlocDaily).toEqual([])
+    expect(await db.getCandles('SPY.US')).toHaveLength(7)
+  })
+
+  it('coreFor matches direct computeCore on synthetic data', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('7d', '2026-10-12') // start 10-05 = fixture window
+    const positions = parsePositions({ answer: fx.getPositionJson }).rows
+    const trades = parseTrades({ answer: fx.getTradesHistory }).rows
+    const cashflows = parseCashflows({ answer: fx.getUserCashFlows }).rows
+    const prices = parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: fx._meta.windowStart } }).rows
+    const direct = computeCore(positions, trades, cashflows, prices)
+    expect(direct.summary.twr).toBe(7.58)
+    expect(repo.coreFor('7d', '2026-10-12')).toEqual(direct)
+
+    const quotes = new Map([['SPY.US', { ltp: 530 }], ['AAA.US', { ltp: 112 }]])
+    expect(repo.coreFor('7d', '2026-10-12', quotes))
+      .toEqual(computeCore(positions, trades, cashflows, livePriceRows(prices, quotes, '2026-10-12')))
+
+    // A new repo over the same cache computes the same without network.
+    const b2 = fakeBroker()
+    const repo2 = mk(b2)
+    await repo2.load()
+    expect([b2.calls.positions, b2.calls.cashflows, b2.calls.trades.length]).toEqual([0, 0, 0])
+    expect(repo2.coreFor('7d', '2026-10-12')).toEqual(direct)
+  })
+
+  it('1d with no session after start shifts base using closes before start', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('1d', '2026-10-14') // start 10-13, no candle after it yet
+    const core = repo.coreFor('1d', '2026-10-14')
+    expect(core.summary.base_close).toBe('2026-10-12')
+    expect(core.summary.day_date).toBe('2026-10-13')
+    const prices = parsePricesForPeriod({ answer: fx['getHloc.daily'], args: { date_from: '13.10.2026 00:00' } }).rows
+    expect(core).toEqual(computeCore(
+      parsePositions({ answer: fx.getPositionJson }).rows,
+      parseTrades({ answer: fx.getTradesHistory }).rows,
+      parseCashflows({ answer: fx.getUserCashFlows }).rows,
+      prices,
+    ))
+  })
+
+  it('markets strip from daily and intraday candles', async () => {
+    const b = fakeBroker()
+    b.series['SP500.IDX'] = [['2026-10-09', 6000], ['2026-10-12', 6060]]
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    expect(b.calls.hlocDaily).toEqual([{ tickers: STRIP, dateFrom: '2026-10-02', count: -1 }])
+    expect(b.calls.hlocIntraday).toEqual([{ tickers: STRIP, dateFrom: '2026-10-06', dateTo: '2026-10-13', timeframe: 15 }])
+    expect(repo.marketsStrip()[0]).toMatchObject({ ticker: 'SP500.IDX', last: 6060, prev: 6000, change_pct: 1 })
+    expect(st.markets).toEqual(repo.marketsStrip())
+  })
+
+  it('derives today in America/New_York', async () => {
+    expect(nyDate(Date.parse('2026-10-30T23:30:00Z'))).toBe('2026-10-30')
+    expect(nyDate(Date.parse('2026-10-31T02:30:00Z'))).toBe('2026-10-30')
+    expect(nyDate(Date.parse('2026-10-31T04:30:00Z'))).toBe('2026-10-31')
+    clock = Date.parse('2026-10-31T02:30:00Z') // 22:30 on 10-30 in New York, already 10-31 in UTC
+    const b = fakeBroker()
+    await mk(b).ensurePrices('7d')
+    expect(b.calls.trades).toEqual(['2026-10-23'])
+    expect(b.calls.hlocDaily[0].dateFrom).toBe('2026-10-13')
+  })
+})
