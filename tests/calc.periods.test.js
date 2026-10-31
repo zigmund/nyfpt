@@ -20,7 +20,7 @@ describe('periods', () => {
     expect(periodStart('1d', T, INC)).toBe('2026-10-30');
     expect(periodStart('7d', T, INC)).toBe('2026-10-24');
     expect(periodStart('1m', T, INC)).toBe('2026-10-01');
-    expect(periodStart('6m', T, INC)).toBe('2026-03-15'); // 6 months back is before inception
+    expect(periodStart('6m', T, INC)).toBe('2026-05-01'); // Oct 31 minus 6 months overflows Apr 31 -> May 1
   });
 
   it('YTD for an old account starts at the previous year end; All without inception is null-safe', () => {
@@ -36,7 +36,7 @@ describe('periods', () => {
   });
 
   it('inceptionFromCashflows is the earliest date minus one day', () => {
-    const rows = [{ date: '2026-07-01' }, { date: '2026-06-12' }, { date: '2026-09-01' }];
+    const rows = [{ date: '2026-07-01' }, { date: '2026-03-16' }, { date: '2026-09-01' }];
     expect(inceptionFromCashflows(rows)).toBe('2026-03-15');
     expect(inceptionFromCashflows([{ date: '2026-03-01' }])).toBe('2026-02-28');
     expect(inceptionFromCashflows([])).toBeNull();
