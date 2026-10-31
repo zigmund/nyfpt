@@ -3,14 +3,21 @@ import { join } from 'node:path';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
-// Stamps the build version into dist/sw.js so each release gets its own cache.
+// Stamps the build version and the emitted asset list into dist/sw.js.
 function swVersion() {
   let outDir = 'dist';
+  let assets = [];
   return {
     name: 'sw-version',
     apply: 'build',
     configResolved(c) {
       outDir = c.build.outDir;
+    },
+    generateBundle(_, bundle) {
+      // Hashed build output, precached by the service worker for offline start.
+      assets = Object.keys(bundle)
+        .filter((n) => n.startsWith('assets/'))
+        .map((n) => '/' + n);
     },
     closeBundle: {
       order: 'post',
@@ -18,7 +25,10 @@ function swVersion() {
         const file = join(outDir, 'sw.js');
         if (!existsSync(file)) return;
         const version = process.env.VITE_APP_VERSION || 'dev';
-        writeFileSync(file, readFileSync(file, 'utf8').replaceAll('__APP_VERSION__', version));
+        const src = readFileSync(file, 'utf8')
+          .replaceAll('__APP_VERSION__', version)
+          .replaceAll('__PRECACHE__', JSON.stringify(assets));
+        writeFileSync(file, src);
       },
     },
   };

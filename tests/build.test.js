@@ -5,6 +5,7 @@ import { join } from 'node:path'
 const dist = join(process.cwd(), 'dist')
 // A dist predating the PWA files (no sw.js) is stale; treat it as not built.
 const built = existsSync(join(dist, 'sw.js'))
+const required = Boolean(process.env.CI || process.env.REQUIRE_DIST === '1')
 
 function walk(dir) {
   return readdirSync(dir).flatMap((n) => {
@@ -13,10 +14,27 @@ function walk(dir) {
   })
 }
 
-// Only meaningful after `npm run build`; skipped otherwise.
-describe.skipIf(!built)('production build', () => {
-  it('replaces the version placeholder in sw.js', () => {
-    expect(readFileSync(join(dist, 'sw.js'), 'utf8')).not.toContain('__APP_VERSION__')
+// Needs `npm run build`; skipped unless CI/REQUIRE_DIST is set, in which case a missing dist fails.
+describe.skipIf(!built && !required)('production build', () => {
+  it('dist was built (sw.js present)', () => {
+    expect(built).toBe(true)
+  })
+
+  it('replaces the build placeholders in sw.js', () => {
+    const sw = readFileSync(join(dist, 'sw.js'), 'utf8')
+    expect(sw).not.toContain('__APP_VERSION__')
+    expect(sw).not.toContain('__PRECACHE__')
+  })
+
+  it('sw.js precache list is non-empty and every file exists', () => {
+    const sw = readFileSync(join(dist, 'sw.js'), 'utf8')
+    const list = JSON.parse(/JSON\.parse\('(.*?)'\)/.exec(sw)[1])
+    expect(list.length).toBeGreaterThan(0)
+    expect(list.some((f) => f.endsWith('.js'))).toBe(true)
+    for (const f of list) {
+      expect(f.startsWith('/assets/')).toBe(true)
+      expect(existsSync(join(dist, f)), f).toBe(true)
+    }
   })
 
   it('ships no mock code', () => {
