@@ -24,17 +24,16 @@ describe.each([[360], [1280]])('bars chart at %ipx', (W) => {
     expect(bs).toHaveLength(30)
     const axis = el.querySelector('line.chart-axis')
     const x0 = num(axis, 'x1')
-    const lefts = bs.map((b) => num(b, 'x')); const rights = bs.map((b) => num(b, 'x') + num(b, 'width'))
-    const areaL = Math.min(...lefts); const areaR = Math.max(...rights)
-    expect(areaR - areaL).toBeGreaterThanOrEqual(W * (W < 768 ? 0.8 : 0.6) - 1)
+    // all bars start at x0 and grow right; linear on |pnl|; largest |pnl| fills the area
+    for (const b of bs) expect(num(b, 'x')).toBe(x0)
+    const areaR = Math.max(...bs.map((b) => num(b, 'x') + num(b, 'width')))
+    expect(areaR - x0).toBeGreaterThanOrEqual(W * (W < 768 ? 0.8 : 0.6) - 1)
     const unit = (areaR - x0) / 6931.69
-    expect(areaR).toBeCloseTo(x0 + 6931.69 * unit, 5)
-    const b1240 = bs.find((b, i) => i === 1)
-    expect(num(b1240, 'width') / (areaR - x0)).toBeCloseTo(1240 / 6931.69, 2)
-    expect(Math.abs(num(b1240, 'width') - (areaR - x0) * 1240 / 6931.69)).toBeLessThanOrEqual(1)
-    // negatives share the same unit (asymmetric domain, zero proportional)
-    const neg = bs.find((b) => b.classList.contains('bars__bar--neg') && num(b, 'x') === areaL)
-    expect(num(neg, 'width')).toBeCloseTo(1500.25 * unit, 0)
+    const pn = mk().map((r) => r.pnl).sort((a, b) => b - a)
+    bs.forEach((b, i) => { if (Math.abs(pn[i]) > 100) expect(Math.abs(num(b, 'width') - Math.abs(pn[i]) * unit)).toBeLessThanOrEqual(1) })
+    // colour by sign, negatives grow right too
+    bs.forEach((b, i) => expect(b.classList.contains('bars__bar--neg')).toBe(pn[i] < 0))
+    expect(num(bs.find((b, i) => pn[i] === -1500.25), 'width')).toBeCloseTo(1500.25 * unit, 0)
     for (const b of bs) { expect(num(b, 'height')).toBeGreaterThanOrEqual(10); expect(num(b, 'width')).toBeGreaterThanOrEqual(2) }
     expect(el.querySelector('svg').getAttribute('viewBox').split(' ')[2]).toBe(String(W))
   })
@@ -104,5 +103,35 @@ describe('bars chart label safety and a11y', () => {
     expect(svg.getAttribute('aria-label')).toContain('AAA')
     expect(svg.getAttribute('aria-label')).toContain('B')
     for (const r of el.querySelectorAll('rect.bars__bar')) expect(r.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+describe('Task 33: axis stays out of labels, compact narrow rows', () => {
+  const axes = (el) => [...el.querySelectorAll('line.chart-axis')].map((l) => ({ y1: num(l, 'y1'), y2: num(l, 'y2'), x1: num(l, 'x1'), x2: num(l, 'x2') }))
+  const labelBand = (el) => [...el.querySelectorAll('.bars__tk, .bars__val')].map((t) => [num(t, 'y') - 7, num(t, 'y') + 7])
+  it('narrow: no axis segment overlaps any label y-band; segments are vertical and sit in bar bands', () => {
+    const el = boxW(375); drawBarsChart(el, mk())
+    const segs = axes(el); const bands = labelBand(el)
+    expect(segs.length).toBeGreaterThanOrEqual(30)
+    for (const s of segs) {
+      expect(s.x1).toBe(s.x2)
+      for (const [a, b] of bands) expect(s.y2 <= a || s.y1 >= b).toBe(true)
+    }
+    const bs = bars(el)
+    bs.forEach((b, i) => { expect(segs[i].y1).toBeLessThanOrEqual(num(b, 'y')); expect(segs[i].y2).toBeGreaterThanOrEqual(num(b, 'y') + num(b, 'height')) })
+  })
+  it('narrow: compact rows, bar right under its label', () => {
+    const el = boxW(375); drawBarsChart(el, mk())
+    const h = +el.querySelector('svg').getAttribute('viewBox').split(' ')[3]
+    expect(h).toBeLessThanOrEqual(12 + 30 * 38)
+    const tks = [...el.querySelectorAll('.bars__tk')]
+    bars(el).forEach((b, i) => { const gap = num(b, 'y') - num(tks[i], 'y'); expect(gap).toBeGreaterThan(5); expect(gap).toBeLessThanOrEqual(10) })
+  })
+  it('wide: one axis line, right of the ticker column', () => {
+    const el = boxW(1280); drawBarsChart(el, mk())
+    const segs = axes(el)
+    expect(segs).toHaveLength(1)
+    expect(segs[0].x1).toBeGreaterThan(20)
+    for (const b of bars(el)) expect(num(b, 'x')).toBe(segs[0].x1)
   })
 })
