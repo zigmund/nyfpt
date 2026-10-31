@@ -80,7 +80,7 @@ describe('LoginScreen', () => {
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
   })
 
-  it('"Send code" calls requestPhoneCode and shows a code field of the given length', async () => {
+  it('"Send code" calls requestPhoneCode and shows a 6-cell code field and auto-submits', async () => {
     const { wrapper, deps } = setup()
     await wrapper.get('[data-test="tab-phone"]').trigger('click')
     expect(wrapper.find('[data-test="code"]').exists()).toBe(false)
@@ -94,14 +94,28 @@ describe('LoginScreen', () => {
     expect(arg.phone).toBe('+77001234567')
     expect(arg.cabinet.id).toBe('global')
     const code = wrapper.get('[data-test="code"]')
-    expect(code.attributes('maxlength')).toBe('5')
+    expect(code.attributes('maxlength')).toBe('6')
     expect(code.attributes('autocomplete')).toBe('one-time-code')
     expect(wrapper.text()).toContain('The code may arrive as a push notification in the broker app')
 
-    await code.setValue('12345')
-    await wrapper.get('form').trigger('submit')
+    await code.setValue('123456')
     await flushPromises()
-    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledWith(expect.objectContaining({ authCodeId: 'ac-1', code: '12345' }))
+    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledTimes(1)
+    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledWith(expect.objectContaining({ authCodeId: 'ac-1', code: '123456' }))
+  })
+
+  it('clears the code and flags the cells when the broker rejects it', async () => {
+    const { wrapper, deps } = setup()
+    deps.auth.loginByPhoneCode.mockRejectedValueOnce(new BrokerError('Wrong code', { code: 2 }))
+    await wrapper.get('[data-test="tab-phone"]').trigger('click')
+    await wrapper.get('input[type="tel"]').setValue('+77001234567')
+    await wrapper.get('[data-test="send-code"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="code"]').setValue('111111')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('Wrong code')
+    expect(wrapper.get('[data-test="code"]').element.value).toBe('')
+    expect(wrapper.get('.code').classes()).toContain('code--invalid')
   })
 
   it('shows the broker error text as is', async () => {

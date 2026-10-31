@@ -23,7 +23,7 @@ const en = {
   'login.phoneInvalid': 'Enter the number in international format, starting with +.',
   'login.sendCode': 'Send code',
   'login.sending': 'Sending…',
-  'login.code': 'Code',
+  'login.code': 'Verification code',
   'login.codeHint': 'The code may arrive as a push notification in the broker app',
   'login.codeInvalid': 'Enter the {n}-digit code.',
   'login.codeSent': 'Code sent to {phone}',

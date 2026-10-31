@@ -392,11 +392,58 @@ button, input, select { font: inherit; color: inherit; }
   background-repeat: no-repeat;
 }
 
-/* One cell per digit: letters spaced so the code reads as separate digits. */
-.input--code {
-  max-width: calc(var(--code-len, 6) * 1.6ch + 2 * var(--gap-md) + 1ch);
-  letter-spacing: .6ch;
-  font-size: 1.25rem;
+/* 6-cell code: one transparent real input stacked over decorative cells. */
+.code {
+  position: relative;
+  width: 100%;
+  max-width: 20rem;
+}
+
+.code__input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font-size: var(--fs-input);
+  opacity: 0;
+  cursor: text;
+}
+
+.code__cells {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--gap);
+}
+
+.code__cell {
+  display: grid;
+  place-items: center;
+  height: calc(var(--control-h) + .5rem);
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--c-panel);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.375rem;
+}
+
+.code--disabled .code__cell { background: var(--c-bg); color: var(--c-muted); }
+
+.code__cell--active {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
+}
+
+.code--invalid .code__cell {
+  border-color: var(--c-neg);
+  background: var(--c-neg-soft);
 }
 
 .seg {

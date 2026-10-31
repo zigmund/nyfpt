@@ -112,26 +112,18 @@
               <span>{{ t('login.codeSent', { phone: sentTo }) }}</span>
               <button type="button" class="link" :disabled="busy" @click="resetCode">{{ t('login.changePhone') }}</button>
             </p>
-            <label class="field">
-              <span class="field__label">{{ t('login.code') }}</span>
-              <input
+            <div class="field">
+              <span class="field__label" aria-hidden="true">{{ t('login.code') }}</span>
+              <CodeInput
                 ref="codeInput"
-                v-model.trim="code"
-                class="input input--mono input--code"
-                type="text"
-                name="code"
-                data-test="code"
-                inputmode="numeric"
-                autocomplete="one-time-code"
-                :maxlength="codeLength || null"
-                :pattern="codeLength ? `\\d{${codeLength}}` : null"
-                :style="codeLength ? { '--code-len': codeLength } : null"
-                aria-describedby="login-code-hint"
-                required
+                v-model="code"
+                :length="CODE_LENGTH"
                 :disabled="busy"
-              >
+                :invalid="codeFailed"
+                @complete="submit"
+              />
               <span id="login-code-hint" class="field__hint">{{ t('login.codeHint') }}</span>
-            </label>
+            </div>
           </template>
         </div>
 
@@ -168,6 +160,7 @@ import { t } from '../i18n.js'
 import { DEFAULT_CABINET } from '../config.js'
 import { NetworkError } from '../api/transport.js'
 import { useApp } from '../composables/useApp.js'
+import CodeInput from './CodeInput.vue'
 
 defineProps({
   /** Rendered over the cached screen after a session expiry. */
@@ -175,6 +168,8 @@ defineProps({
 })
 
 const MODES = ['email', 'phone']
+// Owner decision: the code is always 6 digits (broker's auth_code_length ignored).
+const CODE_LENGTH = 6
 const PHONE_RE = /^\+\d{7,15}$/
 
 const app = useApp()
@@ -188,7 +183,7 @@ const password = ref('')
 const phone = ref('')
 const sentTo = ref('')
 const authCodeId = ref(null)
-const codeLength = ref(null)
+const codeFailed = ref(false)
 const code = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -207,8 +202,8 @@ function setMode(m, focus = false) {
 
 function resetCode() {
   authCodeId.value = null
-  codeLength.value = null
   code.value = ''
+  codeFailed.value = false
   error.value = ''
 }
 
@@ -224,7 +219,6 @@ async function sendCode() {
   try {
     const r = await app.requestCode(cabinetId.value, tel)
     authCodeId.value = r.authCodeId
-    codeLength.value = Number(r.codeLength) || null
     sentTo.value = tel
     code.value = ''
     await nextTick()
@@ -243,24 +237,27 @@ async function submit() {
   if (mode.value === 'email') {
     creds = { login: loginName.value, password: password.value }
   } else {
-    if (codeLength.value && code.value.length !== codeLength.value) {
-      error.value = t('login.codeInvalid', { n: codeLength.value })
+    if (code.value.length !== CODE_LENGTH) {
+      error.value = t('login.codeInvalid', { n: CODE_LENGTH })
       return
     }
     creds = { authCodeId: authCodeId.value, code: code.value }
   }
   busy.value = true
   error.value = ''
+  codeFailed.value = false
   try {
     await app.login(cabinetId.value, creds)
   } catch (e) {
     error.value = messageOf(e)
+    codeFailed.value = mode.value === 'phone'
   } finally {
     // Secrets never outlive an attempt.
     creds = null
     password.value = ''
     code.value = ''
     busy.value = false
+    if (codeFailed.value) nextTick(() => codeInput.value?.focus())
   }
 }
 </script>
