@@ -249,6 +249,48 @@ describe('repo', () => {
     expect(repo2.coreFor('7d', '2026-10-12')).toEqual(direct)
   })
 
+  it('coreFor returns null before the cache is loaded', async () => {
+    const repo = mk(fakeBroker())
+    await repo.ensurePrices('7d', '2026-10-12')
+    expect(repo.coreFor('7d', '2026-10-12')).not.toBeNull() // (c) fully covered
+    const repo2 = mk(fakeBroker())
+    expect(repo2.coreFor('7d', '2026-10-12')).toBeNull()
+    await repo2.load()
+    expect(repo2.coreFor('7d', '2026-10-12').summary.twr).toBe(7.58)
+  })
+
+  it('coreFor returns null after an offline switch to a longer period', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.ensurePrices('1d', '2026-10-13') // trades from 10-08, candles from 10-02
+    expect(repo.coreFor('1d', '2026-10-13')).not.toBeNull()
+    expect(repo.coreFor('1m', '2026-10-13')).toBeNull() // needs trades and closes from 09-13
+    expect(repo.coreFor('1d', '2026-10-11')).toBeNull() // closes cover 10-10, trades needed from 10-06
+    // Trades cover the period but a new position has no candles yet.
+    const ps = clone(fx.getPositionJson.result.ps)
+    ps.pos.push({ i: 'DDD.US', name: 'Delta', q: 2, mkt_price: 22, market_value: 44 })
+    await repo.applyPortfolio(ps)
+    expect(repo.coreFor('1d', '2026-10-13')).toBeNull()
+  })
+
+  it('coreFor returns null after trades but before candles land', async () => {
+    const b = fakeBroker()
+    const hloc = b.hlocDaily
+    let release
+    const gate = new Promise((r) => { release = r })
+    b.hlocDaily = async (...a) => { await gate; return hloc(...a) }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    const done = repo.ensurePrices('7d', '2026-10-12')
+    await vi.waitFor(() => expect(st.loading).toContain('candles'))
+    expect(st.trades).toHaveLength(1)
+    expect(repo.coreFor('7d', '2026-10-12')).toBeNull()
+    release()
+    await done
+    expect(repo.coreFor('7d', '2026-10-12').summary.twr).toBe(7.58)
+  })
+
   it('1d with no session after start shifts base using closes before start', async () => {
     const b = fakeBroker()
     const repo = mk(b)

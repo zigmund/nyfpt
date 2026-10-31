@@ -45,6 +45,7 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   const expiredFns = new Set()
   let expiredNotified = false
   let cacheLoaded = null
+  let loaded = false
 
   const today = () => nyDate(now())
 
@@ -156,6 +157,7 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       }
       cover = (await db.getKv('candleCover'))?.data || {}
       for (const t of Object.keys(cover)) candles.set(t, await db.getCandles(t))
+      loaded = true
     })()
     return cacheLoaded
   }
@@ -175,8 +177,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       for (const t of tickers) {
         const own = rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))
         if (own.length) await db.putCandles(t, own)
-        if (!cover[t] || from < cover[t]) cover[t] = from
         candles.set(t, await db.getCandles(t))
+        if (!cover[t] || from < cover[t]) cover[t] = from
       }
       await db.putKv('candleCover', { ...cover }, now())
     })
@@ -203,12 +205,18 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     await Promise.all([...groups].map(([from, ts]) => fetchCandles(ts, from)))
   }
 
-  /** Price rows for computeCore: per ticker the last 6 closes <= start and all after it. */
+  /** Price rows for computeCore: per ticker the last 6 closes <= start and all after it.
+   *  null when the cache does not cover the period: not loaded, no positions/cashflows,
+   *  trades start after tradesFrom, or a required ticker's closes start after `start`. */
   function priceRows(period, day) {
+    if (!loaded || !cache.positions || !cache.cashflows) return null
     const start = startOf(period, day)
-    if (!start) return []
+    if (!start) return null // 'All' without any cashflows
+    const tf = tradesFrom(period, start)
+    if (!cache.trades || cache.trades.from > tf) return null
     const out = []
-    for (const t of tickersFor(tradesFrom(period, start))) {
+    for (const t of tickersFor(tf)) {
+      if (!cover[t] || cover[t] > start) return null
       const cs = candles.get(t) || []
       let cut = cs.findIndex((c) => c.date > start)
       if (cut < 0) cut = cs.length
@@ -255,11 +263,17 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       return pending.get(key)
     },
 
-    /** Synchronous over the cache; with `quotes` the `day` close is replaced by live prices. */
+    /**
+     * computeCore over the cache, synchronous; with `quotes` the `day` close is replaced by
+     * live prices. Returns null when the cache does not cover the period (not loaded yet,
+     * trades or closes not fetched back far enough, e.g. an offline switch to a longer
+     * period or ensurePrices still running): the UI shows a skeleton / "unavailable".
+     */
     coreFor(period, day = today(), quotes) {
       let prices = priceRows(period, day)
+      if (!prices) return null
       if (quotes) prices = livePriceRows(prices, quotes, day)
-      return computeCore(cache.positions?.rows || [], cache.trades?.rows || [], cache.cashflows || [], prices)
+      return computeCore(cache.positions.rows, cache.trades.rows, cache.cashflows, prices)
     },
 
     marketsStrip,
