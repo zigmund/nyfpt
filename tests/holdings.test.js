@@ -109,3 +109,21 @@ describe('Holdings', () => {
     expect(w.find('[aria-live], [role="status"]').exists()).toBe(false)
   })
 })
+
+describe('dev mock (?mock)', () => {
+  it('positions carry close_price, so Day % and Day $ show outside live mode', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { holdingsRows, holdingsTotal } = await import('../src/calc/live.js')
+    const pending = createMockBroker().positions()
+    await vi.advanceTimersByTimeAsync(1000) // simulated latency
+    const ps = (await pending).result.ps
+    expect(ps.pos.length).toBeGreaterThan(0)
+    for (const p of ps.pos) expect(Number(p.close_price)).toBeGreaterThan(0)
+    const rows = holdingsRows(ps, new Map())
+    for (const r of rows) {
+      expect(r.dayChangePct, r.ticker).not.toBe(null)
+      expect(r.dayChangeUsd, r.ticker).not.toBe(null)
+    }
+    expect(holdingsTotal(rows).dayChangePct).not.toBe(null)
+  })
+})

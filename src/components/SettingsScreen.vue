@@ -48,7 +48,7 @@
       <p class="card__hint">{{ t('settings.clearCacheHint') }}</p>
       <div class="row">
         <button type="button" class="btn btn--danger" :disabled="clearing" @click="clear">{{ t('settings.clearCache') }}</button>
-        <span class="row__status" role="status">{{ cleared ? t('settings.cleared') : '' }}</span>
+        <span class="row__status" role="status">{{ clearMsg }}</span>
       </div>
     </section>
 
@@ -78,14 +78,16 @@ const cabinet = computed(() => app.cabinetOf(session.value?.cabinetId))
 const version = import.meta.env.VITE_APP_VERSION || 'dev'
 
 const clearing = ref(false)
-const cleared = ref(false)
+const clearMsg = ref('')
 
 async function clear() {
   clearing.value = true
-  cleared.value = false
+  clearMsg.value = ''
   try {
     await app.clearCache()
-    cleared.value = true
+    clearMsg.value = t('settings.cleared')
+  } catch {
+    clearMsg.value = t('settings.clearFailed')
   } finally {
     clearing.value = false
   }

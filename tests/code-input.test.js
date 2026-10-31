@@ -27,10 +27,25 @@ describe('CodeInput', () => {
     expect(wrapper.findAll('input')).toHaveLength(1)
     expect(input.attributes('inputmode')).toBe('numeric')
     expect(input.attributes('autocomplete')).toBe('one-time-code')
-    expect(input.attributes('maxlength')).toBe('6')
+    // No maxlength: it would cut an autofilled "123 456" to 5 digits; digits() clamps instead.
+    expect(input.attributes('maxlength')).toBeUndefined()
     expect(input.attributes('pattern')).toBe('[0-9]*')
     expect(input.attributes('aria-label')).toBe('Verification code')
     expect(wrapper.findAll('.code__cell')).toHaveLength(6)
+  })
+
+  it('autofill with a space ("123 456") becomes 6 digits and auto-submits', async () => {
+    const { value, completes, input } = host()
+    await input.setValue('123 456')
+    expect(value.value).toBe('123456')
+    expect(input.element.value).toBe('123456')
+    expect(completes).toEqual(['123456'])
+  })
+
+  it('passes aria-describedby to the real input', () => {
+    const { input } = host({ describedBy: 'hint-id' })
+    expect(input.attributes('aria-describedby')).toBe('hint-id')
+    expect(host().input.attributes('aria-describedby')).toBeUndefined()
   })
 
   it('emits complete exactly once on the 6th digit and fills cells', async () => {

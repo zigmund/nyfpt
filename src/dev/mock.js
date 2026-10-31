@@ -132,6 +132,7 @@ export function createMockBroker() {
       const a = clone(fixture.getPositionJson)
       for (const p of a.result.ps.pos) {
         p.mkt_price = r2(priceOf(p.i).ltp)
+        p.close_price = r2(priceOf(p.i).pp) // previous close: Day % / Day $ outside live mode
         p.market_value = r2(p.q * p.mkt_price)
       }
       return a

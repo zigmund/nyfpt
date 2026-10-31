@@ -54,6 +54,23 @@ describe('transport', () => {
     expect(f.mock.calls[0][1]?.headers).toBeUndefined()
   })
 
+  it('every request carries a 20 s timeout signal and no headers; a timeout is a NetworkError', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const f = fake({}, {})
+      await callLegacy({ rest: 'r', cmd: 'c', fetchImpl: f })
+      await callAnon({ rest: 'r', cmd: 'c', fetchImpl: f })
+      expect(spy.mock.calls).toEqual([[20000], [20000]])
+      for (const [, init] of f.mock.calls) {
+        expect(init.signal).toBeInstanceOf(AbortSignal)
+        expect(init.headers).toBeUndefined()
+      }
+    } finally { spy.mockRestore() }
+    const timedOut = vi.fn().mockRejectedValue(new DOMException('The operation timed out.', 'TimeoutError'))
+    await expect(callLegacy({ rest: 'r', cmd: 'c', fetchImpl: timedOut })).rejects.toBeInstanceOf(NetworkError)
+    await expect(callAnon({ rest: 'r', cmd: 'c', fetchImpl: timedOut })).rejects.toBeInstanceOf(NetworkError)
+  })
+
   it('uses globalThis.fetch resolved at call time', async () => {
     const orig = globalThis.fetch
     globalThis.fetch = vi.fn().mockResolvedValue(ok({ a: 1 }))

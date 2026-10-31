@@ -120,6 +120,7 @@
                 :length="CODE_LENGTH"
                 :disabled="busy"
                 :invalid="codeFailed"
+                described-by="login-code-hint"
                 @complete="submit"
               />
               <span id="login-code-hint" class="field__hint">{{ t('login.codeHint') }}</span>

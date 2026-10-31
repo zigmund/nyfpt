@@ -9,8 +9,8 @@
       inputmode="numeric"
       autocomplete="one-time-code"
       pattern="[0-9]*"
-      :maxlength="length"
       :aria-label="t('login.code')"
+      :aria-describedby="describedBy || null"
       :aria-invalid="invalid ? 'true' : null"
       :disabled="disabled"
       :value="modelValue"
@@ -40,6 +40,8 @@ const props = defineProps({
   length: { type: Number, default: 6 },
   disabled: { type: Boolean, default: false },
   invalid: { type: Boolean, default: false },
+  // id of the hint element, set on the real input
+  describedBy: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue', 'complete'])
 

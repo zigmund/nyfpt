@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import LoginScreen from '../src/components/LoginScreen.vue'
 import App from '../src/App.vue'
+import SettingsScreen from '../src/components/SettingsScreen.vue'
 import { createAppState, installApp, isUsdAccount } from '../src/composables/useApp.js'
 import { BrokerError, NetworkError } from '../src/api/transport.js'
 import { t } from '../src/i18n.js'
@@ -96,7 +97,9 @@ describe('LoginScreen', () => {
     expect(arg.phone).toBe('+77001234567')
     expect(arg.cabinet.id).toBe('global')
     const code = wrapper.get('[data-test="code"]')
-    expect(code.attributes('maxlength')).toBe('6')
+    expect(code.attributes('maxlength')).toBeUndefined()
+    expect(code.attributes('aria-describedby')).toBe('login-code-hint')
+    expect(wrapper.find('#login-code-hint').exists()).toBe(true)
     expect(code.attributes('autocomplete')).toBe('one-time-code')
     expect(wrapper.text()).toContain('The code may arrive as a push notification in the broker app')
 
@@ -493,6 +496,35 @@ describe('session expiry and storage failures', () => {
     expect(app.session.value).toBe(null)
     expect(app.route.value).toBe('/login')
     expect(wrapper.get('input[type="password"]').element.value).toBe('')
+  })
+})
+
+describe('Settings: clear cache', () => {
+  const clearButton = (w) => w.findAll('button').find((b) => b.text() === t('settings.clearCache'))
+
+  it('shows "Cache cleared" on success', async () => {
+    const { app } = setup()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const w = mount(SettingsScreen)
+    await clearButton(w).trigger('click')
+    await flushPromises()
+    expect(w.get('.row__status').text()).toBe(t('settings.cleared'))
+    w.unmount()
+  })
+
+  it('a storage error shows feedback instead of an unhandled rejection', async () => {
+    const { app, deps } = setup()
+    deps.openAccountDb.mockImplementationOnce(async (key) => ({
+      key, clear: vi.fn(async () => { throw new Error('QuotaExceededError') }), close: vi.fn(),
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const w = mount(SettingsScreen)
+    const btn = clearButton(w)
+    await btn.trigger('click')
+    await flushPromises()
+    expect(w.get('.row__status').text()).toBe(t('settings.clearFailed'))
+    expect(btn.attributes('disabled')).toBeUndefined()
+    w.unmount()
   })
 })
 

@@ -32,7 +32,7 @@
       </button>
     </div>
 
-    <p v-if="big != null" class="vblock__big big" :class="{ 'is-stale': stale }" data-test="v-big" aria-live="polite">{{ fMoney(big, { hide: prefs.hide }) }}</p>
+    <p v-if="big != null" class="vblock__big big" :class="{ 'is-stale': stale }" data-test="v-big">{{ fMoney(big, { hide: prefs.hide }) }}</p>
     <p v-else class="vblock__big big skel" data-test="v-big-skel" aria-hidden="true">&nbsp;</p>
 
     <div v-if="summary" class="vblock__body" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">

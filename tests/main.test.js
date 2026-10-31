@@ -85,6 +85,8 @@ describe('ValueBlock', () => {
     expect(per).toContain(money(80.25, { sign: true }))
     expect(per).toContain(`(${pct(0.8)})`)
     expect(per).toContain(t('value.perPerf', { period: 'YTD' }))
+    // Not a live region: live recalcs would re-announce it every few seconds.
+    expect(w.get('[data-test="v-big"]').attributes('aria-live')).toBeUndefined()
   })
 
   it('Value mode: value change including deposits', async () => {
