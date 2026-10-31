@@ -307,11 +307,24 @@ describe('Summary', () => {
       expect(w.findAll('[data-test="p-stats-skel"] .pstats__item')).toHaveLength(5)
     })
 
-    it('holdings skeleton while the period result is not ready and the ticker is not held', () => {
+    const pending = (patch) => {
       const app = setup({ sec: EMPTY_SEC })
       app.coreFor.mockReturnValue(null)
-      const w = mountCard({ ticker: 'QQQ.US' })
-      expect(w.find('[data-test="p-holdings-skel"]').exists()).toBe(true)
+      app.state.value = { ...app.state.value, positions: [{ ticker: 'QQQ.US' }], trades: [], loading: ['candles'], errors: {}, ...patch }
+      return mountCard({ ticker: 'QQQ.US' })
+    }
+
+    it('holdings skeleton only while the period core is loading for a position/traded ticker', () => {
+      expect(pending({}).find('[data-test="p-holdings-skel"]').exists()).toBe(true)
+    })
+
+    it('core error or nothing loading: no holdings skeleton', () => {
+      expect(pending({ errors: { candles: 'boom' } }).find('[data-test="p-holdings-skel"]').exists()).toBe(false)
+      expect(pending({ loading: [] }).find('[data-test="p-holdings-skel"]').exists()).toBe(false)
+    })
+
+    it('ticker neither held nor traded: no holdings skeleton', () => {
+      expect(pending({ positions: [], trades: [] }).find('[data-test="p-holdings-skel"]').exists()).toBe(false)
     })
 
     it('after load: same chart area, not busy, no skeletons', () => {
@@ -331,8 +344,11 @@ describe('Summary', () => {
       await w.get('[data-cperiod="5Y"]').trigger('click') // 'max' data is not loaded
       const chart = w.get('[data-test="p-chart"]')
       expect(chart.attributes('aria-busy')).toBe('true')
-      expect(chart.classes()).toContain('is-stale')
-      expect(chart.find('svg').exists()).toBe(true)
+      expect(chart.classes()).not.toContain('is-stale')
+      const dim = chart.get('.is-stale')
+      expect(dim.find('svg').exists()).toBe(true)
+      expect(dim.text()).not.toContain(t('main.loading'))
+      expect(chart.get('[data-test="p-chart-busy"]').text()).toBe(t('main.loading'))
     })
 
     it('no data / error: the message sits inside the same chart area', () => {

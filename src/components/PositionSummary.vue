@@ -29,13 +29,14 @@
       <!-- One fixed-height area in every state: chart, old chart while a new period loads, skeleton, message. -->
       <div
         class="pchart"
-        :class="{ 'is-stale': chartStale }"
         :aria-label="t('pos.chartLabel', { period: periodLabel })"
         :aria-busy="chartLoading ? 'true' : 'false'"
         :role="shown ? 'img' : null"
         data-test="p-chart"
       >
-        <PriceChart v-if="shown" :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" />
+        <div v-if="shown" class="pchart__plot" :class="{ 'is-stale': chartStale }">
+          <PriceChart :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" />
+        </div>
         <div v-else-if="chartLoading" class="pchart__skel skel" aria-hidden="true" data-test="p-chart-skel" />
         <p v-else class="card__hint pchart__none" data-test="p-chart-none">{{ t('pos.noChart') }}</p>
         <p v-if="chartLoading" class="pchart__busy card__hint" role="status" data-test="p-chart-busy">{{ t('main.loading') }}</p>
@@ -205,7 +206,18 @@ const closed = computed(() => {
 })
 
 // Placeholders until the data arrives, so the card has its final layout from the first frame.
-const holdingsPending = computed(() => !h.value && !core.value)
+const CORE_ERRS = ['positions', 'trades', 'candles', 'sparks']
+const plausible = computed(() => {
+  const st = app.state.value
+  const tk = ticker.value
+  return [st?.positions, st?.trades, st?.rawPs?.pos].some((l) => (l || []).some((r) => (r.ticker ?? r.i) === tk))
+})
+// Only while the period core is really loading (not on an error), for a held or traded ticker.
+const holdingsPending = computed(() => {
+  const st = app.state.value
+  return !h.value && !core.value && plausible.value && !!st?.loading?.length
+    && !CORE_ERRS.some((k) => st.errors?.[k])
+})
 const nameLoading = computed(() => props.pos.name === ticker.value && !props.pos.sec.info && !loadError.value)
 
 // --- key statistics
