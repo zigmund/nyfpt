@@ -897,6 +897,7 @@ button, input, select { font: inherit; color: inherit; }
 .chart-dot { fill: var(--seg); stroke: var(--c-panel); stroke-width: 2; }
 .chart-rule { stroke: var(--c-muted); stroke-width: 2; }
 .chart-axis { stroke: var(--c-line-strong); }
+.bars__div { stroke: var(--c-line); }
 .chart-grid { stroke: var(--c-line); }
 .chart-hit { fill: transparent; cursor: crosshair; }
 
