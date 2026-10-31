@@ -2,14 +2,12 @@
 // While a new period loads (coreFor -> null) the last result stays visible with `stale` = true;
 // with nothing to show yet `core` is null and the UI renders skeletons.
 import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue'
-import { useApp } from './useApp.js'
-import { PERIODS } from '../calc/periods.js'
+import { useApp, periodOf } from './useApp.js'
 import { nyDate } from '../data/repo.js'
 
-const CLOCK_MS = 60e3
+export { periodOf }
 
-/** Selected period from prefs; unknown values fall back to YTD. */
-export const periodOf = (prefs) => (PERIODS.includes(prefs.period) ? prefs.period : 'YTD')
+const CLOCK_MS = 60e3
 
 /** Tickers that need closes: current positions and traded tickers (currency pairs skipped). */
 export const pricedTickersKey = (st) => [...new Set([

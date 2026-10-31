@@ -1,6 +1,7 @@
 // App state singleton: session, account partition, repo + live wiring, prefs and hash routing.
 import { ref, shallowRef, reactive, watch } from 'vue'
-import { CABINETS, DEFAULT_CABINET } from '../config.js'
+import { CABINETS, DEFAULT_CABINET, POLL_MS } from '../config.js'
+import { PERIODS } from '../calc/periods.js'
 import { t } from '../i18n.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../api/auth.js'
 import { createBroker } from '../api/broker.js'
@@ -26,6 +27,8 @@ const defaultDeps = () => ({
   sessionStore: { load: loadSession, save: saveSession, clear: clearSession },
   prefsStore: { load: loadPrefs, save: savePrefs },
   now: () => Date.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (id) => clearTimeout(id),
   mock: false,
 })
 
@@ -54,6 +57,9 @@ export function isUsdAccount(answer) {
   if (acc.some((c) => c.curr === 'USD')) return true
   return !acc.some((c) => Number(c.s) !== 0)
 }
+
+/** Selected period from prefs; unknown values fall back to YTD. */
+export const periodOf = (prefs) => (PERIODS.includes(prefs.period) ? prefs.period : 'YTD')
 
 export const parseHash = (h) => {
   const p = String(h || '').replace(/^#/, '') || '/'
@@ -99,6 +105,8 @@ export function createAppState(overrides = {}) {
   let unsubs = []
   let gen = 0
   let started = false
+  let visible = !doc?.hidden
+  let refreshTimer = null
 
   watch(prefs, (p) => deps.prefsStore.save({ ...p }), { deep: true })
 
@@ -117,9 +125,43 @@ export function createAppState(overrides = {}) {
 
   function bump() {
     const on = !!liveObj && !expired.value
+    const wasLive = live.isLive.value
     live.isLive.value = on && !!liveObj.isLive()
     live.usOpen.value = on && !!liveObj.marketsOpen()?.us
+    // Session over: today's close replaces the partial candle cached during it (spec §9).
+    if (on && wasLive && !live.isLive.value) ensureCurrent()
     tick.value++
+  }
+
+  // --- scheduled refresh (spec §10): one timer, only while visible with a live account.
+  /** Closes for the selected period (incremental from the last cached date). */
+  function ensureCurrent() {
+    const r = repo
+    if (!r || expired.value) return Promise.resolve()
+    return Promise.resolve().then(() => r.ensurePrices(periodOf(prefs))).catch(() => {})
+  }
+
+  // TTL-gated REST datasets, then closes; while live, quotes stand in for today's close.
+  async function scheduledRefresh() {
+    const r = repo
+    if (!r || expired.value) return
+    try { await r.refresh() } catch { /* repo records its own errors */ }
+    if (r !== repo || expired.value || liveQuotesForCalc()) return
+    await ensureCurrent()
+  }
+
+  function syncTimer() {
+    const want = !!repo && !expired.value && visible
+    if (want && refreshTimer == null) {
+      refreshTimer = deps.setTimer(() => {
+        refreshTimer = null
+        syncTimer()
+        scheduledRefresh()
+      }, POLL_MS)
+    } else if (!want && refreshTimer != null) {
+      deps.clearTimer(refreshTimer)
+      refreshTimer = null
+    }
   }
 
   // --- routing
@@ -145,9 +187,15 @@ export function createAppState(overrides = {}) {
   }
 
   function onVisibility() {
+    const was = visible
+    visible = !doc.hidden
+    syncTimer()
     if (!liveObj || expired.value) return
-    if (doc.hidden) liveObj.pause()
-    else liveObj.resume()
+    if (!visible) liveObj.pause()
+    else {
+      liveObj.resume() // also refreshes the REST datasets
+      if (!was) ensureCurrent()
+    }
   }
 
   // --- account wiring
@@ -156,6 +204,7 @@ export function createAppState(overrides = {}) {
     liveObj?.stop()
     liveObj = null
     repo = null
+    syncTimer()
   }
 
   function closeDb() {
@@ -169,6 +218,7 @@ export function createAppState(overrides = {}) {
     // The SID is dead: no sockets or polling, and no live state until the next login.
     liveObj?.stop()
     liveObj = null
+    syncTimer()
     bump()
   }
 
@@ -203,6 +253,7 @@ export function createAppState(overrides = {}) {
     )
     liveObj.start()
     if (doc?.hidden) liveObj.pause()
+    syncTimer()
     repo.load().catch(() => {}) // repo records its own errors in state.errors
   }
 

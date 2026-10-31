@@ -9,6 +9,7 @@ import {
   parseHloc, parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js'
 import { livePriceRows } from '../src/calc/live.js'
+import { createAppState } from '../src/composables/useApp.js'
 
 const T0 = Date.parse('2026-10-12T15:00:00Z') // 11:00 in New York
 const clone = (x) => JSON.parse(JSON.stringify(x))
@@ -329,5 +330,49 @@ describe('repo', () => {
     await mk(b).ensurePrices('7d')
     expect(b.calls.trades).toEqual(['2026-10-23'])
     expect(b.calls.hlocDaily[0].dateFrom).toBe('2026-10-13')
+  })
+})
+
+describe('useApp + repo: closes after the session', () => {
+  it('live -> not live on the same NY day re-requests closes from today', async () => {
+    const db = await openAccountDb('global:1', new IDBFactory())
+    const b = fakeBroker()
+    const full = b.series
+    // During the session the broker's 10-12 candle is partial.
+    b.series = Object.fromEntries(Object.entries(full).map(([t, rows]) => [
+      t, rows.filter(([d]) => d <= '2026-10-12').map(([d, c]) => [d, d === '2026-10-12' ? c - 1 : c]),
+    ]))
+    let live = false
+    let onUpdate = null
+    const app = createAppState({
+      createBroker: () => b,
+      openAccountDb: async () => db,
+      createRepo: ({ broker, db: d }) => createRepo({ broker, db: d, now: () => T0 }),
+      createLive: () => ({
+        quotes: new Map(), isLive: () => live, marketsOpen: () => ({ us: live }),
+        on: (e, fn) => { if (e === 'update') onUpdate = fn; return () => {} },
+        start() {}, stop() {}, pause() {}, resume() {},
+      }),
+      socketFactory: () => () => ({}),
+      sessionStore: { load: () => ({ cabinetId: 'global', sid: 's', userId: 1, loggedAt: 0 }), save() {}, clear() {} },
+      prefsStore: { load: () => ({ period: '7d' }), save() {} },
+      setTimer: () => 1, clearTimer: () => {},
+    })
+    app.start()
+    await vi.waitFor(() => expect(app.state.value?.positions && app.state.value.loading).toEqual([]))
+    await app.ensurePrices('7d') // the screen's fetch during the session
+    expect((await db.getCandles('AAA.US')).at(-1)).toEqual({ date: '2026-10-12', close: full['AAA.US'].find(([d]) => d === '2026-10-12')[1] - 1 })
+
+    live = true
+    onUpdate()
+    b.calls.hlocDaily.length = 0
+    b.series = Object.fromEntries(Object.entries(full).map(([t, rows]) => [t, rows.filter(([d]) => d <= '2026-10-12')]))
+    live = false
+    onUpdate() // the session closed
+    await vi.waitFor(() => expect(b.calls.hlocDaily.map((c) => c.dateFrom)).toContain('2026-10-12'))
+    await vi.waitFor(async () => expect((await db.getCandles('AAA.US')).at(-1)).toEqual({
+      date: '2026-10-12', close: full['AAA.US'].find(([d]) => d === '2026-10-12')[1],
+    }))
+    app.stop()
   })
 })

@@ -6,6 +6,7 @@ import App from '../src/App.vue'
 import { createAppState, installApp, isUsdAccount } from '../src/composables/useApp.js'
 import { BrokerError, NetworkError } from '../src/api/transport.js'
 import { t } from '../src/i18n.js'
+import { POLL_MS } from '../src/config.js'
 
 const USD_PS = { result: { ps: { acc: [{ curr: 'USD', currval: 1, s: 100 }], pos: [] } } }
 const KZT_PS = { result: { ps: { acc: [{ curr: 'KZT', currval: 0.002, s: 5000 }], pos: [] } } }
@@ -32,6 +33,7 @@ function makeDeps({ positions = USD_PS, userId = 7 } = {}) {
         subscribe: vi.fn((fn) => { fn({ positions: [], errors: {}, loading: [] }); return () => {} }),
         onSessionExpired: vi.fn((fn) => { expiredFns.add(fn); return () => expiredFns.delete(fn) }),
         load: vi.fn(async () => {}),
+        refresh: vi.fn(async () => {}),
         // Rendered by the main screen once logged in.
         coreFor: vi.fn(() => null),
         ensurePrices: vi.fn(async () => {}),
@@ -301,6 +303,123 @@ describe('useApp login flow', () => {
     expect(app.liveQuotesForCalc()).toBeUndefined()
     live = true
     expect(app.liveQuotesForCalc()).toBe(quotes)
+  })
+})
+
+describe('scheduled refresh', () => {
+  // Manual timers: setTimer/clearTimer deps.
+  function timed(opts) {
+    const f = makeDeps(opts)
+    const timers = new Map()
+    let id = 0
+    f.deps.setTimer = vi.fn((fn, ms) => { timers.set(++id, { fn, ms }); return id })
+    f.deps.clearTimer = vi.fn((i) => { timers.delete(i) })
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    const fire = async () => {
+      const [k, x] = [...timers][0]
+      timers.delete(k)
+      x.fn()
+      await flushPromises()
+    }
+    return { ...f, app, timers, fire }
+  }
+
+  it('runs every POLL_MS while visible: TTL-gated refresh, then closes for the current period', async () => {
+    const { app, timers, fire, repos } = timed()
+    expect(timers.size).toBe(0) // nothing attached yet
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    expect([...timers.values()].map((x) => x.ms)).toEqual([POLL_MS])
+    repo.ensurePrices.mockClear()
+    await fire()
+    expect(repo.refresh).toHaveBeenCalledTimes(1)
+    expect(repo.refresh).toHaveBeenCalledWith()
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+    expect(repo.refresh.mock.invocationCallOrder[0]).toBeLessThan(repo.ensurePrices.mock.invocationCallOrder[0])
+    expect(timers.size).toBe(1) // re-armed
+  })
+
+  it('skips the closes while live (live quotes cover today)', async () => {
+    const { app, deps, fire, repos } = timed()
+    deps.createLive.mockImplementationOnce(() => ({
+      quotes: new Map(), isLive: () => true, marketsOpen: () => ({ us: true }),
+      on: () => () => {}, start() {}, stop() {}, pause() {}, resume() {},
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    repo.ensurePrices.mockClear()
+    await fire()
+    expect(repo.refresh).toHaveBeenCalledTimes(1)
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
+  })
+
+  it('does not run while hidden; resume re-ensures closes and re-arms', async () => {
+    const { app, timers, repos } = timed()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(timers.size).toBe(0)
+    repo.ensurePrices.mockClear()
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(timers.size).toBe(1)
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+    hidden.mockRestore()
+  })
+
+  it('stops on expiry, logout and stop(); a late callback does no work', async () => {
+    const { app, timers, repos, expire } = timed()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const late = [...timers.values()][0].fn
+    expire()
+    expect(timers.size).toBe(0)
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(timers.size).toBe(1)
+    await app.logout()
+    expect(timers.size).toBe(0)
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(timers.size).toBe(1)
+    app.stop()
+    expect(timers.size).toBe(0)
+    for (const r of repos) { r.refresh.mockClear(); r.ensurePrices.mockClear() }
+    late()
+    await flushPromises()
+    expect(timers.size).toBe(0)
+    for (const r of repos) {
+      expect(r.refresh).not.toHaveBeenCalled()
+      expect(r.ensurePrices).not.toHaveBeenCalled()
+    }
+  })
+
+  it('live -> not live re-ensures closes; expiry does not', async () => {
+    const { app, deps, repos, expire } = timed()
+    let live = true
+    let onUpdate = null
+    deps.createLive.mockImplementation(() => ({
+      quotes: new Map(), isLive: () => live, marketsOpen: () => ({ us: live }),
+      on: (e, fn) => { if (e === 'update') onUpdate = fn; return () => {} },
+      start() {}, stop() {}, pause() {}, resume() {},
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    repo.ensurePrices.mockClear()
+    onUpdate()
+    await flushPromises()
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
+    live = false
+    onUpdate()
+    await flushPromises()
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+
+    live = true
+    onUpdate()
+    repo.ensurePrices.mockClear()
+    expire()
+    await flushPromises()
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
   })
 })
 
