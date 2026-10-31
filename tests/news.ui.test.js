@@ -3,9 +3,10 @@
 // Synthetic data only; the news store is faked.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import { reactive, ref } from 'vue'
+import { effectScope, reactive, ref } from 'vue'
 import PositionScreen from '../src/components/PositionScreen.vue'
 import { installApp, positionRoute, positionPath, parseHash } from '../src/composables/useApp.js'
+import { useNews } from '../src/composables/useNews.js'
 import { tabsFor, CARD_TABS } from '../src/calc/position.js'
 import { BrokerError } from '../src/api/transport.js'
 import { t } from '../src/i18n.js'
@@ -181,6 +182,31 @@ describe('news list', () => {
     expect(w.get('[data-test="news-more-error"]').text()).toBe(t('news.moreError'))
     expect(w.find('[data-test="news-more"]').exists()).toBe(true)
     w.unmount()
+  })
+
+  it('a reload (Retry) while Load more is in flight does not leave Load more stuck', async () => {
+    const store = fakeStore({ 'en:0': { list: range(1, 20), total: 40 }, 'en:20': { list: range(21, 20), total: 40 } })
+    setup({ store })
+    const scope = effectScope()
+    const news = scope.run(() => useNews('AAA.US'))
+    await news.load()
+    let release
+    store.list.mockImplementationOnce(() => new Promise((r) => { release = r }))
+    const pending = news.loadMore()
+    expect(news.feed.loadingMore).toBe(true)
+    const calls = store.list.mock.calls.length
+    await news.loadMore() // ignored while one runs
+    expect(store.list.mock.calls.length).toBe(calls)
+    await news.load(true) // Retry
+    expect(news.feed.loadingMore).toBe(false)
+    expect(news.feed.moreError).toBe('')
+    release({ data: { list: range(21, 20), total: 40 }, stale: false })
+    await pending
+    expect(news.feed.loadingMore).toBe(false)
+    expect(news.feed.items).toHaveLength(20) // the stale page is dropped
+    await news.loadMore()
+    expect(news.feed.items).toHaveLength(40)
+    scope.stop()
   })
 
   it('no English news: Russian ones with a one-line note', async () => {

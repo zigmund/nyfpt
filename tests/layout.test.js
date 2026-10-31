@@ -386,6 +386,22 @@ describe('Contributions open state is remembered', () => {
     expect(w.find('.contrib__body').exists()).toBe(true)
   })
 
+  it('aria-controls only while the body exists (no reference to an absent id)', async () => {
+    makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    for (const name of ['contrib', 'flows']) {
+      const btn = w.get(`[data-test="${name}-toggle"]`)
+      expect(btn.attributes('aria-controls'), name).toBeUndefined()
+      await btn.trigger('click')
+      await nextTick()
+      const id = btn.attributes('aria-controls')
+      expect(id, name).toBeTruthy()
+      expect(document.getElementById(id) || w.find(`#${id}`).exists(), name).toBeTruthy()
+    }
+    w.unmount()
+  })
+
   it('opens expanded when prefs say so', () => {
     makeApp({ prefs: { contribOpen: true } })
     const w = mount(Contributions, { props: { positions: CORE.positions } })

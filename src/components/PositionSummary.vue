@@ -14,9 +14,10 @@
       <h2 v-else class="phead__name" data-test="p-name">{{ pos.name === ticker ? ticker : `${pos.name} (${ticker})` }}</h2>
       <p class="phead__line">
         <span v-if="pos.price != null" ref="bigEl" class="big num" data-test="p-price">{{ fPrice(pos.price) }}</span>
+        <span v-else-if="priceSettled" ref="bigEl" class="big num" data-test="p-price">—</span>
         <span v-else ref="bigEl" class="big skel" aria-hidden="true">&nbsp;</span>
         <span v-if="pos.change != null" class="phead__chg num" :class="tone(pos.change)" data-test="p-change">{{ fChange(pos.change) }} ({{ fPct(pos.changePct) }})</span>
-        <span v-else-if="pos.price == null" class="phead__chg skel" aria-hidden="true">&nbsp;</span>
+        <span v-else-if="pos.price == null && !priceSettled" class="phead__chg skel" aria-hidden="true">&nbsp;</span>
       </p>
       <p class="status" data-test="p-asof">
         <template v-if="pos.isLive">
@@ -165,6 +166,13 @@ const fChange = (v) => {
 }
 
 const venue = computed(() => [props.pos.exchange, props.pos.currency].filter(Boolean).join(' · '))
+// The price sources have answered (security info and daily candles, data or error) and none is
+// in flight: no price now means none to come, so a dash instead of a skeleton.
+const priceSettled = computed(() => {
+  const s = props.pos.sec
+  const done = (part) => (s[part] != null || !!s.errors?.[part]) && !(s.loading || []).includes(part)
+  return done('info') && done('daily')
+})
 const loadError = computed(() => !!props.pos.sec.errors?.info && !props.pos.sec.info)
 
 // --- chart
@@ -251,13 +259,15 @@ const statsPending = computed(() => !hasStats.value && !props.pos.sec.info && !l
 // --- big price visibility (compact header in the screen's top bar)
 const bigEl = ref(null)
 let io = null
+// Height of the card's sticky bar (PositionScreen .pcard__bar), measured: no copy of its CSS here.
+const barHeight = (el) => Math.ceil(el.closest('.pcard')?.querySelector('.pcard__bar')?.getBoundingClientRect().height || 0)
 function observe(el) {
   io?.disconnect()
   if (!el || typeof IntersectionObserver === 'undefined') return
   // The sticky top bar covers the page top: the price counts as hidden once under it.
   io ||= new IntersectionObserver((entries) => {
     for (const e of entries) emit('price-visible', e.isIntersecting)
-  }, { rootMargin: '-56px 0px 0px 0px' })
+  }, { rootMargin: `-${barHeight(el)}px 0px 0px 0px` })
   io.observe(el)
 }
 onMounted(() => observe(bigEl.value))

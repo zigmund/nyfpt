@@ -27,7 +27,7 @@
           :aria-label="t('search.label')" :placeholder="t('search.placeholder')" data-test="search-input"
         >
       </div>
-      <p class="srch__status" role="status" data-test="search-status">{{ status }}</p>
+      <p class="srch__status" role="status" data-test="search-status">{{ notice || status }}</p>
 
       <div class="srch__body">
         <section
@@ -79,6 +79,7 @@ import { t } from '../i18n.js'
 import { MARKET_STRIP_MAX } from '../config.js'
 import { fPct, fPrice, n, tone } from '../display.js'
 import { tickerCode } from '../store/session.js'
+import { dayChangePct } from '../calc/live.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import { filterRecent, splitMatch, useTickerSearch } from '../composables/useTickerSearch.js'
 
@@ -129,7 +130,9 @@ function priceOf(ticker) {
   void app.tick.value // live.quotes is a plain Map: tick marks its updates
   const q = app.live.quotes?.get?.(ticker)
   const f = fetched.value[ticker]
-  return { last: n(q?.ltp) ?? f?.last ?? null, change: n(q?.pcp) ?? f?.change ?? null }
+  const last = n(q?.ltp) ?? f?.last ?? null
+  // calc/live dayChangePct: the quote's price vs its previous close, else pcp (live, then cached)
+  return { last, change: dayChangePct({ last: n(q?.ltp), prev: q?.pp, pct: n(q?.pcp) ?? f?.change }) }
 }
 
 // --- star: the security is a card of the markets strip
@@ -137,7 +140,13 @@ const starBlocked = (r) => !app.inStrip(r.ticker) && app.stripFull.value
 const starLabel = (r) => (starBlocked(r)
   ? t('search.starFull', { name: r.name, max: MARKET_STRIP_MAX })
   : t('search.star', { name: r.name }))
+// A blocked star (full strip) says why in the live region: touch has no tooltip for the title.
+// The notice stays until the text changes or a star works.
+const notice = ref('')
+watch(text, () => { notice.value = '' })
 function toggleStar(r) {
+  if (starBlocked(r)) { notice.value = t('search.stripFull', { max: MARKET_STRIP_MAX }); return }
+  notice.value = ''
   if (app.inStrip(r.ticker)) app.removeFromStrip(r.ticker)
   else app.addToStrip(r)
 }

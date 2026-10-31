@@ -3,7 +3,7 @@ import fx from './fixtures/synthetic-api.json';
 import {
   parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js';
-import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows } from '../src/calc/live.js';
+import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows, dayChangePct } from '../src/calc/live.js';
 
 // Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
 const SRV3 = { offset: 10800, markets: {} };
@@ -28,6 +28,19 @@ describe('mergeQuote', () => {
     const m2 = mergeQuote(m, { c: 'AAA.US', ltp: 101 });
     expect(m2).toEqual({ c: 'AAA.US', ltp: 101, pp: 98, chg: 2 });
     expect(m).toEqual(snap);
+  });
+});
+
+describe('dayChangePct (one rule for holdings, card, strip, search and news)', () => {
+  it('price vs previous close wins over the broker pct; pct when they cannot be used; null otherwise', () => {
+    expect(dayChangePct({ last: 102, prev: 100, pct: 9.99 })).toBeCloseTo(2, 10);
+    expect(dayChangePct({ last: '102', prev: '100' })).toBeCloseTo(2, 10);
+    expect(dayChangePct({ last: 102, prev: 0, pct: 1.5 })).toBe(1.5); // index pp 0
+    expect(dayChangePct({ last: null, prev: 100, pct: -0.5 })).toBe(-0.5);
+    expect(dayChangePct({ last: 102, prev: null, pct: '0' })).toBe(0);
+    expect(dayChangePct({ last: 102 })).toBeNull();
+    expect(dayChangePct({})).toBeNull();
+    expect(dayChangePct()).toBeNull();
   });
 });
 

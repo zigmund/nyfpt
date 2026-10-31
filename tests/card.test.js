@@ -142,6 +142,27 @@ const IDX_INFO = info('SP500.IDX', {
 })
 const LAST_DAY = 'Jun 27, 2026' // date of the last DAILY candle
 
+describe('compact header', () => {
+  it('the big price counts as hidden under the sticky card bar: rootMargin = the bar\'s measured height', async () => {
+    const seen = []
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(cb, opts) { seen.push(opts) }
+      observe() {}
+      disconnect() {}
+    })
+    const rect = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      return this.classList.contains('pcard__bar') ? { top: 0, bottom: 61.6, height: 61.6, left: 0, right: 375, width: 375 } : rect.call(this)
+    })
+    try {
+      await mountApp()
+      expect(seen.map((o) => o.rootMargin)).toContain('-62px 0px 0px 0px')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('index card (getSecurityInfo without prices)', () => {
   it('price and day change from the daily closes; At close from the last candle date, never the epoch', async () => {
     const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) } })
@@ -152,6 +173,21 @@ describe('index card (getSecurityInfo without prices)', () => {
     expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: LAST_DAY }))
     expect(w.find('[data-test="p-holdings"]').exists()).toBe(false)
     expect(w.text()).not.toMatch(/1969|1970/)
+  })
+
+  it('no price anywhere (no ltp, no daily close): a dash once info and daily have settled, a skeleton before', async () => {
+    const bare = (extra) => secOf({ ...IDX_INFO, c: 'NONE.IDX' }, { daily: [], ...extra })
+    let ctx = await mountApp({ route: '/position/NONE.IDX', secs: { 'NONE.IDX': bare({ loading: ['daily'] }) } })
+    expect(ctx.w.find('[data-test="p-price"]').exists()).toBe(false)
+    expect(ctx.w.find('.phead__line .big.skel').exists()).toBe(true)
+    ctx.w.unmount()
+    ctx = await mountApp({ route: '/position/NONE.IDX', secs: { 'NONE.IDX': bare({}) } })
+    expect(ctx.w.get('[data-test="p-price"]').text()).toBe('—')
+    expect(ctx.w.find('.phead__line .skel').exists()).toBe(false)
+    ctx.w.unmount()
+    // daily failed, info answered: settled too
+    ctx = await mountApp({ route: '/position/NONE.IDX', secs: { 'NONE.IDX': bare({ daily: null, errors: { daily: 'x' } }) } })
+    expect(ctx.w.get('[data-test="p-price"]').text()).toBe('—')
   })
 
   it('market open: As of the last candle date', async () => {
@@ -302,6 +338,39 @@ describe('card header: search and Back', () => {
     app.back()
     expect(back).not.toHaveBeenCalled()
     expect(app.route.value).toBe('/')
+  })
+
+  it('Back from a card restores the main-screen scroll (kept in the main entry next to depth)', async () => {
+    const { app, w } = await mountApp({ route: '/' })
+    Object.defineProperty(window, 'scrollY', { value: 640, configurable: true })
+    try {
+      // A followed link: the click inside the main screen records its scroll before the hash changes.
+      await w.get('[data-test="updated"]').trigger('click')
+      expect(window.history.state).toMatchObject({ depth: 0, scroll: 640 })
+      // go() from the main screen records it too.
+      Object.defineProperty(window, 'scrollY', { value: 700, configurable: true })
+      app.go('/position/DIA.US')
+      await flushPromises()
+      expect(window.history.state).toMatchObject({ depth: 1 })
+      expect(window.history.state.scroll).toBeUndefined()
+      // Back: the main entry (with its scroll) comes back; the main screen restores it once mounted.
+      const to = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+      window.history.pushState({ depth: 0, scroll: 700 }, '', '#/')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      await flushPromises()
+      await new Promise((r) => setTimeout(r, 50))
+      expect(w.find('[data-test="updated"]').exists()).toBe(true)
+      expect(to).toHaveBeenLastCalledWith(0, 700)
+    } finally {
+      delete window.scrollY
+    }
+  })
+
+  it('a main entry without a saved scroll (a new push) is not scrolled', async () => {
+    const to = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    await mountApp({ route: '/' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(to).not.toHaveBeenCalled()
   })
 
   it('after a reload start() reads the entry depth: Back uses the history', async () => {

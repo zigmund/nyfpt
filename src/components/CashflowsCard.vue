@@ -7,7 +7,7 @@
       class="contrib__toggle"
       :class="{ 'is-open': open }"
       :aria-expanded="open ? 'true' : 'false'"
-      :aria-controls="id"
+      :aria-controls="open ? id : null"
       data-test="flows-toggle"
       @click="prefs.flowsOpen = !open"
     >

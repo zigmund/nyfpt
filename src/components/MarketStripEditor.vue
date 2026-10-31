@@ -86,14 +86,18 @@ const has = app.inStrip
 
 const save = (list) => app.setMarketStrip(list)
 
+const OPPOSITE = { up: 'down', down: 'up' }
 // Focus the `act` button of card `i` (or the nearest one; the search field when no card is left):
-// moved or removed cards must not drop keyboard focus.
+// moved or removed cards must not drop keyboard focus. A card moved to the top / bottom edge gets
+// its opposite move button (repeated presses must never land on Remove); Remove only when both
+// moves are disabled (a single card).
 function focusCard(i, act) {
   nextTick(() => {
     const rows = root.value?.querySelectorAll('[data-test="strip-item"]') || []
     if (!rows.length) { search.value?.focus(); return }
     const li = rows[Math.min(i, rows.length - 1)]
-    const btn = li.querySelector(`[data-act="${act}"]:not(:disabled)`) || li.querySelector('[data-act="remove"]')
+    const enabled = (a) => (a ? li.querySelector(`[data-act="${a}"]:not(:disabled)`) : null)
+    const btn = enabled(act) || enabled(OPPOSITE[act]) || li.querySelector('[data-act="remove"]')
     btn?.focus()
   })
 }

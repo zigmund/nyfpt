@@ -236,6 +236,19 @@ describe('Holdings: Day / period switch', () => {
     expect(cur.findAll('tbody th').map((x) => x.text())).toEqual(['CCC.US', 'AAA.US', 'BBB.US'])
   })
 
+  it('closed rows and the current-positions fallback link to the card like open rows', async () => {
+    setup({ prefs: { holdingsMode: 'period', holdingsClosedOpen: true } })
+    let w = mountH()
+    const link = w.get('[data-test="hc-row"][data-ticker="EEE.US"] a.hrow__link')
+    expect(link.attributes('href')).toBe('#/position/EEE.US')
+    expect(link.text()).toBe('EEE.US')
+    expect(w.get('[data-test="hc-row"][data-ticker="EEE.US"]').classes()).toContain('hrow')
+    w.unmount()
+    w = mountH({ core: null })
+    const links = w.findAll('[data-test="hold-current"] tbody a.hrow__link')
+    expect(links.map((a) => a.attributes('href'))).toEqual(['#/position/CCC.US', '#/position/AAA.US', '#/position/BBB.US'])
+  })
+
   it('Period stale: tables dimmed and aria-busy, closed button without N', () => {
     setup({ prefs: { holdingsMode: 'period', holdingsClosedOpen: true } })
     const w = mountH({ stale: true })
@@ -254,6 +267,7 @@ describe('Holdings: Day / period switch', () => {
     const btn = () => w.get('[data-test="hc-toggle"]')
     expect(btn().text()).toBe(t('hold.closedN', { n: 2 }))
     expect(btn().attributes('aria-expanded')).toBe('false')
+    expect(btn().attributes('aria-controls')).toBeUndefined() // no reference to an absent body
     expect(w.find('[data-test="hc-body"]').exists()).toBe(false)
     expect(pTickers(w)).not.toContain('DDD.US')
 

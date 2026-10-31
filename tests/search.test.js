@@ -255,6 +255,14 @@ describe('search sheet: results', () => {
     expect(rows(w)[1].get('.srow__chg').text()).toBe('+2.00%')
   })
 
+  it('day change of a live quote: price vs previous close first, like the card', async () => {
+    const live = new Map([['GLD.US', { ltp: 300, pp: 250, pcp: 2 }]])
+    const { w } = await openSheet({ findTickers: vi.fn(async () => [GLD]), liveQuotes: live })
+    wrapper = w
+    await type(w, 'g')
+    expect(rows(w)[0].get('.srow__chg').text()).toBe('+20.00%')
+  })
+
   it('an unknown type gets no label; broker text is shown as text', async () => {
     const { w } = await openSheet({ findTickers: vi.fn(async () => [ODD]) })
     wrapper = w
@@ -402,6 +410,12 @@ describe('search sheet: star (markets strip)', () => {
     expect(off.attributes('title')).toBe(off.attributes('aria-label'))
     await off.trigger('click')
     expect(app.marketStrip.value).toHaveLength(MARKET_STRIP_MAX)
+    // a blocked tap is not silent (touch has no tooltip): the sheet's live region says why
+    const status = () => w.get('[data-test="search-status"]')
+    expect(status().attributes('role')).toBe('status')
+    expect(status().text()).toBe(t('search.stripFull', { max: MARKET_STRIP_MAX }))
+    await type(w, 'am') // a new text: the notice goes, the search status is back
+    expect(status().text()).not.toBe(t('search.stripFull', { max: MARKET_STRIP_MAX }))
     expect(star(w, 'GLD.US').attributes('aria-disabled')).toBeUndefined()
     await star(w, 'GLD.US').trigger('click')
     expect(app.marketStrip.value).toHaveLength(MARKET_STRIP_MAX - 1)

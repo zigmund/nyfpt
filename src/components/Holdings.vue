@@ -53,7 +53,7 @@
             <tbody>
               <tr v-for="r in daySorted" :key="r.ticker" class="hrow" data-test="h-row" :data-ticker="r.ticker">
                 <th scope="row" class="hc-sym">
-                  <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
+                  <a class="hrow__link" :href="cardHref(r.ticker)" data-test="h-link">
                     <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>{{ ' ' }}<span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                   </a>
                 </th>
@@ -106,7 +106,7 @@
           <tbody>
             <tr v-for="r in periodSorted" :key="r.ticker" class="hrow" data-test="hp-row" :data-ticker="r.ticker">
               <th scope="row" class="hc-sym">
-                <a class="hrow__link" :href="posHref(r.ticker)" data-test="h-link">
+                <a class="hrow__link" :href="cardHref(r.ticker)" data-test="h-link">
                   <span class="hrow__sym" data-test="h-sym">{{ r.ticker }}</span>{{ ' ' }}<span class="hrow__name" data-test="h-name">{{ r.name }}</span>
                 </a>
               </th>
@@ -147,8 +147,8 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in current" :key="r.ticker">
-              <th scope="row">{{ r.ticker }}</th>
+            <tr v-for="r in current" :key="r.ticker" class="hrow">
+              <th scope="row"><a class="hrow__link" :href="cardHref(r.ticker)"><span class="hrow__sym">{{ r.ticker }}</span></a></th>
               <td>{{ fQty(r.qty, prefs.hide) }}</td>
               <td>{{ fPrice(r.price) }}</td>
               <td>{{ fMoney(r.value, { hide: prefs.hide }) }}</td>
@@ -168,7 +168,7 @@
         class="contrib__toggle"
         :class="{ 'is-open': closedOpen }"
         :aria-expanded="closedOpen ? 'true' : 'false'"
-        :aria-controls="CLOSED_ID"
+        :aria-controls="closedOpen ? CLOSED_ID : null"
         data-test="hc-toggle"
         @click="prefs.holdingsClosedOpen = !closedOpen"
       >
@@ -194,8 +194,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in closedSorted" :key="r.ticker" data-test="hc-row" :data-ticker="r.ticker">
-                <th scope="row">{{ r.ticker }}</th>
+              <tr v-for="r in closedSorted" :key="r.ticker" class="hrow" data-test="hc-row" :data-ticker="r.ticker">
+                <th scope="row"><a class="hrow__link" :href="cardHref(r.ticker)" data-test="hc-link"><span class="hrow__sym">{{ r.ticker }}</span></a></th>
                 <td data-test="hc-qstart">{{ fQty(r.qty_start, prefs.hide) }}</td>
                 <td data-test="hc-pct" :class="tone(r.change_pct)">{{ fPct(r.change_pct) }}</td>
                 <td data-test="hc-pnl" :class="tone(r.pnl)">{{ fMoney(r.pnl, { hide: prefs.hide, sign: true }) }}</td>
@@ -215,7 +215,7 @@ import { fMoney, fPct, fPrice, fQty, fWeight, tone, n, PERIOD_LABELS } from '../
 import { holdingsRows, holdingsTotal } from '../calc/live.js'
 import { periodSpark } from '../calc/sparks.js'
 import MarketSpark from './MarketSpark.vue'
-import { useApp } from '../composables/useApp.js'
+import { positionPath, useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
 
 const props = defineProps({
@@ -256,8 +256,8 @@ const statusText = (s) => (STATUS[s] ? t(`hold.status.${STATUS[s]}`) : '')
 const colClass = (c) => ['hcol', `hcol--${c.w}`, { 'h-narrow': c.narrow }]
 const headClass = (c) => ({ 'h-narrow': c.narrow, 'hc-spark': c.key === 'chart' })
 const pill = (v) => ['pill', `pill--${tone(v) || 'flat'}`]
-// Position card route (Task 20); a no-op until the route exists.
-const posHref = (ticker) => `#/position/${encodeURIComponent(ticker)}`
+// Every row with a ticker (open, closed, current fallback) links to its security card.
+const cardHref = (ticker) => `#${positionPath(ticker)}`
 
 /** Sort persisted in prefs.sorts[name]; text columns start ascending, numbers descending. */
 function tableSort(name, cols, fallback, valueOf = (r, key) => r[key]) {

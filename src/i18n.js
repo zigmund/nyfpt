@@ -76,6 +76,7 @@ const en = {
   'search.type.crypto': 'Crypto',
   'search.star': 'Show {name} in the markets strip',
   'search.starFull': '{name}: the markets strip is full ({max} cards)',
+  'search.stripFull': 'The markets strip is full ({max} cards). Remove one first.',
   'search.held': 'Held',
 
   'value.label': 'Portfolio value',
@@ -161,6 +162,7 @@ const en = {
   'news.moreError': "Couldn't load more news.",
   'news.loading': 'Loading news…',
   'news.list': 'News list',
+  'news.related': 'Related securities',
   'news.back': 'All news',
   'news.source': 'Open original',
   'news.articleError': "Couldn't load this article.",

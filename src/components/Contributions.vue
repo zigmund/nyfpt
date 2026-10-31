@@ -7,7 +7,7 @@
       class="contrib__toggle"
       :class="{ 'is-open': open }"
       :aria-expanded="open ? 'true' : 'false'"
-      :aria-controls="id"
+      :aria-controls="open ? id : null"
       data-test="contrib-toggle"
       @click="prefs.contribOpen = !open"
     >

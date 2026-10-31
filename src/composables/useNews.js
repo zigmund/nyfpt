@@ -35,6 +35,10 @@ export function useNews(ticker) {
     const my = ++gen
     if (!feed.items.length) feed.status = 'loading'
     feed.error = ''
+    // A Load more still running belongs to the old generation: its result is dropped, so its
+    // flags are reset here (it never clears them itself).
+    feed.loadingMore = false
+    feed.moreError = ''
     // Cached pages of any age first: no skeleton when the tab is reopened.
     if (!feed.items.length) {
       for (const lang of LANGS) {
