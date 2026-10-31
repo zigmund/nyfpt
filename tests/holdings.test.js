@@ -684,4 +684,65 @@ describe('Holdings column stability (Task 32)', () => {
     await w.get('[data-test="hmode-period"]').trigger('click')
     expect(w.get('[data-test="h-total"]').findAll('.num-slot')).toHaveLength(3)
   })
+
+  // --- width budget per breakpoint, computed from the parsed stylesheet
+  const mediaBody = (query) => {
+    const head = `@media ${query} {`
+    const out = []
+    let i = 0
+    while ((i = css.indexOf(head, i)) >= 0) {
+      let depth = 0
+      let j = i + head.length - 1
+      for (; j < css.length; j++) {
+        if (css[j] === '{') depth++
+        else if (css[j] === '}' && --depth === 0) break
+      }
+      out.push(css.slice(i + head.length, j))
+      i = j
+    }
+    return out.join('\n')
+  }
+  const baseCss = css.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, '')
+  /** Last `<sel> { width: calc(...) }` in the sources that apply, as px at the given digit width. */
+  function colPx(cls, { vw, gap, ch, tight }) {
+    const sources = [baseCss]
+    if (vw < 768) sources.push(mediaBody('(max-width: 47.99rem)'))
+    if (vw >= 768) sources.push(mediaBody('(min-width: 48rem)'))
+    if (vw >= 1024) sources.push(mediaBody('(min-width: 64rem)'))
+    let expr = null
+    for (const src of sources) {
+      const re = new RegExp(`(^|[\\s}])((?:\\.ptable--fixed:not\\(\\.htable\\) )?)\\.hcol--${cls}\\s*\\{\\s*width:\\s*([^;]+);`, 'g')
+      for (const m of src.matchAll(re)) if (!m[2] || tight) expr = m[3]
+    }
+    if (!expr) throw new Error(`no width for ${cls}`)
+    const g = tight ? 4 : gap
+    const px = expr.replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
+      .replace(/([\d.]+)rem/g, (_, n) => `${n * 16}px`).replace(/([\d.]+)ch/g, (_, n) => `${n * ch}px`)
+    try { return Function(`return (${px.replace(/^calc/, '').replace(/px/g, '')})`)() } catch (e) { throw new Error(`${cls}: ${expr} -> ${px}`) }
+  }
+  const room = (cols, env) => {
+    const avail = env.vw - 2 * env.gutter - 2
+    return avail - cols.reduce((sum, c) => sum + colPx(c, env), 0)
+  }
+  // caption 13px (mono digit .6em) below 64rem, .875rem at 64rem+; gap .5rem, .75rem at 64rem+.
+  const MOBILE = { vw: 375, gutter: 12, gap: 8, ch: 7.8, tight: true }
+  const TABLET = { vw: 768, gutter: 20, gap: 8, ch: 7.8 }
+  const DESKTOP = { vw: 1280, gutter: 32, gap: 12, ch: 8.4 }
+  const DAY = ['spark', 'price', 'pct', 'money', 'qty', 'money', 'weight']
+
+  it('width budget: the Day table leaves >= 12ch for the symbol at tablet and desktop', () => {
+    expect(room(DAY, TABLET)).toBeGreaterThanOrEqual(12 * TABLET.ch)
+    expect(room(DAY, DESKTOP)).toBeGreaterThanOrEqual(12 * DESKTOP.ch)
+  })
+
+  it('width budget: closed / current tables on mobile leave a readable symbol column', () => {
+    // first cell has 14px left padding; "AAA.US" = 6 digits
+    expect(room(['qty', 'pcttxt', 'money'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
+    expect(room(['qty', 'price', 'value'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
+  })
+
+  it('mobile total line is a grid: placement does not depend on the figures', () => {
+    const m = mediaBody('(max-width: 47.99rem)')
+    expect(m).toMatch(/\.hold__total\s*\{[^}]*display:\s*grid/)
+  })
 })

@@ -135,7 +135,7 @@
       <p class="card__hint">{{ t('hold.noteCurrent') }}</p>
       <div class="tablebox">
         <table class="ptable ptable--fixed num" data-test="hold-current">
-          <colgroup><col class="hcol hcol--sym"><col class="hcol hcol--qty"><col class="hcol hcol--price"><col class="hcol hcol--money"></colgroup>
+          <colgroup><col class="hcol hcol--sym"><col class="hcol hcol--qty"><col class="hcol hcol--price"><col class="hcol hcol--value"></colgroup>
           <thead>
             <tr>
               <th scope="col">{{ t('hold.col.ticker') }}</th>
@@ -235,7 +235,7 @@ const PERIOD_COLS = [
   { key: 'qty_start', w: 'qty', narrow: true }, { key: 'qty_end', w: 'qty' }, { key: 'price_end', w: 'price' },
   { key: 'change_pct', w: 'pct' }, { key: 'pnl', w: 'money' }, { key: 'value', w: 'money' }, { key: 'weight', w: 'weight' },
 ]
-const CLOSED_COLS = [{ key: 'ticker', w: 'sym' }, { key: 'qty_start', w: 'qty' }, { key: 'change_pct', w: 'pct' }, { key: 'pnl', w: 'money' }]
+const CLOSED_COLS = [{ key: 'ticker', w: 'sym' }, { key: 'qty_start', w: 'qty' }, { key: 'change_pct', w: 'pcttxt' }, { key: 'pnl', w: 'money' }]
 const TEXT_KEYS = new Set(['ticker', 'status'])
 // computeCore reports status in Russian; mapped to English labels (closed rows are listed separately).
 const STATUS = { 'новая': 'new', 'докуплена': 'added', 'сокращена': 'reduced' }

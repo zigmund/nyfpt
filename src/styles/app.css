@@ -1011,9 +1011,11 @@ button, input, select { font: inherit; color: inherit; }
 .ptable--fixed { table-layout: fixed; }
 .hcol--spark { width: 6rem; }
 .hcol--price { width: calc(11ch + var(--gap) * 2); }
-.hcol--pct { width: calc(10ch + var(--gap) * 2); }
-.hcol--money { width: calc(15ch + var(--gap) * 2); }
-.hcol--qty { width: calc(10ch + var(--gap) * 2); }
+.hcol--pct { width: calc(8ch + .75rem + var(--gap) * 2); } /* the pill: 8 chars + its padding */
+.hcol--pcttxt { width: calc(8ch + var(--gap) * 2); } /* plain percent text (closed table) */
+.hcol--money { width: calc(14ch + var(--gap) * 2); }
+.hcol--value { width: calc(14ch + var(--gap) * 2); }
+.hcol--qty { width: calc(9ch + var(--gap) * 2); }
 .hcol--weight { width: calc(8ch + var(--gap) + var(--pad)); }
 .hcol--status { width: calc(9ch + var(--gap) * 2); }
 
@@ -1192,7 +1194,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .pill {
   display: inline-block;
-  min-width: 4.5rem;
+  min-width: 8ch;
   padding: .0625rem .375rem;
   border-radius: 5px;
   text-align: right;
@@ -1284,6 +1286,23 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .ptable.htable .hc-qty { order: 1; }
   .ptable.htable .hc-weight { order: 2; text-align: right; }
+
+  /* Closed / current tables stay real tables: tighter cells and narrower columns keep the
+     symbol column readable at 375px (the widths still hold 6-digit quantities and $9,999,999.99). */
+  .ptable--fixed:not(.htable) { --gap: .25rem; }
+  .ptable--fixed:not(.htable) .hcol--qty { width: calc(8ch + var(--gap) * 2); }
+  .ptable--fixed:not(.htable) .hcol--price { width: calc(9ch + var(--gap) * 2); }
+  .ptable--fixed:not(.htable) .hcol--value { width: calc(13ch + var(--gap) * 2 + var(--pad)); }
+  .ptable--fixed:not(.htable) .hcol--money { width: calc(14ch + var(--gap) * 2 + var(--pad)); }
+
+  /* Total line: label + value on the first row, change + percent on the second; the grid, not the
+     figures' widths, places them. */
+  .hold__total { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--gap); }
+  .hold__total > .hold__total-label { grid-area: 1 / 1; }
+  .hold__total > .hold__total-value { grid-area: 1 / 2 / 2 / 4; }
+  .hold__total > .num-slot { min-width: 0; }
+  .hold__total > .num-slot:nth-child(3) { grid-area: 2 / 1 / 3 / 3; text-align: left; }
+  .hold__total > .num-slot--pct { grid-area: 2 / 3; min-width: 10ch; }
 }
 
 /* position card */
@@ -1441,10 +1460,16 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .pstats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
-  /* All 8 Day columns fit at 768px: names truncate sooner. */
+  /* Tablet: tighter fixed columns so the 8 Day columns and a symbol column of >= 12ch fit at
+     768px without scrolling (money still holds $9,999,999.99 and 6-digit positive quantities). */
   .hrow__name { max-width: 7rem; }
-  .htable td.hc-spark { width: 4.5rem; min-width: 4rem; }
-  .hcol--spark { width: 4.5rem; }
+  .htable td.hc-spark { width: 4rem; min-width: 4rem; }
+  .hcol--spark { width: 4rem; }
+  .hcol--price { width: calc(10ch + var(--gap) * 2); }
+  .hcol--money { width: calc(13ch + var(--gap) * 2); }
+  .hcol--value { width: calc(13ch + var(--gap) * 2); }
+  .hcol--qty { width: calc(7ch + var(--gap) * 2); }
+  .hcol--weight { width: calc(7ch + var(--gap) + var(--pad)); }
 }
 
 @media (min-width: 64rem) {
@@ -1510,6 +1535,11 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   .hrow__name { max-width: 16rem; }
   .htable td.hc-spark { width: 7.5rem; }
   .hcol--spark { width: 7.5rem; }
+  .hcol--price { width: calc(11ch + var(--gap) * 2); }
+  .hcol--money { width: calc(14ch + var(--gap) * 2); }
+  .hcol--value { width: calc(14ch + var(--gap) * 2); }
+  .hcol--qty { width: calc(9ch + var(--gap) * 2); }
+  .hcol--weight { width: calc(8ch + var(--gap) + var(--pad)); }
 
   /* Cash flows: the 7 figures in one row, label over value. */
   .kv.flows {
