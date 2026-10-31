@@ -182,12 +182,12 @@ describe('Summary', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.parse('2026-10-30T17:00:00Z'))
     const quotes = { 'AAA.US': { c: 'AAA.US', ltp: 999, pp: 100 } }
-    setup({ quotes, openFor: [] })
+    setup({ quotes, openFor: [], prefs: { period: '1d' } })
     const w = mountCard()
     expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: 'Oct 30, 2026, 7:58 PM' }))
     expect(w.get('[data-test="p-chart"]').text()).not.toContain('999.00')
     installApp(null)
-    setup({ quotes, openFor: ['AAA.US'] })
+    setup({ quotes, openFor: ['AAA.US'], prefs: { period: '1d' } })
     const w2 = mountCard()
     expect(w2.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
     expect(w2.get('[data-test="p-chart"]').text()).toContain('999.00') // last bar follows the quote
@@ -255,23 +255,36 @@ describe('Summary', () => {
     expect(w2.find('[data-test="pk-year"]').exists()).toBe(true)
   })
 
-  it('chart periods: persisted in prefs, fetch the needed dataset', async () => {
-    const app = setup()
+  it('chart periods: card follows the app period, clicks edit prefs.period, no cardPeriod', async () => {
+    const app = setup({ prefs: { period: '1d', cardPeriod: '5Y' } })
     const w = mountCard()
     await flushPromises()
+    expect(w.get('[data-cperiod="1d"]').attributes('aria-pressed')).toBe('true')
+    expect(w.findAll('.periods__btn').map((b) => b.text())).toEqual(['1D', '7D', '1M', '6M', 'YTD', '1Y', '5Y', 'ALL'])
     expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday'], { force: false })
     await w.get('[data-cperiod="5Y"]').trigger('click')
     await flushPromises()
-    expect(app.prefs.cardPeriod).toBe('5Y')
+    expect(app.prefs.period).toBe('5Y')
+    expect(app.prefs.cardPeriod).toBe('5Y') // stored value untouched, never written by the card
     expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday', 'max'], { force: false })
-    await w.get('[data-cperiod="6M"]').trigger('click')
+    await w.get('[data-cperiod="6m"]').trigger('click')
     await flushPromises()
+    expect(app.prefs.period).toBe('6m')
     // intraday bars are always needed: Key statistics' Open
     expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday'], { force: false })
   })
 
+  it('card opens with the main period; 7d draws the 5-session chart; stored cardPeriod ignored', async () => {
+    const app = setup({ prefs: { period: '7d', cardPeriod: '5Y' } })
+    const w = mountCard()
+    await flushPromises()
+    expect(w.get('[data-cperiod="7d"]').attributes('aria-pressed')).toBe('true')
+    expect(app.loadSecurity).toHaveBeenLastCalledWith('AAA.US', ['info', 'daily', 'intraday'], { force: false })
+    expect(w.get('[data-test="p-chart"]').attributes('aria-label')).toContain('5D')
+  })
+
   it('draws the 1D chart with the previous close level and volume bars', () => {
-    setup()
+    setup({ prefs: { period: '1d' } })
     const w = mountCard()
     expect(w.find('[data-test="p-chart"] svg').exists()).toBe(true)
     expect(w.find('[data-test="pc-base"]').exists()).toBe(true)

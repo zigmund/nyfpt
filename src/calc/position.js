@@ -21,7 +21,8 @@ export const CARD_TABS = [{ id: 'summary' }]
 export const tabsFor = (kind, tabs = CARD_TABS) =>
   tabs.filter((t) => !t.kinds || (num(kind) !== null && t.kinds.includes(num(kind))))
 
-export const CARD_PERIODS = ['1D', '5D', '1M', '6M', 'YTD', '1Y', '5Y', 'ALL']
+/** App period code -> chart period code ('7d' is drawn as the 5-session chart). */
+export const CHART_PERIOD = { '1d': '1D', '7d': '5D', '1m': '1M', '6m': '6M', YTD: 'YTD', '1Y': '1Y', '5Y': '5Y', All: 'ALL' }
 
 /** Dataset a chart period is drawn from. */
 export const chartSource = (period) =>

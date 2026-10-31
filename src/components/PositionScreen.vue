@@ -39,9 +39,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fPrice } from '../display.js'
-import { useApp, positionPath } from '../composables/useApp.js'
+import { useApp, positionPath, periodOf } from '../composables/useApp.js'
 import { usePosition } from '../composables/usePosition.js'
-import { tabsFor, chartSource, CARD_PERIODS } from '../calc/position.js'
+import { tabsFor, chartSource, CHART_PERIOD } from '../calc/position.js'
 import PositionSummary from './PositionSummary.vue'
 
 const props = defineProps({
@@ -50,7 +50,7 @@ const props = defineProps({
 })
 
 const app = useApp()
-const period = computed(() => (CARD_PERIODS.includes(app.prefs.cardPeriod) ? app.prefs.cardPeriod : '1D'))
+const period = computed(() => CHART_PERIOD[periodOf(app.prefs)])
 // The chart's dataset is fetched with the security info and daily candles.
 const pos = reactive(usePosition(props.ticker, {
   parts: () => (chartSource(period.value) === 'daily' ? [] : [chartSource(period.value)]),

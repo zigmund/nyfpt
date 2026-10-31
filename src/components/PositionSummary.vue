@@ -32,14 +32,14 @@
 
       <div class="periods" role="group" :aria-label="t('period.label')">
         <button
-          v-for="p in CARD_PERIODS"
+          v-for="p in PERIODS"
           :key="p"
           type="button"
           class="periods__btn"
-          :aria-pressed="p === period ? 'true' : 'false'"
+          :aria-pressed="p === mainPeriod ? 'true' : 'false'"
           :data-cperiod="p"
-          @click="app.prefs.cardPeriod = p"
-        >{{ p }}</button>
+          @click="app.prefs.period = p"
+        >{{ PERIOD_LABELS[p] }}</button>
       </div>
     </section>
 
@@ -105,7 +105,8 @@ import { fMoney, fPct, fPrice, fQty, tone, n, PERIOD_LABELS } from '../display.j
 import { useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
 import { nyDate } from '../data/repo.js'
-import { CARD_PERIODS, chartRows, chartSource, rangePos } from '../calc/position.js'
+import { PERIODS } from '../calc/periods.js'
+import { chartRows, chartSource, rangePos } from '../calc/position.js'
 import PriceChart from './PriceChart.vue'
 
 const props = defineProps({
