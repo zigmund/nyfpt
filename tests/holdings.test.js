@@ -604,6 +604,44 @@ describe('dev mock (?mock)', () => {
     for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
   })
 
+  it('broker server at UTC+3 with real-shaped getHloc info.mrkt (DST from the zone); daily bars at server midnight', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { dailyOffset, marketClock: mClock, axisDate } = await import('../src/calc/marketTime.js')
+    const b = createMockBroker()
+    vi.setSystemTime(Date.parse('2026-10-28T18:00:00Z')) // Wednesday, New York on summer time
+    let pending = Promise.all([b.hlocDaily(['AAA.US', 'CCC_KZ.KZ'], '2026-10-20', -1), b.marketStatus()])
+    await vi.advanceTimersByTimeAsync(1000)
+    let [d, st] = await pending
+    expect(st.result.markets.t).toBe('2026-10-28 21:00:00')
+    expect(mClock({ ...st.result.markets, at: Date.now() }).offset).toBe(10800)
+    expect(dailyOffset(d)).toBe(10800)
+    expect(d.info['AAA.US']).toMatchObject({ mkt_name: 'FIX', mrkt: { p: '14:10:00', o: '16:30:00', post: '23:00:00', c: '03:00:00', dt: 420, tz: 'America/New_York' } })
+    expect(d.info['CCC_KZ.KZ']).toMatchObject({ mkt_name: 'KASE', mrkt: { p: '09:20:00', o: '09:30:00', c: '20:00:00', dt: -120 } })
+    expect(d.info['CCC_KZ.KZ'].mrkt.post).toBeUndefined()
+    const clk = { offset: 10800, markets: {} }
+    expect(axisDate(clk, d.xSeries['AAA.US'].at(-1))).toBe('2026-10-28')
+    vi.setSystemTime(Date.parse('2026-11-04T18:00:00Z')) // after the US clock change
+    pending = b.hlocDaily(['AAA.US'], '2026-10-27', -1)
+    await vi.advanceTimersByTimeAsync(1000)
+    d = await pending
+    expect(d.info['AAA.US'].mrkt).toMatchObject({ p: '15:10:00', o: '17:30:00', post: '00:00:00', c: '04:00:00', dt: 480 })
+  })
+
+  it('NASDAQ.IDX: a Saturday single-print daily bar (volume 1) on a weekend, like the broker', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { parseHloc } = await import('../src/calc/portfolio.js')
+    vi.setSystemTime(Date.parse('2026-10-31T18:00:00Z')) // Saturday
+    const b = createMockBroker()
+    const pending = b.hlocDaily(['SP500.IDX', 'NASDAQ.IDX'], '2026-10-20', -1)
+    await vi.advanceTimersByTimeAsync(1000)
+    const d = await pending
+    const rows = parseHloc({ answer: d }, { offset: 10800, markets: {} }).rows
+    const last = (t) => rows.filter((r) => r.ticker === t).at(-1).date
+    expect(last('SP500.IDX')).toBe('2026-10-30')
+    expect(last('NASDAQ.IDX')).toBe('2026-10-31')
+    expect(d.vl['NASDAQ.IDX'].at(-1)).toBe(1)
+  })
+
   it('positions carry close_price, so Day % and Day $ show outside live mode', async () => {
     const { createMockBroker } = await import('../src/dev/mock.js')
     const { holdingsRows, holdingsTotal } = await import('../src/calc/live.js')

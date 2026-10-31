@@ -34,20 +34,58 @@ function rand(s) {
 }
 const dayMove = (tk, date) => (rand(`${tk}|${date}`) - 0.47) * 0.024
 
-// The fake broker's server and markets run on UTC (getMarketStatus t = UTC, dt 0), so the
-// candle axis is the market's wall clock and dates are UTC dates. Session hours: FAKE_HOURS.
-const FAKE_HOURS = { o: '09:30:00', c: '16:00:00' }
-const hm = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5))
+// Time like the real broker (docs/tradernet-api.md §5.4): the server runs at UTC+3, daily bars sit
+// at server midnight, the candle axis + 3 h is the exchange wall clock, and getHloc
+// info[t].mrkt = {p, o, c, post (US only), dt, tz}: hours in server time, dt = server minus
+// exchange local time in minutes (follows the exchange's DST through its zone).
+const SERVER_OFFSET_S = 10800
+const SERVER_MIN = SERVER_OFFSET_S / 60
+// Exchange wall hours (minutes): pre-open, open, regular close (post), extended close (c); bars run [o, bars).
+const HOURS = {
+  FIX: { tz: 'America/New_York', p: 7 * 60 + 10, o: 9 * 60 + 30, post: 16 * 60, c: 20 * 60, bars: 16 * 60 },
+  KASE: { tz: 'Asia/Yekaterinburg', p: 11 * 60 + 20, o: 11 * 60 + 30, post: null, c: 22 * 60, bars: 17 * 60 + 30 },
+}
+const marketOf = (tk) => (tk.endsWith('.KZ') ? 'KASE' : MARKET)
+const zoneFmt = new Map()
+/** UTC offset (minutes) of an IANA zone at `ms`. */
+function zoneMin(tz, ms) {
+  if (!zoneFmt.has(tz)) {
+    zoneFmt.set(tz, new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }))
+  }
+  const p = Object.fromEntries(zoneFmt.get(tz).formatToParts(new Date(ms)).map((x) => [x.type, x.value]))
+  return Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute) - Math.floor(ms / 60e3) * 60e3) / 60e3)
+}
+const dtOf = (mkt, ms = Date.now()) => SERVER_MIN - zoneMin(HOURS[mkt].tz, ms)
+const hhmm = (min) => {
+  const m = ((min % 1440) + 1440) % 1440
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`
+}
+/** getHloc info[t].mrkt / getMarketStatus hours of a market now (server time). */
+function mrktOf(mkt, ms = Date.now()) {
+  const h = HOURS[mkt]
+  const dt = dtOf(mkt, ms)
+  const m = { p: hhmm(h.p + dt), o: hhmm(h.o + dt), c: hhmm(h.c + dt), dt, tz: h.tz }
+  if (h.post !== null) m.post = hhmm(h.post + dt)
+  return m
+}
+/** Exchange wall clock of `ms` as a UTC-labelled ms value (date and time of day). */
+const exchangeWall = (mkt, ms) => ms + zoneMin(HOURS[mkt].tz, ms) * 60e3
+/** Server wall clock 'YYYY-MM-DD HH:MM:SS'. */
+const serverWall = (ms) => new Date(ms + SERVER_OFFSET_S * 1000).toISOString().slice(0, 19).replace('T', ' ')
+// Candle axis (ms) of an exchange date (UTC midnight ms) at `min` exchange wall minutes.
+const axisMs = (dateMs, min = 0) => dateMs + min * 60e3 - SERVER_OFFSET_S * 1000
 
-// Latest trading date (holidays ignored).
-function lastSession(now = Date.now()) {
-  let ms = midnight(iso(now))
+// Latest trading date of a market (UTC midnight ms of the exchange date; holidays ignored).
+function lastSession(mkt = MARKET, now = Date.now()) {
+  let ms = midnight(iso(exchangeWall(mkt, now)))
   while (!isWeekday(ms)) ms -= DAY
   return ms
 }
 
-/** [[ms, close]] for weekdays in [fromMs, endMs], ending at the ticker's anchor close. */
-function dailyCloses(tk, fromMs, endMs = lastSession()) {
+/** [[dateMs, close]] for weekdays in [fromMs, endMs], ending at the ticker's anchor close. */
+function dailyCloses(tk, fromMs, endMs = lastSession(marketOf(tk))) {
   const out = []
   let c = anchors[tk] ?? 100
   for (let ms = endMs; ms >= fromMs; ms -= DAY) {
@@ -62,8 +100,7 @@ const candle = (open, close) => [r2(Math.max(open, close) * 1.004), r2(Math.min(
 
 const volume = (tk, ms, scale) => Math.round(scale * (0.5 + rand(`${tk}|v|${ms}`)))
 
-const marketOf = (tk) => (tk.endsWith('.KZ') ? 'KASE' : MARKET)
-
+// rows: [{ts: axis ms, c: candle, v?: volume}]
 function hlocAnswer(series, scale) {
   const hloc = {}
   const xSeries = {}
@@ -72,10 +109,23 @@ function hlocAnswer(series, scale) {
   for (const [tk, rows] of Object.entries(series)) {
     hloc[tk] = rows.map((r) => r.c)
     xSeries[tk] = rows.map((r) => Math.round(r.ts / 1000))
-    vl[tk] = rows.map((r) => volume(tk, r.ts, scale))
-    info[tk] = { id: tk, mkt_name: marketOf(tk), mrkt: { ...FAKE_HOURS, dt: 0 } }
+    vl[tk] = rows.map((r) => r.v ?? volume(tk, r.ts, scale))
+    info[tk] = { id: tk, mkt_name: marketOf(tk), mrkt: mrktOf(marketOf(tk)) }
   }
   return { hloc, xSeries, vl, info }
+}
+
+// Like the broker (seen live 2026-10-31): NASDAQ.IDX gets a lone daily bar on the Saturday after
+// the last session, volume 1. Only while that Saturday is the newest day (a weekend).
+const WEEKEND_PRINT = 'NASDAQ.IDX'
+function weekendPrint(tk, closes) {
+  if (tk !== WEEKEND_PRINT || !closes.length) return []
+  const today = midnight(iso(exchangeWall(marketOf(tk), Date.now())))
+  const [lastMs, close] = closes[closes.length - 1]
+  const sat = lastMs + DAY
+  if (new Date(sat).getUTCDay() !== 6 || sat > today) return []
+  const c = close * 1.0012
+  return [{ ts: axisMs(sat), c: candle(c, c), v: 1 }]
 }
 
 function hlocDaily(tickers, dateFrom, count = -6) {
@@ -84,19 +134,22 @@ function hlocDaily(tickers, dateFrom, count = -6) {
   const series = {}
   for (const tk of tickers) {
     const closes = dailyCloses(tk, from)
-    series[tk] = closes.map(([ms, c], i) => ({ ts: ms, c: candle(i ? closes[i - 1][1] : c, c) }))
+    series[tk] = [
+      ...closes.map(([ms, c], i) => ({ ts: axisMs(ms), c: candle(i ? closes[i - 1][1] : c, c) })),
+      ...weekendPrint(tk, closes),
+    ]
   }
   return hlocAnswer(series, 2e6)
 }
 
-// 15-minute bars over FAKE_HOURS, encoded like the broker (wall clock on the axis).
+// 15-minute bars over the market's hours [o, bars), encoded like the broker (axis + 3 h = exchange wall clock).
 function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
   const from = midnight(dateFrom)
   const to = midnight(dateTo)
-  const open = hm(FAKE_HOURS.o)
-  const bars = Math.floor((hm(FAKE_HOURS.c) - open) / timeframe)
   const series = {}
   for (const tk of tickers) {
+    const h = HOURS[marketOf(tk)]
+    const bars = Math.floor((h.bars - h.o) / timeframe)
     const all = dailyCloses(tk, from - 7 * DAY)
     series[tk] = []
     all.forEach(([ms, close], i) => {
@@ -107,7 +160,7 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
         const k = (b + 1) / bars
         const noise = (rand(`${tk}|${ms}|${b}`) - 0.5) * 0.004 * Math.sin(Math.PI * k)
         const c = prev + (close - prev) * k + close * noise
-        series[tk].push({ ts: ms + (open + b * timeframe) * 60e3, c: candle(last, c) })
+        series[tk].push({ ts: axisMs(ms, h.o + b * timeframe), c: candle(last, c) })
         last = c
       }
     })
@@ -119,7 +172,7 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
 const prices = new Map() // ticker -> {ltp, pp}
 function priceOf(tk) {
   if (!prices.has(tk)) {
-    const closes = dailyCloses(tk, lastSession() - 7 * DAY)
+    const closes = dailyCloses(tk, lastSession(marketOf(tk)) - 7 * DAY)
     const last = closes[closes.length - 1][1]
     const prev = closes.length > 1 ? closes[closes.length - 2][1] : last
     prices.set(tk, { ltp: last, pp: prev })
@@ -195,23 +248,23 @@ function securityInfo(tk) {
     pcp: r2(((ltp - pp) / pp) * 100),
     mintp: r2(Math.min(ltp, pp) * 0.992),
     maxtp: r2(Math.max(ltp, pp) * 1.006),
-    vol: volume(tk, lastSession(now), 2e6),
+    vol: volume(tk, lastSession(marketOf(tk), now), 2e6),
     kind: FUNDS.has(tk) ? 7 : 1,
     x_curr: kz ? 'KZT' : 'USD',
     codesub_nm: kz ? 'KASE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
     ltr: marketOf(tk),
-    ltt: new Date(now).toISOString().slice(0, 19),
+    ltt: new Date(exchangeWall(marketOf(tk), now)).toISOString().slice(0, 19), // exchange wall clock
   }
 }
 
-// --- news (getNewsList / getNewsDetail): server wall clock = UTC here, like the candles.
+// --- news (getNewsList / getNewsDetail): server wall clock (UTC+3); the detail says '+0300'.
 // CCC_KZ.KZ / *.KZ: Russian only; BBB.US: no news at all; any other ticker: 45 English items
 // (pages of 20, the third page repeats the last row of the second). The first article mixes
 // allowed and disallowed HTML; Russian articles are plain text.
 const NEWS_EN_TOTAL = 45
 const NEWS_EMPTY = new Set(['BBB.US'])
 const newsById = new Map()
-const wall = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+const wall = serverWall
 const MIXED_HTML = [
   '<h2>What the mock article shows</h2>',
   '<p>Allowed: <b>bold</b>, <i>italic</i>, <strong>strong</strong> and a <a href="https://example.com/safe" onclick="alert(1)" target="_self">safe https link</a>.</p>',
@@ -252,7 +305,7 @@ function mockNews(tk, lang) {
     newsById.set(String(id), {
       ...item,
       dateTime: item.date,
-      timeZone: '+0000',
+      timeZone: '+0300',
       text: kz ? `Первый абзац новости ${i + 1}.\nВторая строка того же абзаца.\n\nВторой абзац.`
         : i === 0 ? MIXED_HTML : `<p>Mock article ${i + 1} for ${tk}.</p><p>Second <b>paragraph</b>.</p>`,
     })
@@ -269,14 +322,19 @@ function newsList({ ticker, lang, take = 20, skip = 0 }) {
 function newsDetail(id) {
   const d = newsById.get(String(id))
   if (d) return d
-  return { id, title: 'Mock article', provider: 'Oninvest', lang: 'en', dateTime: wall(Date.now() - 3600e3), timeZone: '+0000', url: '', text: '<p>Opened by link before its list was loaded.</p>' }
+  return { id, title: 'Mock article', provider: 'Oninvest', lang: 'en', dateTime: wall(Date.now() - 3600e3), timeZone: '+0300', url: '', text: '<p>Opened by link before its list was loaded.</p>' }
 }
 
+// getMarketStatus: `t` = server wall clock, o / c / dt per market as strings (no p / post / tz there).
+const statusOf = (mkt) => {
+  const { o, c, dt } = mrktOf(mkt)
+  return { o, c, dt: String(dt) }
+}
 const MARKETS = () => ({
-  t: new Date().toISOString().slice(0, 19).replace('T', ' '),
+  t: serverWall(Date.now()),
   m: [
-    { mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', ...FAKE_HOURS, dt: '0' },
-    { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE', ...FAKE_HOURS, dt: '0' },
+    { mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', ...statusOf(MARKET) },
+    { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE', ...statusOf('KASE') },
   ],
 })
 
