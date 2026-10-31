@@ -33,13 +33,14 @@
       <template v-if="rows">
         <p class="hold__total num" data-test="h-total">
           <span class="hold__total-label">{{ t('hold.today') }}</span>
-          <span class="hold__total-value" data-test="h-total-value">{{ fMoney(dayTotal.valueUsd, { hide: prefs.hide }) }}</span>
-          <span :class="tone(dayTotal.dayChangeUsd)">{{ fMoney(dayTotal.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
-          <span :class="tone(dayTotal.dayChangePct)">({{ fPct(dayTotal.dayChangePct) }})</span>
+          <span class="hold__total-value num-slot" data-test="h-total-value">{{ fMoney(dayTotal.valueUsd, { hide: prefs.hide }) }}</span>
+          <span class="num-slot" :class="tone(dayTotal.dayChangeUsd)">{{ fMoney(dayTotal.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
+          <span class="num-slot num-slot--pct" :class="tone(dayTotal.dayChangePct)">({{ fPct(dayTotal.dayChangePct) }})</span>
         </p>
 
         <div class="tablebox tablebox--rows">
-          <table class="ptable htable num">
+          <table class="ptable ptable--fixed htable num">
+            <colgroup><col v-for="c in DAY_COLS" :key="c.key" :class="colClass(c)"></colgroup>
             <thead>
               <tr>
                 <th v-for="c in DAY_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : daySort.aria(c.key)">
@@ -84,13 +85,14 @@
     <template v-else-if="core">
       <p v-if="summary" class="hold__total num" :class="{ 'is-stale': stale }" data-test="h-total">
         <span class="hold__total-label">{{ periodLabel }}</span>
-        <span class="hold__total-value" data-test="h-total-value">{{ fMoney(periodTotal, { hide: prefs.hide }) }}</span>
-        <span :class="tone(summary.pnl)">{{ fMoney(summary.pnl, { hide: prefs.hide, sign: true }) }}</span>
-        <span :class="tone(summary.twr)">({{ fPct(summary.twr) }})</span>
+        <span class="hold__total-value num-slot" data-test="h-total-value">{{ fMoney(periodTotal, { hide: prefs.hide }) }}</span>
+        <span class="num-slot" :class="tone(summary.pnl)">{{ fMoney(summary.pnl, { hide: prefs.hide, sign: true }) }}</span>
+        <span class="num-slot num-slot--pct" :class="tone(summary.twr)">({{ fPct(summary.twr) }})</span>
       </p>
 
       <div class="tablebox tablebox--rows" :class="{ 'is-stale': stale }" :aria-busy="stale ? 'true' : 'false'">
-        <table class="ptable htable num" data-test="hp-table">
+        <table class="ptable ptable--fixed htable num" data-test="hp-table">
+          <colgroup><col v-for="c in PERIOD_COLS" :key="c.key" :class="colClass(c)"></colgroup>
           <thead>
             <tr>
               <th v-for="c in PERIOD_COLS" :key="c.key" scope="col" :class="headClass(c)" :aria-sort="c.key === 'chart' ? undefined : periodSort.aria(c.key)">
@@ -132,7 +134,8 @@
     <template v-else-if="current">
       <p class="card__hint">{{ t('hold.noteCurrent') }}</p>
       <div class="tablebox">
-        <table class="ptable num" data-test="hold-current">
+        <table class="ptable ptable--fixed num" data-test="hold-current">
+          <colgroup><col class="hcol hcol--sym"><col class="hcol hcol--qty"><col class="hcol hcol--price"><col class="hcol hcol--money"></colgroup>
           <thead>
             <tr>
               <th scope="col">{{ t('hold.col.ticker') }}</th>
@@ -179,7 +182,8 @@
         data-test="hc-body"
       >
         <div class="tablebox">
-          <table class="ptable num">
+          <table class="ptable ptable--fixed num" data-test="hc-table">
+            <colgroup><col v-for="c in CLOSED_COLS" :key="c.key" :class="colClass(c)"></colgroup>
             <thead>
               <tr>
                 <th v-for="c in CLOSED_COLS" :key="c.key" scope="col" :aria-sort="closedSort.aria(c.key)">
@@ -221,15 +225,17 @@ const props = defineProps({
 })
 
 // 'chart' is the sparkline column (not sortable).
+// `w` = fixed column width class (hcol--<w>, app.css): the same in every hide / live state.
 const DAY_COLS = [
-  { key: 'ticker' }, { key: 'chart' }, { key: 'price' }, { key: 'dayChangePct' }, { key: 'dayChangeUsd' },
-  { key: 'qty' }, { key: 'valueUsd' }, { key: 'weight' },
+  { key: 'ticker', w: 'sym' }, { key: 'chart', w: 'spark' }, { key: 'price', w: 'price' }, { key: 'dayChangePct', w: 'pct' },
+  { key: 'dayChangeUsd', w: 'money' }, { key: 'qty', w: 'qty' }, { key: 'valueUsd', w: 'money' }, { key: 'weight', w: 'weight' },
 ]
 const PERIOD_COLS = [
-  { key: 'ticker' }, { key: 'chart' }, { key: 'status', narrow: true }, { key: 'qty_start', narrow: true }, { key: 'qty_end' },
-  { key: 'price_end' }, { key: 'change_pct' }, { key: 'pnl' }, { key: 'value' }, { key: 'weight' },
+  { key: 'ticker', w: 'sym' }, { key: 'chart', w: 'spark' }, { key: 'status', w: 'status', narrow: true },
+  { key: 'qty_start', w: 'qty', narrow: true }, { key: 'qty_end', w: 'qty' }, { key: 'price_end', w: 'price' },
+  { key: 'change_pct', w: 'pct' }, { key: 'pnl', w: 'money' }, { key: 'value', w: 'money' }, { key: 'weight', w: 'weight' },
 ]
-const CLOSED_COLS = [{ key: 'ticker' }, { key: 'qty_start' }, { key: 'change_pct' }, { key: 'pnl' }]
+const CLOSED_COLS = [{ key: 'ticker', w: 'sym' }, { key: 'qty_start', w: 'qty' }, { key: 'change_pct', w: 'pct' }, { key: 'pnl', w: 'money' }]
 const TEXT_KEYS = new Set(['ticker', 'status'])
 // computeCore reports status in Russian; mapped to English labels (closed rows are listed separately).
 const STATUS = { 'новая': 'new', 'докуплена': 'added', 'сокращена': 'reduced' }
@@ -243,6 +249,7 @@ const { prefs, live } = app
 const mode = computed(() => (prefs.holdingsMode === 'period' ? 'period' : 'day'))
 const periodLabel = computed(() => PERIOD_LABELS[props.period] || props.period)
 const statusText = (s) => (STATUS[s] ? t(`hold.status.${STATUS[s]}`) : '')
+const colClass = (c) => ['hcol', `hcol--${c.w}`, { 'h-narrow': c.narrow }]
 const headClass = (c) => ({ 'h-narrow': c.narrow, 'hc-spark': c.key === 'chart' })
 const pill = (v) => ['pill', `pill--${tone(v) || 'flat'}`]
 // Position card route (Task 20); a no-op until the route exists.

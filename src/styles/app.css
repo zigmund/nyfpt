@@ -1006,6 +1006,17 @@ button, input, select { font: inherit; color: inherit; }
   font-size: var(--fs-caption);
 }
 
+/* Fixed layout: the widths come from the <colgroup> (.hcol--*), never from the cell text, so
+   "$***" <-> "$1,234.56" and live ticks keep every column in place. ch = the table's mono digit. */
+.ptable--fixed { table-layout: fixed; }
+.hcol--spark { width: 6rem; }
+.hcol--price { width: calc(11ch + var(--gap) * 2); }
+.hcol--pct { width: calc(10ch + var(--gap) * 2); }
+.hcol--money { width: calc(15ch + var(--gap) * 2); }
+.hcol--qty { width: calc(10ch + var(--gap) * 2); }
+.hcol--weight { width: calc(8ch + var(--gap) + var(--pad)); }
+.hcol--status { width: calc(9ch + var(--gap) * 2); }
+
 .ptable th,
 .ptable td {
   text-align: right;
@@ -1128,6 +1139,10 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .hold__total { display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: baseline; font-size: var(--fs-body); }
 .hold__total-label { color: var(--c-muted); font-family: var(--font-ui); }
+/* Total line figures: each reserves the width of its widest value ("−$9,999,999.99", "(−100.00%)"),
+   so hiding amounts or a tick never moves its neighbours. */
+.hold__total > .num-slot { min-width: 14ch; text-align: right; }
+.hold__total > .num-slot--pct { min-width: 10ch; }
 
 .flash-up { animation: flash-up .6s ease-out; }
 .flash-down { animation: flash-down .6s ease-out; }
@@ -1429,6 +1444,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   /* All 8 Day columns fit at 768px: names truncate sooner. */
   .hrow__name { max-width: 7rem; }
   .htable td.hc-spark { width: 4.5rem; min-width: 4rem; }
+  .hcol--spark { width: 4.5rem; }
 }
 
 @media (min-width: 64rem) {
@@ -1493,6 +1509,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   .ptable { font-size: .875rem; }
   .hrow__name { max-width: 16rem; }
   .htable td.hc-spark { width: 7.5rem; }
+  .hcol--spark { width: 7.5rem; }
 
   /* Cash flows: the 7 figures in one row, label over value. */
   .kv.flows {

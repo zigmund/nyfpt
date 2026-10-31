@@ -10,6 +10,7 @@ import { installApp } from '../src/composables/useApp.js'
 import { money, pct } from '../src/format.js'
 import { computeCore } from '../src/calc/portfolio.js'
 import { t } from '../src/i18n.js'
+import { readFileSync } from 'node:fs'
 
 // Synthetic raw `ps` (broker shape); not real account data.
 const PS = {
@@ -617,5 +618,70 @@ describe('dev mock (?mock)', () => {
       expect(r.dayChangeUsd, r.ticker).not.toBe(null)
     }
     expect(holdingsTotal(rows).dayChangePct).not.toBe(null)
+  })
+})
+
+// Task 32: columns must not move when amounts are hidden / shown or prices tick.
+describe('Holdings column stability (Task 32)', () => {
+  const css = readFileSync('src/styles/app.css', 'utf8').replace(/\/\*[^]*?\*\//g, '')
+  const rule = (sel) => {
+    const m = css.match(new RegExp(`(?:^|\\})\\s*${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'm'))
+    return m ? m[1] : ''
+  }
+  const widthCh = (sel) => Number((rule(sel).match(/width:\s*calc\((\d+(?:\.\d+)?)ch/) || [])[1])
+  const cols = (w, table) => w.get(table).findAll('col').map((c) => c.attributes('class'))
+
+  it('every Holdings table is fixed-layout with a colgroup per column, identical in hide and shown states', async () => {
+    const out = {}
+    for (const hide of [false, true]) {
+      setup({ prefs: { hide, holdingsMode: 'day', holdingsClosedOpen: true } })
+      const w = mountH()
+      const day = cols(w, 'table.htable')
+      await w.get('[data-test="hmode-period"]').trigger('click')
+      const period = cols(w, '[data-test="hp-table"]')
+      const closed = cols(w, '[data-test="hc-table"]')
+      for (const t of w.findAll('table')) expect(t.classes(), 'ptable--fixed').toContain('ptable--fixed')
+      expect(day).toHaveLength(8)
+      expect(period).toHaveLength(10)
+      expect(closed).toHaveLength(4)
+      out[hide] = { day, period, closed }
+      w.unmount()
+    }
+    expect(out.true).toEqual(out.false)
+  })
+
+  it('the current-positions table is fixed too', () => {
+    setup({ prefs: { holdingsMode: 'period' } })
+    const w = mountH({ core: null })
+    expect(w.get('[data-test="hold-current"]').classes()).toContain('ptable--fixed')
+    expect(w.get('[data-test="hold-current"]').findAll('col')).toHaveLength(4)
+  })
+
+  it('stylesheet: fixed table layout and widths reserve the widest mask / number', () => {
+    expect(rule('.ptable--fixed')).toMatch(/table-layout:\s*fixed/)
+    // "−$9,999,999.99" = 14 chars, "$9,999,999.99" = 13; a 6-digit quantity with sign and comma = 8.
+    expect(widthCh('.hcol--money')).toBeGreaterThanOrEqual(14)
+    expect(widthCh('.hcol--qty')).toBeGreaterThanOrEqual(8)
+    expect(widthCh('.hcol--price')).toBeGreaterThanOrEqual(10)
+    expect(widthCh('.hcol--pct')).toBeGreaterThanOrEqual(8)
+    expect(widthCh('.hcol--weight')).toBeGreaterThanOrEqual(7)
+    expect(css).toMatch(/\.hcol--spark\s*\{[^}]*width:/)
+    expect(rule('.hcol--sym')).not.toMatch(/width:/) // the symbol column takes the rest
+    expect(css).toMatch(/\.ptable\s*\{[^}]*width:\s*100%/)
+  })
+
+  it('numbers are tabular and right-aligned; the total line reserves width per figure', () => {
+    expect(rule('.num')).toMatch(/tabular-nums/)
+    expect(css).toMatch(/\.ptable td\s*\{[^}]*text-align:\s*right/)
+    expect(rule('.hold__total > .num-slot')).toMatch(/min-width:\s*\d+ch/)
+    expect(rule('.hold__total > .num-slot')).toMatch(/text-align:\s*right/)
+  })
+
+  it('the total line figures are slots in both modes', async () => {
+    setup()
+    const w = mountH()
+    expect(w.get('[data-test="h-total"]').findAll('.num-slot')).toHaveLength(3)
+    await w.get('[data-test="hmode-period"]').trigger('click')
+    expect(w.get('[data-test="h-total"]').findAll('.num-slot')).toHaveLength(3)
   })
 })
