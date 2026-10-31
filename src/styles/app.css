@@ -965,9 +965,11 @@ button, input, select { font: inherit; color: inherit; }
 .contrib__body { display: grid; gap: var(--gap); padding-top: var(--gap); }
 
 .bars { min-height: 3rem; }
-.bars__tk { fill: var(--c-fg); }
+.chart-text .bars__tk { fill: var(--c-fg); }
 .bars__bar--pos { fill: var(--c-bar-pos); }
 .bars__bar--neg { fill: var(--c-bar-neg); }
+.chart-text .bars__val--pos { fill: var(--c-accent-ink); }
+.chart-text .bars__val--neg { fill: var(--c-neg-ink); }
 
 /* cash flows */
 .flows dd { font-family: var(--font-mono); }
