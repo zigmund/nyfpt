@@ -5,7 +5,7 @@ const PREFS_KEY = 'nyfpt.prefs'
 function defaultPrefs() {
   return {
     hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light',
-    holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false,
+    holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false, flowsOpen: false,
   }
 }
 

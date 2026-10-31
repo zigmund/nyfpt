@@ -161,12 +161,12 @@ describe('session and prefs', () => {
     localStorage.setItem('nyfpt.session', '{bad')
     localStorage.setItem('nyfpt.prefs', '{bad')
     expect(loadSession()).toBeNull()
-    expect(loadPrefs()).toEqual({ hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light', holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false })
+    expect(loadPrefs()).toEqual({ hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light', holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false, flowsOpen: false })
   })
 
   it('prefs merge with defaults', () => {
     savePrefs({ hide: true })
-    expect(loadPrefs()).toEqual({ hide: true, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light', holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false })
+    expect(loadPrefs()).toEqual({ hide: true, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light', holdingsMode: 'day', holdingsClosedOpen: false, contribOpen: false, flowsOpen: false })
   })
 
   it('survives throwing localStorage', () => {

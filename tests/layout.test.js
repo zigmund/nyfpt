@@ -190,6 +190,12 @@ describe('stylesheet breakpoints', () => {
     expect(contrib.rs).toBeGreaterThan(periods.rs)
     // nothing that can grow (Contributions) spans the flexible row
     expect(contrib.rs > flex || contrib.re <= flex).toBe(true)
+    // Cash flows: full width in the next row; neither disclosure can move the chart or periods
+    const flows = area('.vcard .flows-block')
+    expect(flows.cs).toBe('1')
+    expect(flows.ce).toBe('-1')
+    expect(flows.rs).toBeGreaterThanOrEqual(contrib.re)
+    expect(flows.rs > flex || flows.re <= flex).toBe(true)
   })
 
   it('desktop: cash flows in one row, holdings head on one row, tables not height-capped', () => {
@@ -262,7 +268,7 @@ describe('charts read their height from the container', () => {
 })
 
 describe('main screen: one spine of bands in the mobile order', () => {
-  it('topbar, markets, value card, holdings, cash flows are direct children of the screen', async () => {
+  it('topbar, markets, value card, holdings are direct children of the screen', async () => {
     makeApp()
     const w = mount(MainScreen)
     await flushPromises()
@@ -273,10 +279,22 @@ describe('main screen: one spine of bands in the mobile order', () => {
       at((el) => el.dataset.test === 'markets'),
       at((el) => el.classList.contains('vcard')),
       at((el) => el.dataset.test === 'holdings'),
-      at((el) => el.dataset.test === 'flows'),
     ]
     expect(order.every((i) => i >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
+    w.unmount()
+  })
+
+  it('cash flows is no longer a card of its own: a block inside the value card, after Contributions', async () => {
+    makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    expect([...w.get('.screen').element.children].some((el) => el.dataset.test === 'flows')).toBe(false)
+    const kids = [...w.get('.vcard').element.children]
+    const iContrib = kids.findIndex((el) => el.classList.contains('contrib'))
+    const iFlows = kids.findIndex((el) => el.dataset.test === 'flows')
+    expect(iContrib).toBeGreaterThanOrEqual(0)
+    expect(iFlows).toBe(iContrib + 1)
     w.unmount()
   })
 
@@ -316,13 +334,42 @@ describe('main screen: one spine of bands in the mobile order', () => {
   })
 
   it('cash flows: one dl of dt/dd pairs (one row on desktop)', async () => {
-    makeApp()
+    makeApp({ prefs: { flowsOpen: true } })
     const w = mount(MainScreen)
     await flushPromises()
     const dl = w.get('[data-test="flows"] dl.kv.flows')
     const tags = [...dl.element.children].map((el) => el.tagName)
     expect(tags.length).toBe(14)
     expect(tags.every((t, i) => t === (i % 2 ? 'DD' : 'DT'))).toBe(true)
+    w.unmount()
+  })
+})
+
+describe('Cash flows open state is remembered', () => {
+  it('collapsed by default; toggle writes prefs.flowsOpen (persisted), separate from contribOpen', async () => {
+    const { app, saved } = makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    const btn = w.get('[data-test="flows-toggle"]')
+    expect(btn.attributes('aria-expanded')).toBe('false')
+    expect(w.find('[data-test="flows"] dl').exists()).toBe(false)
+    await btn.trigger('click')
+    await nextTick()
+    expect(app.prefs.flowsOpen).toBe(true)
+    expect(app.prefs.contribOpen).toBeFalsy()
+    expect(saved.at(-1).flowsOpen).toBe(true)
+    expect(btn.attributes('aria-expanded')).toBe('true')
+    expect(btn.attributes('aria-controls')).toBe(w.get('[data-test="flows"] .contrib__body').attributes('id'))
+    expect(w.get('[data-test="flows"] dl.kv.flows').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('opens expanded when prefs say so and shows a skeleton while the period is not computed', async () => {
+    makeApp({ prefs: { flowsOpen: true }, coreFor: () => null })
+    const w = mount(MainScreen)
+    await flushPromises()
+    expect(w.get('[data-test="flows-toggle"]').attributes('aria-expanded')).toBe('true')
+    expect(w.find('[data-test="flows"] dl[aria-hidden="true"] .skel').exists()).toBe(true)
     w.unmount()
   })
 })

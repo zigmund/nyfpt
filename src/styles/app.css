@@ -1546,7 +1546,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
      items (aria-busy is on the card; the stale dimming moves to the children). */
   .vcard {
     grid-template-columns: 18rem minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto auto 1fr auto auto;
+    grid-template-rows: auto auto auto auto auto 1fr auto auto auto;
     column-gap: calc(var(--gap-lg) * 2);
     row-gap: var(--gap-xs);
     align-items: start;
@@ -1565,6 +1565,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
   .vcard .vchart { grid-area: 1 / 2 / 7 / 3; height: 300px; margin-top: 0; }
   .vcard .periods { grid-area: 7 / 2; }
   .vcard .contrib { grid-area: 8 / 1 / 9 / -1; margin-top: var(--gap); }
+  .vcard .flows-block { grid-area: 9 / 1 / 10 / -1; margin-top: var(--gap); }
 
   /* Holdings: title, total and the Day / period switch on one row; tables grow with the page. */
   .hold { grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--gap-lg); }
