@@ -94,6 +94,7 @@ export const parseHash = (h) => {
  *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
  *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
+ *   isLiveFor(ticker)    live and this security's own market is open (position card)
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
@@ -371,6 +372,12 @@ export function createAppState(overrides = {}) {
     await open(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
   }
 
+  /** Live for one security: live mode and its own market open (a KASE card is not live
+   *  because the US session is). */
+  function isLiveFor(ticker) {
+    return !!liveQuotesForCalc() && !!liveObj.isOpenFor?.(ticker)
+  }
+
   function liveQuotesForCalc() {
     return liveObj && !expired.value && liveObj.isLive() ? liveObj.quotes : undefined
   }
@@ -382,6 +389,7 @@ export function createAppState(overrides = {}) {
     cabinetOf,
     start, stop, go, login, requestCode, logout, clearCache, retry,
     liveQuotesForCalc,
+    isLiveFor,
     getRepo: () => repo,
     coreFor: (period, day) => (repo ? repo.coreFor(period, day, liveQuotesForCalc()) : null),
     ensurePrices: (period, day) => (repo ? repo.ensurePrices(period, day) : Promise.resolve()),

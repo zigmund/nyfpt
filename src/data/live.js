@@ -93,6 +93,13 @@ export function createLive({
     return instrumentMarkets().some((m) => open.has(m))
   }
 
+  /** The market of this instrument (its quote `ltr`) is open. */
+  function isOpenFor(ticker) {
+    if (dead) return false
+    const l = quotes.get(ticker)?.ltr
+    return !!l && openNames().has(upper(l))
+  }
+
   function marketsOpen() {
     const open = openNames()
     return { us: !dead && ltrOf(tickers.filter((t) => t.endsWith('.US'))).some((m) => open.has(m)) }
@@ -277,6 +284,7 @@ export function createLive({
   return {
     quotes,
     isLive,
+    isOpenFor,
     marketsOpen,
 
     on(event, fn) {

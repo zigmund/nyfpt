@@ -55,7 +55,7 @@ const CORE_YTD = {
   positions: [{ ticker: 'ZZZ.US', name: 'Zeta', status: 'закрыта', qty_start: 5, qty_end: 0, price_start: 20, price_end: 22, change_pct: 10, pnl: 9.5, value: 0, weight: 0 }],
 }
 
-function setup({ route = '/position/AAA.US', sec = SEC, quotes = null, prefs = {}, ps = PS } = {}) {
+function setup({ route = '/position/AAA.US', sec = SEC, quotes = null, prefs = {}, ps = PS, openFor = null } = {}) {
   const q = new Map(Object.entries(quotes || {}))
   const app = {
     session: ref({ cabinetId: 'global', sid: 's', userId: 1 }),
@@ -67,6 +67,8 @@ function setup({ route = '/position/AAA.US', sec = SEC, quotes = null, prefs = {
     live: { isLive: ref(!!quotes), usOpen: ref(false), quotes: q },
     prefs: reactive({ hide: false, period: 'YTD', sorts: {}, ...prefs }),
     liveQuotesForCalc: () => (quotes ? q : undefined),
+    // live for this security: its own market open (default: open whenever quotes stream)
+    isLiveFor: vi.fn((tk) => (openFor ? openFor.includes(tk) : !!quotes)),
     coreFor: vi.fn((p) => (p === 'YTD' ? CORE_YTD : null)),
     ensurePrices: vi.fn(async () => {}),
     security: vi.fn(() => sec),
@@ -174,6 +176,21 @@ describe('Summary', () => {
     expect(w.get('[data-test="p-price"]').text()).toBe('120.00')
     // My holdings follow the live price too: 10 x (120 - 100)
     expect(w.get('[data-test="ph-day"]').text()).toContain(money(200, { sign: true }))
+  })
+
+  it("app live but this security's market closed: 'At close', no live 1D bar", () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse('2026-10-30T17:00:00Z'))
+    const quotes = { 'AAA.US': { c: 'AAA.US', ltp: 999, pp: 100 } }
+    setup({ quotes, openFor: [] })
+    const w = mountCard()
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: 'Oct 30, 2026, 7:58 PM' }))
+    expect(w.get('[data-test="p-chart"]').text()).not.toContain('999.00')
+    installApp(null)
+    setup({ quotes, openFor: ['AAA.US'] })
+    const w2 = mountCard()
+    expect(w2.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
+    expect(w2.get('[data-test="p-chart"]').text()).toContain('999.00') // last bar follows the quote
   })
 
   it('My holdings: day and total gain from the average cost, shares, market value', () => {
@@ -338,6 +355,17 @@ describe('calc', () => {
     expect(d5.filter((r) => r.date === '2026-10-29')).toHaveLength(26)
     // without session data all bars stay
     expect(chartRows('1D', { intraday: INTRADAY }, {})).toHaveLength(64)
+  })
+
+  it('chartRows: US pre-market (today has only pre-market bars) keeps the last real sessions', () => {
+    const pre = bars('2026-10-31', 200).slice(0, 22) // 01:00-06:15 = 04:00-09:15 NY, no index bars yet
+    const intraday = [...INTRADAY, ...pre]
+    const d1 = chartRows('1D', { intraday }, { today: '2026-10-31', sessions: SESSIONS })
+    expect(d1).toHaveLength(26)
+    expect(d1.every((r) => r.date === '2026-10-30')).toBe(true)
+    const d5 = chartRows('5D', { intraday }, { today: '2026-10-31', sessions: SESSIONS })
+    expect(new Set(d5.map((r) => r.date))).toEqual(new Set(['2026-10-29', '2026-10-30']))
+    expect(keyStats({ info: INFO, daily: DAILY, intraday, sessions: SESSIONS }).open).toBe(122)
   })
 
   it('chartRows: daily periods keep the last close before the start as the baseline', () => {

@@ -36,13 +36,17 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   })
   const info = computed(() => sec.value.info)
   const raw = computed(() => (app.state.value?.rawPs?.pos || []).find((p) => p.i === ticker) || null)
-  // Live only while the app is live and this ticker has a streamed quote.
+  // Streamed quote (latest price even when its market is closed); live only when this
+  // security's own market is open.
   const quote = computed(() => {
     void app.tick.value
     const q = app.liveQuotesForCalc()?.get(ticker)
     return q && n(q.ltp) !== null ? q : null
   })
-  const isLive = computed(() => !!quote.value)
+  const isLive = computed(() => {
+    void app.tick.value
+    return !!quote.value && !!app.isLiveFor?.(ticker)
+  })
 
   const price = computed(() => n(quote.value?.ltp) ?? posN(info.value?.ltp) ?? posN(raw.value?.mkt_price))
   // `pp`: the broker's day change (chg = ltp - pp) is measured from it.

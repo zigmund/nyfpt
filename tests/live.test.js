@@ -210,6 +210,20 @@ describe('createLive', () => {
     expect(live.isLive()).toBe(true)
   })
 
+  it('isOpenFor: live per instrument, by its quote market', () => {
+    const { live } = setup({ tickers: ['AAA.US', 'KKK.KZ'] })
+    live.start()
+    last().open()
+    last().push('q', { c: 'AAA.US', ltp: 10, ltr: 'FIX' })
+    last().push('q', { c: 'KKK.KZ', ltp: 5, ltr: 'KASE' })
+    expect(live.isOpenFor('AAA.US')).toBe(false) // markets unknown
+    last().push('markets', OPEN) // FIX open, KASE closed
+    expect(live.isLive()).toBe(true)
+    expect(live.isOpenFor('AAA.US')).toBe(true)
+    expect(live.isOpenFor('KKK.KZ')).toBe(false)
+    expect(live.isOpenFor('NOPE.US')).toBe(false) // no quote, no market code
+  })
+
   it('seeds quotes over REST when markets open but no market codes are known', async () => {
     const { live, broker } = setup()
     live.start()

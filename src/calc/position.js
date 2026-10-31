@@ -95,26 +95,29 @@ export function chartStart(period, today) {
 
 /**
  * Rows to draw for a chart period.
- * Intraday (1D: last session, 5D: last 5 sessions): only bars inside the regular session when
- * `sessions` (sessionBounds) knows the date; such bars get `min` = minutes since midnight NY.
+ * Intraday (1D: last session, 5D: last 5 sessions): with `sessions` (sessionBounds) only bars
+ * inside the regular session, which get `min` = minutes since midnight NY; the sessions are the
+ * last dates that still have such bars (a pre-market-only today is skipped).
  * Daily: rows after the period start plus the last close at or before it (the baseline).
  */
 export function chartRows(period, { intraday, daily, max } = {}, { today, sessions } = {}) {
   const src = chartSource(period)
   if (src === 'intraday') {
-    const rows = intraday || []
-    const dates = [...new Set(rows.map((r) => r.date))].sort()
-    const keep = new Set(dates.slice(period === '1D' ? -1 : -5))
-    // Dates older than the index bars: the latest known session's time of day.
+    // Dates without index bars (older ones, or today before the open): the latest known
+    // session's time of day.
     const known = sessions && sessions.size ? [...sessions.keys()].sort().pop() : null
     const off = known ? sessions.get(known).map((v) => v % 86400) : null
-    return rows.filter((r) => keep.has(r.date)).flatMap((r) => {
+    const inSession = (intraday || []).flatMap((r) => {
       const day = r.ts - (r.ts % 86400)
       const b = (sessions && sessions.get(r.date)) || (off && [day + off[0], day + off[1]])
       if (!b) return [{ ...r, min: null }]
       if (r.ts < b[0] || r.ts > b[1]) return []
       return [{ ...r, min: SESSION_OPEN_MIN + Math.round((r.ts - b[0]) / 60) }]
     })
+    // The last sessions that have bars in the session: pre-market-only days do not count.
+    const dates = [...new Set(inSession.map((r) => r.date))].sort()
+    const keep = new Set(dates.slice(period === '1D' ? -1 : -5))
+    return inSession.filter((r) => keep.has(r.date))
   }
   const rows = (src === 'max' ? max : daily) || []
   const start = today ? chartStart(period, today) : null
