@@ -17,7 +17,18 @@ const SESSION_KEY = 'nyfpt.mock.session'
 // Index levels and ETF prices not present in the fixture.
 const anchors = { 'SP500.IDX': 5800, 'NASDAQ.IDX': 20500, 'USO.US': 74, 'GLD.US': 245, 'SLV.US': 29 }
 for (const [tk, rows] of Object.entries(fixture['getHloc.daily'].hloc)) anchors[tk] = rows[rows.length - 1][3]
-const names = Object.fromEntries(fixture.getPositionJson.result.ps.pos.map((p) => [p.i, p.name]))
+// Extra positions (no trades): prices of every width and long day-change pills, so the phone
+// Holdings layout is seen with mixed widths. `jump`: the last session's move (NINE: +112.50%);
+// small amounts, so the portfolio curve stays calm.
+const EXTRA = [
+  { i: 'NINE.US', name: 'Nine Mock Corp', q: 4, price: 9.81, jump: 1.125 },
+  { i: 'NNTY.US', name: 'Ninety Mock Inc', q: 2, price: 98.1, jump: -0.1834 },
+  { i: 'KILO.US', name: 'Kilo Mock Holdings', q: 0.2, price: 1234.56 },
+  { i: 'MYRI.US', name: 'Myriad Mock Group Incorporated', q: 0.02, price: 12345.67 },
+]
+for (const x of EXTRA) anchors[x.i] = x.price
+const JUMPS = Object.fromEntries(EXTRA.filter((x) => x.jump).map((x) => [x.i, x.jump]))
+const names = Object.fromEntries([...fixture.getPositionJson.result.ps.pos, ...EXTRA].map((p) => [p.i, p.name]))
 
 const clone = (v) => JSON.parse(JSON.stringify(v))
 const wait = (ms = LATENCY_MS) => new Promise((r) => setTimeout(r, ms))
@@ -32,7 +43,7 @@ function rand(s) {
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
   return (h >>> 0) / 2 ** 32
 }
-const dayMove = (tk, date) => (rand(`${tk}|${date}`) - 0.47) * 0.024
+const dayMove = (tk, date) => (JUMPS[tk] && date === iso(lastSession(marketOf(tk))) ? JUMPS[tk] : (rand(`${tk}|${date}`) - 0.47) * 0.024)
 
 // Time like the real broker (docs/tradernet-api.md §5.4): the server runs at UTC+3, daily bars sit
 // at server midnight, the candle axis + 3 h is the exchange wall clock, and getHloc
@@ -343,6 +354,7 @@ export function createMockBroker() {
     async positions() {
       await wait()
       const a = clone(fixture.getPositionJson)
+      a.result.ps.pos.push(...EXTRA.map(({ i, name, q }) => ({ i, name, q })))
       for (const p of a.result.ps.pos) {
         p.mkt_price = r2(priceOf(p.i).ltp)
         p.close_price = r2(priceOf(p.i).pp) // previous close: Day % / Day $ outside live mode

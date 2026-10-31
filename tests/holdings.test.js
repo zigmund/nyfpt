@@ -715,7 +715,8 @@ describe('Holdings column stability (Task 32)', () => {
     expect(widthCh('.hcol--money')).toBeGreaterThanOrEqual(14)
     expect(widthCh('.hcol--qty')).toBeGreaterThanOrEqual(8)
     expect(widthCh('.hcol--price')).toBeGreaterThanOrEqual(10)
-    expect(widthCh('.hcol--pct')).toBeGreaterThanOrEqual(8)
+    // the pill column = the pill (8 chars + its side padding, root tokens) + cell gaps
+    expect(rule('.hcol--pct')).toMatch(/width:\s*calc\(var\(--pill-min\) \+ var\(--pill-pad\) \* 2 \+ var\(--gap\) \* 2\)/)
     expect(widthCh('.hcol--weight')).toBeGreaterThanOrEqual(7)
     expect(css).toMatch(/\.hcol--spark\s*\{[^}]*width:/)
     expect(rule('.hcol--sym')).not.toMatch(/width:/) // the symbol column takes the rest
@@ -768,7 +769,8 @@ describe('Holdings column stability (Task 32)', () => {
     }
     if (!expr) throw new Error(`no width for ${cls}`)
     const g = tight ? 4 : gap
-    const px = expr.replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
+    const px = expr.replace(/var\(--pill-min\)/g, '8ch').replace(/var\(--pill-pad\)/g, '.375rem')
+      .replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
       .replace(/([\d.]+)rem/g, (_, n) => `${n * 16}px`).replace(/([\d.]+)ch/g, (_, n) => `${n * ch}px`)
     try { return Function(`return (${px.replace(/^calc/, '').replace(/px/g, '')})`)() } catch (e) { throw new Error(`${cls}: ${expr} -> ${px}`) }
   }
@@ -796,10 +798,22 @@ describe('Holdings column stability (Task 32)', () => {
   it('mobile Cash row keeps Value in column 2 and Weight in the right column (same grid as positions)', () => {
     const m = mediaBody('(max-width: 47.99rem)')
     expect(m).toMatch(/\.hc-weight\s*\{[^}]*grid-column:\s*4/)
-    // column 4 floors at the pill's min width, otherwise a pill-less Cash row gets a narrower column 4
-    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:[^;]*minmax\(var\(--pill-min, 8ch\), auto\)/)
-    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*var\(--pill-min, 8ch\)/)
+    // column 4 has one fixed width in every row (price, pill, Cash weight): rows never shift their 1fr columns
+    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\) var\(--price-w\);/)
+    expect(m).toMatch(/tbody tr\s*\{[^}]*font-size:\s*var\(--fs-body\)/) // ch of --price-w = the price's ch
+    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*calc\(var\(--pill-min\) \+ var\(--pill-pad\) \* 2\)/)
+    expect(css).toMatch(/\.pill\s*\{[^}]*padding:\s*\.0625rem var\(--pill-pad\)/)
     expect(m).toMatch(/\.hrow--cash \.hc-meta:not\(\.hc-weight\)\s*\{[^}]*grid-column:\s*2/)
+  })
+
+  it('root tokens: pill content 8ch ("+112.42%") + side padding; price column fits "$12,345.67" (10ch)', () => {
+    const root = css.match(/:root\s*\{([^}]*)\}/)[1]
+    expect(root).toMatch(/--pill-min:\s*8ch;/)
+    expect(root).toMatch(/--pill-pad:\s*\.375rem;/)
+    expect(root).toMatch(/--price-w:\s*10ch;/)
+    const m = mediaBody('(max-width: 47.99rem)')
+    // with the row at --fs-body, cells that were caption-sized say so themselves
+    expect(m).toMatch(/\.ptable\.htable \.hc-pill,\s*\.ptable\.htable \.hrow__name\s*\{[^}]*font-size:\s*var\(--fs-caption\)/)
   })
 
   it('mobile total line is a grid: placement does not depend on the figures', () => {

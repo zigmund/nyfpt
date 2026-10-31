@@ -410,6 +410,15 @@ describe('Contributions open state is remembered', () => {
   })
 })
 
+describe('reduced motion', () => {
+  it('infinite animations (skeleton pulse) run once instead of flickering at .01ms', () => {
+    const rm = media('(prefers-reduced-motion: reduce)')
+    expect(rm).toMatch(/animation-duration:\s*\.01ms !important/)
+    expect(rm).toMatch(/animation-iteration-count:\s*1 !important/)
+    expect(css).toMatch(/\.pchart__skel\s*\{[^}]*infinite/) // the case it guards
+  })
+})
+
 describe('other screens', () => {
   it('compare: legend and chart are siblings in the chart card (legend beside the chart on desktop)', async () => {
     makeApp()
