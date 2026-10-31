@@ -75,3 +75,37 @@ export function onOutsidePointer(el, fn, signal) {
     if (!el.contains(ev.target)) fn()
   }, { signal })
 }
+
+/** Segment class of a value against the waterline: green at or above it, red below. */
+export const segOf = (v, base) => (v >= base ? 'chart-seg--pos' : 'chart-seg--neg')
+
+/**
+ * Line + fill split at the waterline `yb` (y of the base): the part above is green, below is red.
+ * The fill sits between the line and the waterline. Clip ids are unique per call; colours come
+ * from CSS classes (chart-seg--pos / chart-seg--neg), no inline styles.
+ * @param {object} o
+ * @param {string} o.lineD path data of the line
+ * @param {string} o.fillD path data of the area between the line and the waterline
+ * @param {string} o.lineCls class(es) of the line path, o.fillCls of the fill path
+ * @param {[number, number]} o.span [top, bottom] of the plotted area (y)
+ * @param {number[]} o.ys y of every point: a side without points is not drawn
+ */
+export function splitPaint(svg, { yb, W, span, ys, lineD, fillD, lineCls, fillCls }) {
+  const id = nextId('seg')
+  const defs = svg.append('defs')
+  const pad = 8 // keeps strokes at the edges unclipped
+  const x0 = -pad
+  const w = W + 2 * pad
+  const parts = [
+    ['pos', span[0] - pad, yb],
+    ['neg', yb, span[1] + pad],
+  ].filter(([k]) => (k === 'pos' ? ys.some((v) => v <= yb) || !ys.some((v) => v > yb) : ys.some((v) => v > yb)))
+  for (const [k, y0, y1] of parts) {
+    defs.append('clipPath').attr('id', `${id}-${k}`)
+      .append('rect').attr('x', x0).attr('y', y0).attr('width', w).attr('height', Math.max(0, y1 - y0))
+  }
+  const draw = (d, cls) => parts.forEach(([k]) => {
+    svg.append('path').attr('class', `${cls} chart-seg--${k}`).attr('clip-path', `url(#${id}-${k})`).attr('d', d)
+  })
+  return { fill: () => draw(fillD, fillCls), line: () => draw(lineD, lineCls) }
+}
