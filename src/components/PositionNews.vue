@@ -147,6 +147,12 @@ const rows = computed(() => feed.items.map((x) => ({
 // --- article
 const art = reactive({ id: null, data: null, loading: false, error: '' })
 let artGen = 0
+// Broker id of an article: the list's own value when known, else a number for an all-digit id.
+function brokerId(id) {
+  const x = feed.items.find((i) => String(i.id) === id)
+  if (x) return x.id
+  return /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : id
+}
 async function loadArticle(force = false) {
   const id = props.item
   const s = store()
@@ -158,11 +164,11 @@ async function loadArticle(force = false) {
   art.error = ''
   try {
     if (!art.data) {
-      const c = await s.peekDetail(id)
+      const c = await s.peekDetail(brokerId(id))
       if (my !== artGen) return
       if (c) art.data = c
     }
-    const r = await s.detail(id, { force })
+    const r = await s.detail(brokerId(id), { force })
     if (my !== artGen) return
     art.data = r.data
   } catch (e) {

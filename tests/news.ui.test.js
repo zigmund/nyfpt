@@ -281,6 +281,25 @@ describe('article', () => {
     w.unmount()
   })
 
+  it('the article id goes to the broker as the list gave it, else as a number when numeric', async () => {
+    const store = fakeStore({ 'en:0': { list: [item(1), item('77')], total: 2 } }, { 1: DETAIL, 77: DETAIL, 5: DETAIL, x9: DETAIL })
+    setup({ store })
+    const w = mountNews({ item: '1' })
+    await flushPromises()
+    expect(store.detail.mock.calls.at(-1)[0]).toBe(1)
+    expect(store.peekDetail.mock.calls.at(-1)[0]).toBe(1)
+    await w.setProps({ item: '77' })
+    await flushPromises()
+    expect(store.detail.mock.calls.at(-1)[0]).toBe('77')
+    await w.setProps({ item: '5' }) // not in the list: deep link
+    await flushPromises()
+    expect(store.detail.mock.calls.at(-1)[0]).toBe(5)
+    await w.setProps({ item: 'x9' })
+    await flushPromises()
+    expect(store.detail.mock.calls.at(-1)[0]).toBe('x9')
+    w.unmount()
+  })
+
   it('no source link unless the url is absolute https', async () => {
     for (const url of ['', '/news/1', 'http://x.example/', 'javascript:alert(1)']) {
       setup({ store: fakeStore({}, { 1: { ...DETAIL, url } }) })

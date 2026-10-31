@@ -11,6 +11,13 @@ export const MAX_DEPTH = 20 // element nesting kept; deeper elements become thei
 const HTML_NS = 'http://www.w3.org/1999/xhtml'
 const KEEP = new Set(['p', 'br', 'a', 'ul', 'ol', 'li', 'b', 'strong', 'i', 'em', 'h2', 'h3', 'h4', 'blockquote'])
 const AS_P = new Set(['h1', 'h5', 'h6'])
+// Unknown block-like tags: a paragraph of their content (unwrapped when they hold blocks).
+const BLOCKISH = new Set([
+  'div', 'section', 'article', 'header', 'footer', 'figure', 'figcaption', 'tr', 'td', 'th', 'dt', 'dd', 'pre', 'address',
+])
+// Whitelisted tags that are blocks; everything else in the tree (text, b, i, a, br…) is inline.
+const BLOCK = new Set(['p', 'ul', 'ol', 'li', 'h2', 'h3', 'h4', 'blockquote'])
+const isBlock = (x) => typeof x === 'object' && BLOCK.has(x.t)
 // Removed together with everything inside them.
 const DROP = new Set([
   'script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'form', 'input', 'button',
@@ -27,7 +34,7 @@ export function safeHref(v) {
   if (typeof v !== 'string' || !v.trim()) return null
   try {
     const u = new URL(v.trim()) // no base: relative links throw
-    return u.protocol === 'https:' && u.hostname ? u.href : null
+    return u.protocol === 'https:' && u.hostname && !u.username && !u.password ? u.href : null
   } catch {
     return null
   }
@@ -78,10 +85,42 @@ function walk(nodes, depth, out) {
       if (c.length) out.push({ t: 'a', href, c })
       continue
     }
-    if (!KEEP.has(tag)) { out.push(...c); continue } // unknown tag: keep its sanitized content
+    if (BLOCKISH.has(tag)) {
+      if (c.some(isBlock)) out.push(...c)
+      else if (c.length) out.push({ t: 'p', c })
+      continue
+    }
+    if (!KEEP.has(tag)) { out.push(...c); continue } // unknown inline tag: keep its sanitized content
     if (c.length) out.push({ t: tag, c })
   }
   return out
+}
+
+// Top level: each run of inline nodes becomes one paragraph (whitespace-only runs are dropped).
+function paragraphs(nodes) {
+  const out = []
+  let run = []
+  const flush = () => {
+    if (run.some((x) => (typeof x === 'string' ? x.trim() !== '' : x.t !== 'br'))) out.push({ t: 'p', c: run })
+    run = []
+  }
+  for (const x of nodes) {
+    if (isBlock(x)) { flush(); out.push(x) } else run.push(x)
+  }
+  flush()
+  return out
+}
+
+// Entities of plain text (AT&amp;T) via the detached parser; '<' is escaped first, so nothing
+// in the text can become an element.
+function decode(text, P) {
+  if (!P || !text.includes('&')) return text
+  try {
+    const body = new P().parseFromString(text.replace(/</g, '&lt;'), 'text/html').body
+    return body ? body.textContent : text
+  } catch {
+    return text
+  }
 }
 
 function plain(text) {
@@ -100,16 +139,17 @@ function plain(text) {
 
 /**
  * Broker article text -> whitelisted tree. Tags kept: p br a ul ol li b strong i em h2 h3 h4
- * blockquote (h1/h5/h6 become p); no attributes except https `href` on links; dangerous
- * elements go with their content, unknown ones are unwrapped. Plain text: paragraphs at blank
- * lines, line breaks inside. Anything but a non-empty string gives [].
+ * blockquote (h1/h5/h6 and block-like unknown tags become p); no attributes except https `href`
+ * (no credentials) on links; dangerous elements go with their content, unknown inline ones are
+ * unwrapped; top-level inline runs become paragraphs. Plain text: entities decoded, paragraphs at
+ * blank lines, line breaks inside. Anything but a non-empty string gives [].
  */
 export function sanitizeNews(text, { parser } = {}) {
   if (typeof text !== 'string' || !text.trim()) return []
   const src = text.length > MAX_INPUT ? text.slice(0, MAX_INPUT) : text
-  if (!looksLikeHtml(src)) return plain(src)
   const P = parser || globalThis.DOMParser
+  if (!looksLikeHtml(src)) return plain(decode(src, P))
   if (!P) return plain(src.replace(/<[^>]*>/g, ' '))
   const doc = new P().parseFromString(src, 'text/html')
-  return walk(doc.body ? doc.body.childNodes : [], 0, [])
+  return paragraphs(walk(doc.body ? doc.body.childNodes : [], 0, []))
 }

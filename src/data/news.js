@@ -49,6 +49,23 @@ export function createNews({ broker, db, now = () => Date.now(), onExpired = () 
     return indexChain
   }
 
+  // A refetched first page: deeper pages of the same feed are dropped, so a later "Load more" is
+  // never older than page 0 (an older page 1 under a newer page 0 would skip items).
+  function dropDeeper(ticker, lang) {
+    const prefix = `news:list:${ticker}:${lang}:`
+    indexChain = indexChain.then(async () => {
+      const index = { ...((await db.getKv(INDEX))?.data || {}) }
+      const deeper = Object.keys(index).filter((k) => k.startsWith(prefix) && k !== `${prefix}0`)
+      if (!deeper.length) return
+      for (const k of deeper) {
+        delete index[k]
+        await db.deleteKv(k)
+      }
+      await db.putKv(INDEX, index, now())
+    }).catch(() => {})
+    return indexChain
+  }
+
   async function peek(key) {
     try {
       return await db.getKv(key)
@@ -57,7 +74,7 @@ export function createNews({ broker, db, now = () => Date.now(), onExpired = () 
     }
   }
 
-  function get(key, ttl, fetch, { force = false } = {}) {
+  function get(key, ttl, fetch, { force = false, fetched = null } = {}) {
     if (inflight.has(key)) return inflight.get(key)
     const p = (async () => {
       const row = await peek(key)
@@ -74,6 +91,7 @@ export function createNews({ broker, db, now = () => Date.now(), onExpired = () 
       try {
         await db.putKv(key, data, at)
         await track(key)
+        if (fetched) await fetched()
       } catch {
         // not cached this time; the answer is still shown
       }
@@ -96,7 +114,8 @@ export function createNews({ broker, db, now = () => Date.now(), onExpired = () 
     },
     list({ ticker, lang, skip = 0, force = false }) {
       return get(listKey({ ticker, lang, skip }), NEWS_TTL.list,
-        async () => normList(await broker.newsList({ ticker, lang, take: NEWS_TAKE, skip })), { force })
+        async () => normList(await broker.newsList({ ticker, lang, take: NEWS_TAKE, skip })),
+        { force, fetched: skip === 0 ? () => dropDeeper(ticker, lang) : null })
     },
     /** Cached article of any age or null. */
     async peekDetail(id) {

@@ -65,7 +65,7 @@ describe('sanitizeNews: attributes and links', () => {
   it.each([
     ['javascript:alert(1)'], ['JaVaScRiPt:alert(1)'], [' javascript:alert(1)'], ['data:text/html,<script>alert(1)</script>'],
     ['vbscript:msgbox(1)'], ['http://plain.example/x'], ['//host.example/p'], ['/relative/path'], ['relative'], ['#frag'],
-    [''], ['https://'],
+    [''], ['https://'], ['https://user:pass@evil.example/'], ['https://user@evil.example/'], ['https://:pw@evil.example/'],
   ])('href %j renders as plain text', (href) => {
     expect(tree(`<p><a href="${href.replace(/"/g, '&quot;')}">x</a></p>`)).toEqual([{ t: 'p', c: ['x'] }])
   })
@@ -93,10 +93,33 @@ describe('sanitizeNews: structure', () => {
     expect(html(src)).toBe(`<div class="nbody">${src}</div>`)
   })
 
-  it('unwraps unknown tags, keeping their text', () => {
-    expect(tree('<div><span>t</span></div>')).toEqual(['t'])
+  it('unwraps unknown inline tags, keeping their text', () => {
+    expect(tree('<div><span>t</span></div>')).toEqual([{ t: 'p', c: ['t'] }])
     expect(tree('<p><span class="x">a</span><u>b</u></p>')).toEqual([{ t: 'p', c: ['a', 'b'] }])
-    expect(tree('<table><tr><td>cell</td></tr></table>')).toEqual(['cell'])
+    expect(tree('<table><tr><td>cell</td><td>two</td></tr></table>')).toEqual([{ t: 'p', c: ['cell'] }, { t: 'p', c: ['two'] }])
+  })
+
+  it('block-like unknown tags become paragraphs, so their texts never run together', () => {
+    expect(tree('<div>A</div><div>B</div>')).toEqual([{ t: 'p', c: ['A'] }, { t: 'p', c: ['B'] }])
+    expect(html('<div>A</div><div>B</div>')).toBe('<div class="nbody"><p>A</p><p>B</p></div>')
+    for (const tag of ['section', 'article', 'header', 'footer', 'figure', 'figcaption', 'pre', 'address']) {
+      expect(tree(`<${tag}>x</${tag}><p>y</p>`), tag).toEqual([{ t: 'p', c: ['x'] }, { t: 'p', c: ['y'] }])
+    }
+    expect(tree('<dl><dt>k</dt><dd>v</dd></dl>')).toEqual([{ t: 'p', c: ['k'] }, { t: 'p', c: ['v'] }])
+  })
+
+  it('a block-like tag holding blocks is unwrapped (no p inside p)', () => {
+    expect(tree('<div><p>a</p><div>b</div></div>')).toEqual([{ t: 'p', c: ['a'] }, { t: 'p', c: ['b'] }])
+    expect(tree('<ul><li><div>x</div></li></ul>')).toEqual([{ t: 'ul', c: [{ t: 'li', c: [{ t: 'p', c: ['x'] }] }] }])
+  })
+
+  it('top-level inline runs are wrapped into one paragraph; whitespace-only runs vanish', () => {
+    expect(tree('Lead <b>bold</b> <a href="https://e.example/">l</a><br>tail<p>next</p>\n  <span>end</span>')).toEqual([
+      { t: 'p', c: ['Lead ', { t: 'b', c: ['bold'] }, ' ', { t: 'a', href: 'https://e.example/', c: ['l'] }, { t: 'br' }, 'tail'] },
+      { t: 'p', c: ['next'] },
+      { t: 'p', c: ['\n  ', 'end'] },
+    ])
+    expect(tree('<p>a</p>\n\n<p>b</p>')).toEqual([{ t: 'p', c: ['a'] }, { t: 'p', c: ['b'] }])
   })
 
   it('h1 / h5 / h6 become paragraphs', () => {
@@ -122,7 +145,8 @@ describe('sanitizeNews: structure', () => {
     const deep = '<b>'.repeat(MAX_DEPTH + 5) + 'deep<script>x</script><svg><a href="https://e/">s</a></svg>' + '</b>'.repeat(MAX_DEPTH + 5)
     const out = tree(deep)
     let depth = 0
-    let node = out[0]
+    expect(out[0].t).toBe('p') // the top-level inline run
+    let node = out[0].c[0]
     while (node && typeof node === 'object') { depth++; node = node.c[0] }
     expect(depth).toBeLessThanOrEqual(MAX_DEPTH)
     expect(node).toBe('deep')
@@ -136,6 +160,14 @@ describe('sanitizeNews: structure', () => {
 })
 
 describe('sanitizeNews: plain text', () => {
+  it('entities are decoded (detached parser), never turned into markup', () => {
+    expect(tree('AT&amp;T &quot;up&quot; 5&nbsp;%\n\n&lt;b&gt;not bold&lt;/b&gt; &#8212; ok')).toEqual([
+      { t: 'p', c: ['AT&T "up" 5\u00a0%'] },
+      { t: 'p', c: ['<b>not bold</b> \u2014 ok'] },
+    ])
+    expect(html('&lt;img src=x onerror=alert(1)&gt;')).toBe('<div class="nbody"><p>&lt;img src=x onerror=alert(1)&gt;</p></div>')
+  })
+
   it('blank lines split paragraphs; single newlines become <br>', () => {
     expect(tree('First line\nsecond line\n\nNext paragraph\r\n\r\n  \n')).toEqual([
       { t: 'p', c: ['First line', { t: 'br' }, 'second line'] },

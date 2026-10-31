@@ -122,6 +122,30 @@ describe('news store', () => {
     expect(onExpired).toHaveBeenCalledTimes(2)
   })
 
+  it('a refetched first page drops the deeper cached pages of that ticker and language', async () => {
+    await news.list(LIST)
+    clock += 5 * 60e3
+    await news.list({ ...LIST, skip: 20 })
+    await news.list({ ...LIST, lang: 'ru', skip: 20 })
+    await news.list({ ...LIST, ticker: 'ZZZ.US', skip: 20 })
+    clock += 5 * 60e3 // page 0 expired, page 20 still fresh by its own TTL
+    await news.list(LIST)
+    expect(await db.getKv('news:list:AAA.US:en:20')).toBeNull()
+    expect(await db.getKv('news:list:AAA.US:ru:20')).not.toBeNull()
+    expect(await db.getKv('news:list:ZZZ.US:en:20')).not.toBeNull()
+    expect(Object.keys((await db.getKv('news:index')).data)).not.toContain('news:list:AAA.US:en:20')
+    const calls = broker.newsList.mock.calls.length
+    await news.list({ ...LIST, skip: 20 })
+    expect(broker.newsList).toHaveBeenCalledTimes(calls + 1) // fetched again, not older than page 0
+  })
+
+  it('a first page served from the cache keeps the deeper pages', async () => {
+    await news.list(LIST)
+    await news.list({ ...LIST, skip: 20 })
+    await news.list(LIST)
+    expect(await db.getKv('news:list:AAA.US:en:20')).not.toBeNull()
+  })
+
   it('one request per key at a time', async () => {
     const [a, b] = await Promise.all([news.list(LIST), news.list(LIST)])
     expect(a.data).toEqual(b.data)
