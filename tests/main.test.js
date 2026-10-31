@@ -325,6 +325,43 @@ describe('chart hover across live redraws', () => {
     w.unmount()
   })
 
+  it('ValueBlock drops the hover when the series becomes undrawable', async () => {
+    makeApp()
+    const w = mount(ValueBlock, { props: { core: CORE, period: 'YTD' }, attachTo: document.body })
+    await flushPromises()
+    await hoverAt(w, '.vchart .chart-hit', 140)
+    expect(w.get('[data-test="v-big"]').text()).toBe(money(10120))
+
+    const one = { ...CORE, series: CORE.series.slice(-1) } // < 2 rows: nothing drawn
+    await w.setProps({ core: one })
+    await flushPromises()
+    expect(w.find('.vchart svg').exists()).toBe(false)
+    expect(w.get('[data-test="v-big"]').text()).toBe(money(10580.4))
+    expect(w.get('[data-test="v-period"]').text()).toContain(t('value.perPerf', { period: 'YTD' }))
+    w.unmount()
+  })
+
+  it('CompareScreen forgets the tooltip date when the series empties', async () => {
+    let core = CORE
+    const { repo, emit } = makeApp()
+    repo.coreFor.mockImplementation(() => core)
+    const w = mount(CompareScreen, { attachTo: document.body })
+    await flushPromises()
+    const hit = w.get('.cchart .chart-hit')
+    await hoverAt(w, '.cchart .chart-hit', Number(hit.attributes('x')) + Number(hit.attributes('width')) / 2)
+    expect(w.get('.chart-tip').text()).toContain('Oct 27')
+
+    core = { ...CORE, series: [] }
+    emit({ ...STATE })
+    await flushPromises()
+    expect(w.find('.chart-tip').exists()).toBe(false)
+    core = CORE // drawable again: no stale tooltip comes back
+    emit({ ...STATE })
+    await flushPromises()
+    expect(w.get('.chart-tip').element.style.opacity).toBe('0')
+    w.unmount()
+  })
+
   it('CompareScreen keeps the tooltip date after a recalc', async () => {
     let core = CORE
     const { repo, emit } = makeApp()

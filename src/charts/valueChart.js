@@ -15,7 +15,10 @@ export function drawValueChart(el, series, { mode = 'perf', onHover = () => {}, 
   el.replaceChildren()
   const val = mode === 'value' ? (r) => r.value : (r) => r.portfolio
   const rows = (series || []).filter((r) => val(r) != null && Number.isFinite(+val(r)))
-  if (rows.length < 2) return () => el.replaceChildren()
+  if (rows.length < 2) {
+    if (hoverDate) onHover(null) // nothing to hover: drop the kept hover
+    return () => el.replaceChildren()
+  }
 
   const W = widthOf(el)
   const m = { t: 30, r: 8, b: 22, l: 4 }

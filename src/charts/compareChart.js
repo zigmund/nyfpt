@@ -22,7 +22,10 @@ const tickText = (v) => `${v > 0 ? '+' : v < 0 ? '\u2212' : ''}${+Math.abs(v).to
 export function drawCompareChart(el, series, { labels, hide = () => false, hoverDate = null, onHover = () => {} }) {
   el.replaceChildren()
   const rows = series || []
-  if (!rows.length) return () => el.replaceChildren()
+  if (!rows.length) {
+    if (hoverDate) onHover(null) // nothing to hover: drop the kept tooltip date
+    return () => el.replaceChildren()
+  }
 
   const W = widthOf(el)
   const m = { t: 12, r: 12, b: 26, l: 0 }
