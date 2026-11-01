@@ -255,6 +255,18 @@ describe('search sheet: results', () => {
     expect(rows(w)[1].get('.srow__chg').text()).toBe('+2.00%')
   })
 
+  it('a live quote with ltp 0 is no price: the REST snapshot, else dashes (Task 50)', async () => {
+    const live = new Map([['GLD.US', { ltp: 0, chg: -300, pcp: -100, pp: 0 }], ['AMZN.US', { ltp: 0, chg: 0, pcp: 0 }]])
+    const searchQuotes = vi.fn(async () => ({ 'AMZN.US': { last: null, change: null }, 'GLD.US': { last: 300.5, change: 2 } }))
+    const { w } = await openSheet({ findTickers: vi.fn(async () => [AMZN, GLD]), searchQuotes, liveQuotes: live })
+    wrapper = w
+    await type(w, 'a')
+    expect(rows(w)[0].get('.srow__price').text()).toBe('—')
+    expect(rows(w)[0].get('.srow__chg').text()).toBe('—')
+    expect(rows(w)[1].get('.srow__price').text()).toBe('300.50')
+    expect(rows(w)[1].get('.srow__chg').text()).toBe('+2.00%')
+  })
+
   it('day change of a live quote: price vs previous close first, like the card', async () => {
     const live = new Map([['GLD.US', { ltp: 300, pp: 250, pcp: 2 }]])
     const { w } = await openSheet({ findTickers: vi.fn(async () => [GLD]), liveQuotes: live })

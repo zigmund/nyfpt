@@ -21,7 +21,7 @@ import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
 } from '../calc/portfolio.js'
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
-import { livePriceRows } from '../calc/live.js'
+import { livePriceRows, quotePrice } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
 import { dailyOffset, dailyThroughSession, hlocMarkets, isSessionDay, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
 import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
@@ -379,9 +379,9 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
         for (const [t, m] of quoteMemo) if (at >= m.until) quoteMemo.delete(t)
         for (const t of want) {
           const q = got.get(t)
-          const last = numOrNull(q?.ltp)
+          const last = quotePrice(q) // ltp 0 (an index on a day off) is no price, and then no change
           const until = at + (last === null ? QUOTE_MISS_MS : TTL.quotes)
-          quoteMemo.set(t, { until, last, change: numOrNull(q?.pcp) })
+          quoteMemo.set(t, { until, last, change: last === null ? null : numOrNull(q?.pcp) })
           quotePending.delete(t)
         }
       })()

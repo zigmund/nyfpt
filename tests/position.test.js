@@ -184,6 +184,13 @@ describe('Summary', () => {
     expect(w.get('[data-test="ph-day"]').text()).toContain(money(40, { sign: true }))
   })
 
+  it('a quote with ltp 0 is no price: the security info price, not 0 (Task 50)', () => {
+    setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 0, chg: 0, pcp: 0, pp: 0 } } })
+    const w = mountCard()
+    expect(w.get('[data-test="p-price"]').text()).toBe('110.00')
+    expect(w.get('[data-test="p-change"]').text()).toBe(`+10.00 (${pct(10)})`)
+  })
+
   it('live: price and change follow the quote; "Live" label', async () => {
     const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } } })
     const w = mountCard()

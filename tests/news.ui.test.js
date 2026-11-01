@@ -110,7 +110,7 @@ describe('news list', () => {
     const store = fakeStore({ 'en:0': { list: [item(1, { date: '2026-10-31 12:00:00' })], total: 1 } })
     let release
     store.list.mockImplementationOnce(() => new Promise((r) => { release = r }))
-    setup({ store, quotes: { 'AAA.US': { ltp: 102, pp: 100 }, 'CCC.US': { pcp: 0 } } })
+    setup({ store, quotes: { 'AAA.US': { ltp: 102, pp: 100 }, 'CCC.US': { ltp: 50, pp: 50 } } }) // a quote without a price is not used (Task 50)
     const w = mountNews()
     await flushPromises()
     const box = w.get('[data-test="news-list"]')
@@ -153,6 +153,19 @@ describe('news list', () => {
     const w = mountNews()
     await flushPromises()
     expect(w.get('[data-test="news-tk"]').text().replace(/\s+/g, ' ')).toBe('EEE.EU +2.00%')
+    w.unmount()
+  })
+
+  it('a live quote with ltp 0 is no price: the quote snapshot, else the position (Task 50)', async () => {
+    const app = setup({
+      store: fakeStore({ 'en:0': { list: [item(1, { tickers: ['EEE.EU', 'FFF.US'] })], total: 1 } }),
+      quotes: { 'EEE.EU': { c: 'EEE.EU', ltp: 0, chg: -102, pcp: -100, pp: 0 }, 'FFF.US': { c: 'FFF.US', ltp: 0, chg: 0, pcp: 0 } },
+      ps: { pos: [{ i: 'FFF.US', mkt_price: 51, close_price: 50 }] },
+    })
+    app.state.value = { ...app.state.value, quotes: new Map([['EEE.EU', { c: 'EEE.EU', ltp: 102, chg: 2, pp: 90 }]]) }
+    const w = mountNews()
+    await flushPromises()
+    expect(w.findAll('[data-test="news-tk"]').map((x) => x.text().replace(/\s+/g, ' '))).toEqual(['EEE.EU +2.00%', 'FFF.US +2.00%'])
     w.unmount()
   })
 
