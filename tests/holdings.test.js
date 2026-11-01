@@ -387,34 +387,34 @@ describe('Holdings: Yahoo-style rows', () => {
     expect(w.get('[data-test="h-link"]').attributes('href')).toBe('#/position/A%26B%2FC.US')
   })
 
-  it('Day spark: last-session closes from the repo, previous-close level, tone by the day change', () => {
+  it('Day spark: last-session closes from the repo, previous-close level', () => {
     setup()
     const w = mountH()
-    expect(sparkOf(w.get('[data-ticker="AAA.US"]'))).toEqual({ spark: [98, 99.5, 99, 100], prev: 98, down: false })
-    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [52, 51, 50.5, 50], prev: 52, down: true })
+    expect(sparkOf(w.get('[data-ticker="AAA.US"]'))).toEqual({ spark: [98, 99.5, 99, 100], prev: 98 })
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [52, 51, 50.5, 50], prev: 52 })
     // No data: an empty spark of the same height (no skeleton swap, no jump when it arrives).
     const ccc = w.get('[data-ticker="CCC.US"]')
     expect(sparkOf(ccc).spark).toEqual([])
     expect(ccc.find('.spark').exists()).toBe(true)
   })
 
-  it('Day spark of the previous session (prior): no previous-close level, tone by its own direction', () => {
+  it('Day spark of the previous session (prior): no previous-close level (split at its own first close)', () => {
     const { app } = setup()
     app.state.value = { ...app.state.value, sparks: { ...SPARKS, 'BBB.US': { date: '2026-10-29', spark: [49, 51], prior: true } } }
     const w = mountH()
     // BBB is down today (pill), but the drawn session rose: the line is not measured against today's base.
-    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [49, 51], prev: null, down: false })
+    expect(sparkOf(w.get('[data-ticker="BBB.US"]'))).toEqual({ spark: [49, 51], prev: null })
     expect(w.get('[data-ticker="BBB.US"] [data-test="h-daypct"]').classes()).toContain('pill--neg')
   })
 
-  it('Period spark: closes over the period from the start price to the end price, tone by Range %', () => {
+  it('Period spark: closes over the period from the start price to the end price', () => {
     setup({ prefs: { holdingsMode: 'period' } })
     const w = mountH()
     const aaa = w.get('[data-test="hp-row"][data-ticker="AAA.US"]')
     expect(aaa.get('a[data-test="h-link"]').attributes('href')).toBe('#/position/AAA.US')
     expect(aaa.get('[data-test="h-name"]').text()).toBe('Alpha')
     // base 2025-12-31 (90) -> 95, 96, 98 -> end 2026-10-30 (100)
-    expect(sparkOf(aaa)).toEqual({ spark: [90, 95, 96, 98, 100], prev: null, down: false })
+    expect(sparkOf(aaa)).toEqual({ spark: [90, 95, 96, 98, 100], prev: null })
     const pill = aaa.get('[data-test="hp-pct"]')
     expect(pill.classes()).toEqual(expect.arrayContaining(['pill', 'pill--pos']))
     expect(aaa.get('[data-test="hp-price"]').text()).toBe('100.00')
@@ -741,8 +741,108 @@ describe('Holdings column stability (Task 32)', () => {
     expect(room(['qty', 'price', 'value'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
   })
 
+  it('mobile Cash row keeps Value in column 2 and Weight in the right column (same grid as positions)', () => {
+    const m = mediaBody('(max-width: 47.99rem)')
+    expect(m).toMatch(/\.hc-weight\s*\{[^}]*grid-column:\s*4/)
+    // column 4 floors at the pill's min width, otherwise a pill-less Cash row gets a narrower column 4
+    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:[^;]*minmax\(var\(--pill-min, 8ch\), auto\)/)
+    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*var\(--pill-min, 8ch\)/)
+    expect(m).toMatch(/\.hrow--cash \.hc-meta:not\(\.hc-weight\)\s*\{[^}]*grid-column:\s*2/)
+  })
+
   it('mobile total line is a grid: placement does not depend on the figures', () => {
     const m = mediaBody('(max-width: 47.99rem)')
     expect(m).toMatch(/\.hold__total\s*\{[^}]*display:\s*grid/)
+  })
+})
+
+// Task 39: while the phone sticky header is stuck it becomes a page-coloured full-width bar
+// (iOS 26 extends the colour of the element at the top edge into the status-bar area).
+describe('Holdings sticky header: stuck state (Task 39)', () => {
+  let observers
+  class FakeIO {
+    constructor(cb, opts) { this.cb = cb; this.opts = opts; this.els = []; this.disconnected = false; observers.push(this) }
+    observe(el) { this.els.push(el); this.disconnected = false }
+    unobserve(el) { this.els = this.els.filter((e) => e !== el) }
+    disconnect() { this.els = []; this.disconnected = true }
+  }
+  const live = () => observers.filter((o) => !o.disconnected && o.els.length)
+  // A sentinel entry: above the viewport top (stuck), inside it, or below it.
+  const fire = async (where) => {
+    const [o] = live()
+    const el = o.els[0]
+    const top = where === 'above' ? -200 : where === 'below' ? 2000 : 100
+    o.cb([{ target: el, isIntersecting: where === 'inside', boundingClientRect: { top, bottom: top + 1 }, rootBounds: { top: 8, bottom: 800 } }])
+    await nextTick()
+  }
+  const stuck = (w) => w.get('.htable thead').classes().includes('is-stuck')
+
+  beforeEach(() => { observers = []; vi.stubGlobal('IntersectionObserver', FakeIO) })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('observes a sentinel placed right before the Day table (header natural position)', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    const s = w.get('[data-test="h-sentinel"]')
+    expect(s.attributes('aria-hidden')).toBe('true')
+    expect(s.element.nextElementSibling.tagName).toBe('TABLE')
+    expect(live()).toHaveLength(1)
+    expect(live()[0].els).toEqual([s.element])
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('toggles is-stuck on the header: sentinel above the top -> stuck; inside or below -> not', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    await fire('above')
+    expect(stuck(w)).toBe(true)
+    await fire('inside')
+    expect(stuck(w)).toBe(false)
+    await fire('above')
+    await fire('below')
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('root margin: the bar switches a little before the edge; the root reaches far below the viewport', async () => {
+    // IO reports only isIntersecting changes: a jump from "above" straight to "below the viewport"
+    // (tap on the status bar = scroll to top) must pass through "intersecting", or is-stuck stays on.
+    setup()
+    mountH()
+    await nextTick()
+    expect(live()[0].opts.rootMargin).toMatch(/^-\d+px 0px \d{5,}px 0px$/)
+  })
+
+  it('Period table: the new sentinel is observed after a mode switch; the stuck state carries over until IO says otherwise', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    await fire('above')
+    await w.get('[data-test="hmode-period"]').trigger('click')
+    await nextTick()
+    const s = w.get('[data-test="h-sentinel"]')
+    expect(s.element.nextElementSibling.getAttribute('data-test')).toBe('hp-table')
+    expect(live().flatMap((o) => o.els)).toEqual([s.element])
+    // no panel-coloured frame at the edge while scrolled into the table: the new header starts stuck
+    expect(w.get('[data-test="hp-table"] thead').classes()).toContain('is-stuck')
+    await fire('inside')
+    expect(stuck(w)).toBe(false)
+  })
+
+  it('disconnects on unmount; works without IntersectionObserver (never stuck)', async () => {
+    setup()
+    const w = mountH()
+    await nextTick()
+    const [o] = live()
+    w.unmount()
+    expect(o.disconnected).toBe(true)
+
+    vi.stubGlobal('IntersectionObserver', undefined)
+    installApp(null)
+    setup()
+    const w2 = mountH()
+    await nextTick()
+    expect(stuck(w2)).toBe(false)
   })
 })

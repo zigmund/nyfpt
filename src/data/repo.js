@@ -6,10 +6,14 @@
 //   positions    {rows, rawPs}        parsePositions rows + raw `ps` (holdings)
 //   cashflows    rows                 parseCashflows rows (whole history)
 //   trades       {from, rows}         parseTrades rows since `from` (beginDate watermark)
-//   markets      {daily, intraday}    parseHloc rows for MARKET_STRIP
+//   markets      {tickers, daily, intraday}  parseHloc rows of the session index + strip tickers
+//                                    (no `tickers`: rows cached before Task 38, LEGACY_STRIP)
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
+// Rows of another CACHE_VERSION read as missing (store/db.js) and are purged on the first load.
+// Candle history has no TTL: a top-up re-requests the last 2 stored days (the newest may have been
+// saved before its session closed) and checks the oldest overlapping stored close for a split.
 // Position card data (security info, full candles per ticker) is kept in memory only, TTL-gated.
 import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
@@ -20,15 +24,24 @@ import { daySparks } from '../calc/sparks.js'
 import { dailyOffset, hlocMarkets, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
 import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
-import { SessionExpiredError } from '../api/transport.js'
+import { BrokerError, SessionExpiredError } from '../api/transport.js'
 
-const DATASETS = ['clock', 'positions', 'cashflows', 'trades', 'markets', 'sparks']
+/** Dataset names: kv rows and state.errors / state.loading keys (one source for components). */
+export const DATASET = Object.freeze({
+  clock: 'clock', positions: 'positions', cashflows: 'cashflows', trades: 'trades', markets: 'markets', sparks: 'sparks',
+  candles: 'candles',
+})
+const DATASETS = Object.values(DATASET).filter((n) => n !== DATASET.candles) // kv datasets
 const TTL_OF = {
   clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
+const REFETCH_DAYS = 2 // last stored days re-requested on every top-up
+// Split / adjustment: a stored close off the broker's by more than this share (same day) means the
+// broker rewrote the ticker's history; 0.5% is far above rounding and far below any split ratio.
+const ADJUST_TOLERANCE = 0.005
 
 // Position card datasets: TTL per part; daily reaches back far enough for 1Y, YTD and 52 weeks.
 const SEC_TTL = { info: TTL.quotes, intraday: TTL.intraday, daily: 5 * 60e3, max: 60 * 60e3 }
@@ -36,6 +49,16 @@ const SEC_DAILY_DAYS = 400
 const SEC_INTRADAY_DAYS = 8 // 5 sessions back, weekends and a holiday included
 const SEC_MAX_FROM = '1990-01-01'
 const SESSION_INDEX = 'SP500.IDX' // its intraday bars mark the regular US session
+const DEFAULT_STRIP = MARKET_STRIP.map((m) => m.ticker)
+// Tickers of markets rows cached before the strip became customizable (no `tickers` field). Frozen:
+// a later MARKET_STRIP change must not make those rows look complete.
+const LEGACY_STRIP = Object.freeze(['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'])
+// After a per-ticker fallback: a ticker rejected alone (without being named) is skipped this long;
+// when every call of a fallback failed, no fallback for this long either (combined requests only).
+const HLOC_RETRY_MS = 5 * 60e3
+const NAME_ROUNDS = 3 // combined retries after dropping the tickers an error names
+const FINDER_MAX = 30
+const HLOC_KEYS = ['hloc', 'xSeries', 'vl', 'info', 'maxSeries']
 
 const addDays = (s, n) => {
   const d = new Date(`${s}T00:00:00Z`)
@@ -44,8 +67,31 @@ const addDays = (s, n) => {
 }
 const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
+// Tickers of `tickers` named as whole tokens in a broker error text, e.g. "Failed to find instruments
+// by tickers: ZZZQX.US" (no error code seen for it; matching our own tickers keeps it independent of the text's language).
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const namedIn = (msg, tickers) => tickers.filter((t) => new RegExp(`(^|[^\\w.-])${esc(t)}(?![\\w-])`, 'i').test(String(msg || '')))
+// getHloc answers of disjoint ticker sets as one answer.
+const mergeHloc = (answers) => Object.fromEntries(HLOC_KEYS.map((k) => [k, Object.assign({}, ...answers.map((a) => (a && a[k]) || {}))]))
 
-export function createRepo({ broker, db, now = () => Date.now() }) {
+/** True when the broker's closes no longer match the stored history: the oldest stored day that
+ *  the answer also has differs by more than ADJUST_TOLERANCE. The last REFETCH_DAYS stored days
+ *  are never compared (possibly saved mid-session); with no older day there is nothing to check. */
+function historyAdjusted(stored, fresh) {
+  if (stored.length <= REFETCH_DAYS || !fresh.length) return false
+  const got = new Map(fresh.map((c) => [c.date, c.close]))
+  for (const c of stored.slice(0, stored.length - REFETCH_DAYS)) {
+    if (!got.has(c.date)) continue // holiday on one side, or before the answer starts
+    const b = Number(got.get(c.date))
+    const a = Number(c.close)
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return false
+    return Math.abs(a - b) > ADJUST_TOLERANCE * Math.abs(b)
+  }
+  return false
+}
+
+/** `strip`: tickers of the markets strip cards (setStrip changes them). */
+export function createRepo({ broker, db, now = () => Date.now(), strip: initialStrip = DEFAULT_STRIP }) {
   const cache = { clock: null, positions: null, cashflows: null, trades: null, markets: null, sparks: null }
   const fetchedAt = {}
   const candles = new Map() // ticker -> [{date, close}] asc
@@ -58,6 +104,10 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   let expiredNotified = false
   let cacheLoaded = null
   let loaded = false
+  let strip = [...new Set(initialStrip)]
+  const badTickers = new Set() // strip tickers a broker error named as unknown: not requested again
+  const skipUntil = new Map() // ticker -> ms: rejected alone without being named, skipped until then
+  let fanOutPausedUntil = 0 // every call of the last per-ticker fallback failed: no fallback until then
 
   // Market clock: server offset from daily candles and market hours from getHloc `info`
   // (`learned`, kv marketInfo); the getMarketStatus snapshot only fills what is not learned yet.
@@ -95,8 +145,61 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     return c
   }
 
+  // Markets dataset tickers: the session index (the app's trading date) + the strip cards.
+  const marketTickers = () => [...new Set([SESSION_INDEX, ...strip])]
+  const cachedMarketTickers = () => cache.markets?.tickers || LEGACY_STRIP
+  // A strip ticker is missing from the cached rows: fetch at once (removed ones need nothing).
+  const marketsOutdated = () => !!cache.markets && marketTickers().some((t) => !cachedMarketTickers().includes(t))
+
+  /** Rows of the cached strip tickers (computeMarkets), null before the first fetch. */
   function marketsStrip() {
-    return cache.markets ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today()) : null
+    return cache.markets
+      ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today(), cachedMarketTickers())
+      : null
+  }
+
+  // One getHloc for `tickers` that an unknown ticker does not break (the broker fails the whole request
+  // for it). A rejected request: tickers the error names are remembered and dropped, and the rest is
+  // asked again; with none named, one request per ticker, one at a time (no burst), merged. Only a
+  // named ticker is dropped for good; one rejected alone without being named is skipped for
+  // HLOC_RETRY_MS; network errors record nothing. SESSION_INDEX is never dropped or skipped (trading
+  // date, status date, spark windows). Every fallback call failing is the dataset's error and pauses
+  // the fallback for HLOC_RETRY_MS.
+  async function hlocTolerant(call, tickers) {
+    const usable = (t) => t === SESSION_INDEX || (!badTickers.has(t) && !(skipUntil.get(t) > now()))
+    let ask = tickers.filter(usable)
+    for (let round = 0; ask.length; round++) {
+      let e
+      try { return await call(ask) } catch (err) { e = err }
+      if (!(e instanceof BrokerError)) throw e
+      const named = namedIn(e.message, ask).filter((t) => t !== SESSION_INDEX)
+      if (named.length && round < NAME_ROUNDS) {
+        for (const t of named) badTickers.add(t)
+        ask = ask.filter((t) => !named.includes(t))
+        continue
+      }
+      if (ask.length < 2 || now() < fanOutPausedUntil) throw e
+      return hlocEach(call, ask, e)
+    }
+    return { hloc: {} }
+  }
+  async function hlocEach(call, ask, first) {
+    const ok = []
+    for (const t of ask) {
+      try {
+        ok.push(await call([t]))
+      } catch (err) {
+        if (!(err instanceof BrokerError) || t === SESSION_INDEX) continue
+        if (namedIn(err.message, [t]).length) badTickers.add(t)
+        else skipUntil.set(t, now() + HLOC_RETRY_MS)
+      }
+    }
+    if (!ok.length) {
+      fanOutPausedUntil = now() + HLOC_RETRY_MS
+      for (const t of ask) skipUntil.delete(t) // nothing worked: not the tickers' fault
+      throw first
+    }
+    return mergeHloc(ok)
   }
 
   // Day sparks, recomputed only when their inputs change (state() runs on every emit).
@@ -212,6 +315,7 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       trades: cache.trades ? cache.trades.rows : null,
       cashflows: cache.cashflows,
       markets: marketsStrip(),
+      strip: [...strip], // tickers of the strip cards (live subscribes them)
       sparks: sparksState(), // {ticker: {date, spark}}: last-session 15-min closes
       closes: candles, // ticker -> [{date, close}] daily closes (period sparks)
       inception: inceptionFromCashflows(cache.cashflows),
@@ -295,15 +399,17 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     },
     async markets() {
       const t = today()
-      const tickers = MARKET_STRIP.map((m) => m.ticker)
+      const tickers = marketTickers()
       const [d, i] = await Promise.all([
-        broker.hlocDaily(tickers, addDays(t, -10), -1),
-        broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15),
+        hlocTolerant((ts) => broker.hlocDaily(ts, addDays(t, -10), -1), tickers),
+        hlocTolerant((ts) => broker.hlocIntraday(ts, addDays(t, -6), addDays(t, 1), 15), tickers),
       ])
       await learn(d, true)
       await learn(i, false)
       const ic = await intradayClock({ waitMarkets: false })
-      await save('markets', { daily: parseHloc({ answer: d }, dailyClock(d)).rows, intraday: parseHloc({ answer: i }, ic).rows })
+      await save('markets', {
+        tickers, daily: parseHloc({ answer: d }, dailyClock(d)).rows, intraday: parseHloc({ answer: i }, ic).rows,
+      })
     },
     // One multi-ticker request for all positions; needs the positions, so waits for their fetch.
     // Nothing is saved without positions: the next refresh tries again.
@@ -336,6 +442,11 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
 
   function loadCache() {
     cacheLoaded ||= (async () => {
+      try {
+        await db.purgeStale([...DATASETS, 'candleCover', 'marketInfo'])
+      } catch {
+        // housekeeping only: rows of another version read as missing anyway
+      }
       for (const name of DATASETS) {
         const kv = await db.getKv(name)
         if (kv) { cache[name] = kv.data; fetchedAt[name] = kv.fetchedAt }
@@ -357,19 +468,57 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     ...BENCHMARKS,
   ])].filter((t) => !String(t).includes('/')).sort()
 
+  // Daily closes of `tickers` from `from` (plus CLOSES_BEFORE - 1 earlier bars), per ticker.
+  async function dailyCloses(tickers, from) {
+    const a = await broker.hlocDaily(tickers, from, -CLOSES_BEFORE)
+    await learn(a, true)
+    const rows = parseHloc({ answer: a }, dailyClock(a)).rows
+    return new Map(tickers.map((t) => [t, rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))]))
+  }
+  async function storeCloses(t, own, from) {
+    if (own.length) await db.putCandles(t, own)
+    candles.set(t, await db.getCandles(t))
+    if (!cover[t] || from < cover[t]) cover[t] = from
+  }
+
   function fetchCandles(tickers, from) {
-    return task(`candles:${from}:${tickers.join(',')}`, 'candles', async () => {
-      const a = await broker.hlocDaily(tickers, from, -CLOSES_BEFORE)
-      await learn(a, true)
-      const rows = parseHloc({ answer: a }, dailyClock(a)).rows
+    return task(`candles:${from}:${tickers.join(',')}`, DATASET.candles, async () => {
+      const got = await dailyCloses(tickers, from)
+      const again = new Map() // old cover -> tickers whose adjusted history starts before `from`
       for (const t of tickers) {
-        const own = rows.filter((r) => r.ticker === t).map(({ date, close }) => ({ date, close }))
-        if (own.length) await db.putCandles(t, own)
-        candles.set(t, await db.getCandles(t))
-        if (!cover[t] || from < cover[t]) cover[t] = from
+        const own = got.get(t)
+        if (historyAdjusted(candles.get(t) || [], own)) {
+          // Split / adjustment: the stored history is stale as a whole.
+          const back = cover[t]
+          await db.deleteCandles(t)
+          candles.delete(t)
+          delete cover[t]
+          if (back && back < from) {
+            if (!again.has(back)) again.set(back, [])
+            again.get(back).push(t)
+            continue
+          }
+        }
+        await storeCloses(t, own, from)
       }
       await db.putKv('candleCover', { ...cover }, now())
+      // Dropped tickers: their whole covered range again, one request per old cover date.
+      for (const [back, ts] of again) {
+        const re = await dailyCloses(ts, back)
+        for (const t of ts) await storeCloses(t, re.get(t), back)
+        await db.putKv('candleCover', { ...cover }, now())
+      }
     })
+  }
+
+  // Top-up start per covered ticker: the oldest of its last REFETCH_DAYS stored days. Tickers
+  // whose starts lie within PAD_DAYS of the newest share the earliest one, so market calendars
+  // (a US vs a KASE holiday) do not split the request.
+  function topUpFroms(need) {
+    if (!need.size) return need
+    const newest = [...need.values()].sort().at(-1)
+    const near = [...need.values()].filter((d) => d >= addDays(newest, -PAD_DAYS)).sort()[0]
+    return new Map([...need].map(([t, d]) => [t, d >= near ? near : d]))
   }
 
   async function doEnsurePrices(period, day) {
@@ -381,12 +530,18 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     if (!start) return // 'All' without any cashflows: nothing to price
     const tf = tradesFrom(period, start)
     if (isExpired(await ensureTrades(tf))) return
-    // Incremental from the last cached date (it is re-fetched: the current day may be partial);
+    // Covered tickers: top-up from the last REFETCH_DAYS stored days (re-fetched and overwritten);
     // tickers not covered back to `start` are fetched from start - PAD_DAYS.
+    const tickers = tickersFor(tf)
+    const need = new Map()
+    for (const t of tickers) {
+      const cs = candles.get(t) || []
+      if (cs.length && cover[t] && cover[t] <= start) need.set(t, cs[Math.max(0, cs.length - REFETCH_DAYS)].date)
+    }
+    const topUp = topUpFroms(need)
     const groups = new Map()
-    for (const t of tickersFor(tf)) {
-      const last = await db.lastCandleDate(t)
-      const from = last && cover[t] && cover[t] <= start ? last : addDays(start, -PAD_DAYS)
+    for (const t of tickers) {
+      const from = topUp.get(t) || addDays(start, -PAD_DAYS)
       if (!groups.has(from)) groups.set(from, [])
       groups.get(from).push(t)
     }
@@ -419,7 +574,7 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     await loadCache()
     const names = (only || DATASETS).filter((n) => DATASETS.includes(n))
     const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n]
-      || (n === 'sparks' && sparksOutdated()))
+      || (n === 'sparks' && sparksOutdated()) || (n === 'markets' && marketsOutdated()))
     await Promise.all(due.map(refreshOne))
   }
 
@@ -466,6 +621,35 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     },
 
     marketsStrip,
+
+    /** New strip card tickers: emitted at once (live resubscribes); added tickers are fetched
+     *  (after a strip fetch already running), removed ones are simply no longer requested. */
+    async setStrip(list) {
+      const next = [...new Set(list)]
+      if (next.join(',') === strip.join(',')) return
+      strip = next
+      emit()
+      if (inflight.has('markets')) await inflight.get('markets')
+      await refresh({ only: ['markets'] })
+    },
+
+    /** Broker search (tickerFinder, anonymous): [{ticker, name, market, code}] (code: code_nm, the
+     *  ticker without its suffix, '' when absent), at most 30;
+     *  currency pairs skipped. Rejects on errors. */
+    async findTickers(text) {
+      const q = String(text || '').trim()
+      if (!q) return []
+      const a = await broker.tickerFinder(q)
+      return ((a && Array.isArray(a.found)) ? a.found : [])
+        .filter((x) => x && typeof x.t === 'string' && x.t.trim() && !x.t.includes('/'))
+        .slice(0, FINDER_MAX)
+        .map((x) => {
+          const name = [x.nm, x.n, x.ln].find((v) => typeof v === 'string' && v.trim())
+          const code = typeof x.code_nm === 'string' && x.code_nm.trim() ? x.code_nm.trim() : ''
+          return { ticker: x.t.trim(), name: name ? name.trim() : x.t.trim(), market: typeof x.mkt === 'string' ? x.mkt : '', code }
+        })
+    },
+
     /** Trading date of the session index's market at `ms` (default now). */
     today,
     security,

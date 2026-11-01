@@ -3,7 +3,7 @@ const VERSION = '__APP_VERSION__'
 const CACHE = `nyfpt-${VERSION}`
 // Emitted hashed assets, injected at build time (JSON array inside the string).
 const PRECACHE = JSON.parse('__PRECACHE__')
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png']
+const SHELL = ['/', '/index.html', '/theme-boot.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -72,7 +72,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(networkFirstNavigation(request, event))
   } else if (url.pathname.startsWith('/assets/')) {
     event.respondWith(cacheFirst(request))
-  } else if (url.pathname.startsWith('/icons/') || url.pathname === '/manifest.webmanifest') {
+  } else if (url.pathname.startsWith('/icons/') || url.pathname === '/manifest.webmanifest' || url.pathname === '/theme-boot.js') {
     event.respondWith(staleWhileRevalidate(request, event))
   }
 })

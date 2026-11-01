@@ -1,4 +1,8 @@
 // IndexedDB store: one DB "nyfpt", data partitioned by accountKey.
+// Every row carries `v` = the cache format version (config CACHE_VERSION); a row of another
+// version (or without `v`: written before versioning) reads as missing.
+import { CACHE_VERSION } from '../config.js'
+
 const DB_NAME = 'nyfpt'
 const DB_VERSION = 1
 
@@ -43,19 +47,37 @@ function openRaw(idb) {
   })
 }
 
-export async function openAccountDb(accountKey, idb = globalThis.indexedDB) {
+// Delete the rows of `range` whose version is not `v`; resolves to the number deleted.
+function deleteStale(store, range, v) {
+  return new Promise((resolve, reject) => {
+    let n = 0
+    const req = store.openCursor(range)
+    req.onsuccess = () => {
+      const c = req.result
+      if (!c) return resolve(n)
+      if (c.value.v !== v) { c.delete(); n++ }
+      c.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+/** `version`: tests only (a bundle with another cache format). */
+export async function openAccountDb(accountKey, idb = globalThis.indexedDB, { version = CACHE_VERSION } = {}) {
   const db = await openRaw(idb)
+  const accountRange = () => IDBKeyRange.bound([accountKey], [accountKey, []])
+  const tickerRange = (ticker) => IDBKeyRange.bound([accountKey, ticker, ''], [accountKey, ticker, '\uffff'])
+  const rawKv = async (name) => promisify(db.transaction('kv', 'readonly').objectStore('kv').get([accountKey, name]))
 
   return {
     async getKv(name) {
-      const tx = db.transaction('kv', 'readonly')
-      const row = await promisify(tx.objectStore('kv').get([accountKey, name]))
-      return row ? { data: row.data, fetchedAt: row.fetchedAt } : null
+      const row = await rawKv(name)
+      return row && row.v === version ? { data: row.data, fetchedAt: row.fetchedAt } : null
     },
 
     async putKv(name, data, fetchedAt = Date.now()) {
       const tx = db.transaction('kv', 'readwrite')
-      tx.objectStore('kv').put({ account: accountKey, name, data, fetchedAt })
+      tx.objectStore('kv').put({ account: accountKey, name, data, fetchedAt, v: version })
       await txDone(tx)
     },
 
@@ -70,28 +92,39 @@ export async function openAccountDb(accountKey, idb = globalThis.indexedDB) {
       const rows = await promisify(
         tx.objectStore('candles').index('byTicker').getAll(IDBKeyRange.only([accountKey, ticker])),
       )
-      return rows.map((r) => ({ date: r.date, close: r.close })).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      return rows.filter((r) => r.v === version).map((r) => ({ date: r.date, close: r.close })).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
     },
 
     async putCandles(ticker, rows) {
       const tx = db.transaction('candles', 'readwrite')
       const store = tx.objectStore('candles')
-      for (const r of rows) store.put({ account: accountKey, ticker, date: r.date, close: r.close })
+      for (const r of rows) store.put({ account: accountKey, ticker, date: r.date, close: r.close, v: version })
       await txDone(tx)
     },
 
-    async lastCandleDate(ticker) {
-      const tx = db.transaction('candles', 'readonly')
-      const range = IDBKeyRange.bound([accountKey, ticker, ''], [accountKey, ticker, '￿'])
-      const cursor = await promisify(tx.objectStore('candles').openCursor(range, 'prev'))
-      return cursor ? cursor.value.date : null
+    /** Drop a ticker's whole stored history (split / adjustment). */
+    async deleteCandles(ticker) {
+      const tx = db.transaction('candles', 'readwrite')
+      tx.objectStore('candles').delete(tickerRange(ticker))
+      await txDone(tx)
+    },
+
+    /** After a format change: when one of the `probe` kv rows is of another version, delete
+     *  every row of another version in this account (kv and candles). Resolves to the count. */
+    async purgeStale(probe) {
+      const rows = await Promise.all(probe.map(rawKv))
+      if (!rows.some((r) => r && r.v !== version)) return 0
+      const tx = db.transaction(['kv', 'candles'], 'readwrite')
+      const done = txDone(tx)
+      const [a, b] = await Promise.all(['kv', 'candles'].map((s) => deleteStale(tx.objectStore(s), accountRange(), version)))
+      await done
+      return a + b
     },
 
     async clear() {
       const tx = db.transaction(['kv', 'candles'], 'readwrite')
-      const range = () => IDBKeyRange.bound([accountKey], [accountKey, []])
-      tx.objectStore('kv').delete(range())
-      tx.objectStore('candles').delete(range())
+      tx.objectStore('kv').delete(accountRange())
+      tx.objectStore('candles').delete(accountRange())
       await txDone(tx)
     },
 

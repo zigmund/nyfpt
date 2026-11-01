@@ -166,7 +166,7 @@ describe('MainScreen', () => {
   })
 
   it('renders the period data and fetches prices again on period change', async () => {
-    const { repo } = makeApp()
+    const { repo } = makeApp({ prefs: { flowsOpen: true } })
     const w = mount(MainScreen)
     await flushPromises()
     expect(w.get('[data-test="v-big"]').text()).toBe(money(10580.4))

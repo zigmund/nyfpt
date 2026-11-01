@@ -79,6 +79,8 @@ export function createBroker({ cabinet, sid, fetchImpl }) {
       hloc({ id: tickers.join(','), count: -1, timeframe, date_from: hlocDate(dateFrom), date_to: hlocDate(dateTo) }),
     /** Security card (flat object, ~150 fields); anonymous like getHloc. */
     securityInfo: (ticker) => callAnon({ rest, cmd: 'getSecurityInfo', params: { ticker, sup: false }, fetchImpl }),
+    /** Instrument search by ticker or name: {found: [{t, nm, mkt, …}]}, at most 30; anonymous. */
+    tickerFinder: (text) => callAnon({ rest, cmd: 'tickerFinder', params: { text }, fetchImpl }),
     marketStatus: () => callAnon({ rest, cmd: 'getMarketStatus', params: { market: '*' }, fetchImpl }),
     checkSession: () => callLegacy({ rest, cmd: 'getSidInfo', sid, fetchImpl }),
     /** News by ticker ('AAPL.US'), newest first: {list, total, take, skip}. SID only. */

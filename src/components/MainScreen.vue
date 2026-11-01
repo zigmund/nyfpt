@@ -1,4 +1,4 @@
-<!-- Main screen: markets strip, value card (value, chart, periods, contributions),
+<!-- Main screen: markets strip, value card (value, chart, periods, contributions, cash flows),
      holdings (day / selected period) and cash flows. -->
 <template>
   <div class="screen">
@@ -25,11 +25,10 @@
       <ValueBlock :core="core" :stale="stale" :period="period" :current="current" />
       <PeriodPicker compare />
       <Contributions :positions="core?.positions || null" :stale="stale" />
+      <CashflowsCard :summary="core?.summary || null" :stale="stale" />
     </section>
 
     <Holdings :core="core" :stale="stale" :period="period" />
-
-    <CashflowsCard :summary="core?.summary || null" :stale="stale" />
   </div>
 </template>
 

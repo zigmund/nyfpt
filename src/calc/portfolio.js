@@ -141,10 +141,10 @@ export const computeCore = (positions, trades, cashflows, prices) => {
 /** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей.
  *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
  *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
- *  по барам SP500.IDX за этот день. */
-export const computeMarkets = (mkt_daily, mkt_intraday, clock, today) => {
+ *  по барам SP500.IDX за этот день.
+ *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row. */
+export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
-    const order = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'];
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
     // Anchor on the last intraday session: some tickers (NASDAQ.IDX) carry an extra daily bar dated after it

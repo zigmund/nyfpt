@@ -140,13 +140,15 @@ import { useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
 import { localDay } from '../calc/marketTime.js'
 import { PERIODS } from '../calc/periods.js'
-import { chartRows, chartSource, rangePos } from '../calc/position.js'
+import { CHART_PERIOD, chartRows, chartSource, rangePos } from '../calc/position.js'
+import { DATASET } from '../data/repo.js'
 import PriceChart from './PriceChart.vue'
 
 const props = defineProps({
   /** reactive usePosition() result */
   pos: { type: Object, required: true },
-  period: { type: String, default: '1D' },
+  /** chart period code (CHART_PERIOD value) */
+  period: { type: String, default: CHART_PERIOD['1d'] },
 })
 const emit = defineEmits(['price-visible'])
 
@@ -206,7 +208,7 @@ const closed = computed(() => {
 })
 
 // Placeholders until the data arrives, so the card has its final layout from the first frame.
-const CORE_ERRS = ['positions', 'trades', 'candles', 'sparks']
+const CORE_ERRS = [DATASET.positions, DATASET.trades, DATASET.candles, DATASET.sparks]
 const plausible = computed(() => {
   const st = app.state.value
   const tk = ticker.value

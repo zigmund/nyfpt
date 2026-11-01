@@ -527,6 +527,7 @@ HTTP-статусы:
   - Ответ: `{found:[{instr_id, nm, n, ln, t (тикер), isin, type, kind, tn, code_nm, mkt_id, mkt, x_curr, base_currency, min_step, x_lot, …}]}`.
   - type/kind: 1/1 обыкн. акции, 1/2 прив., 1/7 паи, 2 облигации, 3 фьючерс, 5 индекс, 6/1 деньги, 6/8 крипто, 8–10 репо.
   - [MCP]: результаты ограничены «tradeable universe» вызывающего.
+  - [ПРОВЕРЕНО 2026-11-01, Task 38]: `nm` == `n` — отображаемое имя; `ln` чаще `null` или имя эмитента, обрезанное на полуслове; `code_nm` — тикер без суффикса (`DIA`, `NVDA_KZ`); `t` — полный тикер; есть `mkt` и `x_curr`. Поиск нечёткий (в выдаче бывают слабо похожие бумаги). Приложение берёт имя `nm` → `n` → `ln`, подпись карточки — `code_nm`.
 - **`getAllSecurities`** — справочник бумаг; авторизация (SID по доке, HMAC по MCP); **10 запросов в минуту**.
   - Параметры: `take`, `skip`, `sort:[{field,dir}]`, `filter:{filters:[{field,operator,value}]}`.
   - Поля: `ticker`, `instr_type`, `instr_kind`, `instr_kind_с`, `code_sec`, `code_rep`, `code_nm`, `name`, `reg_nb`, `issue_nb`, `face_curr_c`, `mkt_id`, `mkt_name`, `mkt_short_code`, `fv`, `step_price`, `x_short`.
@@ -570,6 +571,7 @@ POST https://tradernet.kz/api/getHloc
 - `ClosedRay` при `timeframe >= 1440` заменяет `date_to` на текущую дату [ДОКА, ПРОВЕРЕНО: вернулось больше свечей, чем просили].
 - Tick-режим (`timeframe:-1`): `{"FB.US":{"series":[{"t":"2026-05-25 10:10:01","p":"123.45","q":"10"}],"info":{…}},"took":…}`. Это и есть раздел «Получение трейдов» (`get-trades`).
 - Ошибки: `{"error":"Incorrect date"}`, `{"error":"Не найдены инструменты по тикерам: BAD.US"}`, `{"error":"Bad request"}`.
+- [ПРОВЕРЕНО 2026-11-01, Task 38] Неизвестный тикер в мульти-запросе валит **весь** запрос: `SP500.IDX,ZZZQX.US` → ошибка с текстом `Failed to find instruments by tickers: ZZZQX.US` (язык текста зависит от кабинета; кода ошибки не видели). Приложение (repo.js `hlocTolerant`) ищет в тексте свои тикеры целыми словами, исключает названные и повторяет запрос; без названных — по одному тикеру последовательно.
 - ⚠️ PHP SDK шлёт `timeStart` и `timeEnd` вместо `date_from` и `date_to`. Python SDK шлёт `intervalMode:"OpenRay"`. [MCP]: «Only 'ClosedRay' is accepted».
 
 ### 5.5. Сделки — `getTradesHistory` (подробно)

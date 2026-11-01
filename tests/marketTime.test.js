@@ -377,7 +377,7 @@ describe('owner rule: sessions start at the broker pre-open (p - dt), end at the
     const sp = daySparks(stock, IDX, clock, '2026-10-31')['AAA.US']
     expect(sp.spark).toEqual(d1.map((r) => r.close))
     const daily = ['SP500.IDX', 'USO.US'].flatMap((t) => [{ ticker: t, date: '2026-10-29', ts: 1, close: 1 }, { ticker: t, date: '2026-10-30', ts: 2, close: 2 }])
-    const strip = computeMarkets(daily, [...IDX, ...stock.map((r) => ({ ...r, ticker: 'USO.US' }))], clock, '2026-10-31')
+    const strip = computeMarkets(daily, [...IDX, ...stock.map((r) => ({ ...r, ticker: 'USO.US' }))], clock, '2026-10-31', ['SP500.IDX', 'USO.US'])
     expect(strip.find((r) => r.ticker === 'USO.US').spark).toEqual(d1.map((r) => r.close))
   })
 })
