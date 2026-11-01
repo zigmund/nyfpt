@@ -26,8 +26,31 @@ describe('mergeQuote', () => {
     const m = mergeQuote(undefined, snap);
     expect(m).toEqual(snap);
     const m2 = mergeQuote(m, { c: 'AAA.US', ltp: 101 });
-    expect(m2).toEqual({ c: 'AAA.US', ltp: 101, pp: 98, chg: 2 });
+    expect(m2).toEqual({ c: 'AAA.US', ltp: 101, pp: 98, chg: 3, pcp: (3 / 98) * 100 }); // chg / pcp follow ltp (Task 42)
     expect(m).toEqual(snap);
+  });
+
+  // Task 42 fix round 1: a delta may carry ltp without chg; the previous close must not move with it.
+  it('an ltp-only delta keeps the previous close: chg and pcp follow the new ltp', () => {
+    const snap = { c: 'EEE.EU', ltp: 100.5, chg: -2.5, pcp: -2.43, pp: 97.1 };
+    const m = mergeQuote(snap, { c: 'EEE.EU', ltp: 104 });
+    expect(m.ltp).toBe(104);
+    expect(m.chg).toBeCloseTo(1, 9);
+    expect(m.pcp).toBeCloseTo((1 / 103) * 100, 9);
+    expect(m.pp).toBe(97.1);
+    expect(quotePrevClose(m)).toBeCloseTo(103, 9);
+    // the next ltp-only tick: still 103
+    expect(quotePrevClose(mergeQuote(m, { c: 'EEE.EU', ltp: 99 }))).toBeCloseTo(103, 9);
+  });
+
+  it('a delta with ltp and chg (and pcp) is taken as sent; without a known chg nothing is derived', () => {
+    const snap = { c: 'A', ltp: 100, chg: 2, pcp: 2.04 };
+    expect(mergeQuote(snap, { c: 'A', ltp: 101, chg: 3.5 })).toMatchObject({ ltp: 101, chg: 3.5 });
+    expect(mergeQuote(snap, { c: 'A', ltp: 101, chg: 3, pcp: 3.06 })).toEqual({ c: 'A', ltp: 101, chg: 3, pcp: 3.06 });
+    expect(mergeQuote({ c: 'B', ltp: 10, pp: 9 }, { c: 'B', ltp: 11 })).toEqual({ c: 'B', ltp: 11, pp: 9 });
+    // no usable previous close (an index of zeros): the stale chg / pcp are dropped, not kept
+    expect(mergeQuote({ c: 'C', ltp: 0, chg: 0, pcp: 0, pp: 0 }, { c: 'C', ltp: 5 })).toEqual({ c: 'C', ltp: 5, pp: 0 })
+    expect(mergeQuote(snap, { c: 'A', pcp: 1 })).toEqual({ ...snap, pcp: 1 }); // no ltp in the delta
   });
 });
 

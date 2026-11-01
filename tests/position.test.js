@@ -421,6 +421,13 @@ describe('calc', () => {
     expect(keyStats({})).toMatchObject({ prevClose: null, open: null, low52: null, avgVolume: null, kind: null })
   })
 
+  it('chartRows 1D/5D without any session window: weekend bars are still not a session (Task 42)', () => {
+    const at = (d, h) => ({ ts: TS(d, h), date: d, open: h, high: h, low: h, close: h, vol: 1 })
+    const intraday = [at('2026-10-29', 9), at('2026-10-30', 9), at('2026-10-30', 10), at('2026-10-31', 12), at('2026-11-01', 0)]
+    expect(chartRows('1D', { intraday }, {}).map((r) => r.date)).toEqual(['2026-10-30', '2026-10-30'])
+    expect(new Set(chartRows('5D', { intraday }, {}).map((r) => r.date))).toEqual(new Set(['2026-10-29', '2026-10-30']))
+  })
+
   it('keyStats: Previous close = ltp - chg when the info has chg (Task 42), else pp', () => {
     expect(keyStats({ info: { ...INFO, ltp: 110, chg: 4, pp: 97 } }).prevClose).toBe(106)
     expect(keyStats({ info: { ltp: 0, pp: 0, chg: 0, pcp: 0 } }).prevClose).toBeNull() // index info

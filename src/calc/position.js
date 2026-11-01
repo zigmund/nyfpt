@@ -1,7 +1,7 @@
 // Position card: candles, chart windows, key statistics and My holdings. Pure functions over
 // broker answers (getSecurityInfo, getHloc, getPositionJson `ps`); numbers may come as strings.
 import { positionFactor, quotePrevClose } from './live.js'
-import { axisDate, axisToUtc, barSeconds, localParts, sessionWindow } from './marketTime.js'
+import { axisDate, axisToUtc, barSeconds, isSessionDay, localParts, sessionWindow } from './marketTime.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -98,7 +98,7 @@ export function chartStart(period, today) {
  * market `clock` and `today`), each with the user's local
  * `min` (minutes since midnight), `ldate` and `zone` label; the sessions are the last dates that
  * still have such bars (a day with only bars before the pre-open is skipped). Without any
- * bounds all bars stay.
+ * bounds all bars of weekdays stay.
  * Daily: rows after the period start plus the last close at or before it (the baseline).
  * @param {{today?: string, sessions?: Map|null, clock?: object|null, timeZone?: string}} opts
  *   clock: marketClockFor(...) of the security's market; timeZone: display zone (default: browser)
@@ -113,9 +113,10 @@ export function chartRows(period, { intraday, daily, max } = {}, { today, sessio
       const p = localParts(at, timeZone)
       return { ...r, min: p.min, ldate: p.date, zone: p.zone }
     }
+    // Without a window: every bar of a session day (never a weekend: marketTime.isSessionDay).
     const inSession = (intraday || []).flatMap((r) => {
       const b = win && win(r.date)
-      if (b && (r.ts < b[0] || r.ts > b[1])) return []
+      if (b ? r.ts < b[0] || r.ts > b[1] : !isSessionDay(r.date)) return []
       return [local(r)]
     })
     // The last sessions that have bars in the session: pre-market-only days do not count.

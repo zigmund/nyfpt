@@ -948,17 +948,20 @@ describe('repo', () => {
     expect(st3.quotes).toBe(st.quotes) // the same Map between emits (no new object per read)
   })
 
-  it('position quotes: TTL.quotes, refetched when the positions change; a failure keeps the snapshot', async () => {
+  it('position quotes: TTL.positionQuotes, refetched when the positions change; a failure keeps the snapshot', async () => {
     const b = fakeBroker()
     b.quoteRows = { 'AAA.US': { ltp: 110, chg: -2 } }
     const repo = mk(b)
     let st
     repo.subscribe((s) => { st = s })
     await repo.load()
-    clock += TTL.quotes - 1
+    expect(TTL.positionQuotes).toBe(5 * 60e3) // outside live the prices stand still; leaving live forces a fetch (useApp)
+    clock += TTL.positionQuotes - 1
     await repo.refresh()
     expect(b.calls.quotes).toHaveLength(1)
     clock += 1
+    await repo.refresh({ except: ['quotes'] }) // while live: skipped
+    expect(b.calls.quotes).toHaveLength(1)
     await repo.refresh()
     expect(b.calls.quotes).toHaveLength(2)
     const ps = clone(fx.getPositionJson.result.ps)

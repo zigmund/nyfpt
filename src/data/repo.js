@@ -36,7 +36,7 @@ export const DATASET = Object.freeze({
 const DATASETS = Object.values(DATASET).filter((n) => n !== DATASET.candles) // kv datasets
 const TTL_OF = {
   clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.markets, sparks: TTL.sparks,
-  quotes: TTL.quotes,
+  quotes: TTL.positionQuotes,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades', 'quotes'])
 const QUOTE_FIELDS = ['c', 'ltp', 'chg', 'pcp', 'pp', 'ltr'] // kept from a position quote
@@ -677,9 +677,10 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     return out
   }
 
-  async function refresh({ force = false, only } = {}) {
+  /** TTL-gated (or `force`d) refresh of `only` (default: all kv datasets) minus `except`. */
+  async function refresh({ force = false, only, except = [] } = {}) {
     await loadCache()
-    const names = (only || DATASETS).filter((n) => DATASETS.includes(n))
+    const names = (only || DATASETS).filter((n) => DATASETS.includes(n) && !except.includes(n))
     const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n]
       || ((n === 'sparks' || n === 'quotes') && outdated(n)) || (n === 'markets' && marketsOutdated()))
     await Promise.all(due.map(refreshOne))

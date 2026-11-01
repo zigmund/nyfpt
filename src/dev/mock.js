@@ -240,7 +240,9 @@ function step(tk) {
   const p = priceOf(tk)
   p.ltp *= 1 + (Math.random() - 0.5) * 0.003
   const { c, ltp, chg, pcp } = quote(tk)
-  return { c, ltp, chg, pcp }
+  // Every third delta carries ltp alone (WS deltas send only changed fields; whether chg always
+  // comes with ltp is unverified): calc/live mergeQuote must keep the previous close.
+  return Math.random() < 1 / 3 ? { c, ltp } : { c, ltp, chg, pcp }
 }
 
 const FUNDS = new Set(['SPY.US', 'QQQ.US', 'USO.US', 'GLD.US', 'SLV.US'])

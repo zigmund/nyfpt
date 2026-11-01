@@ -115,10 +115,11 @@ onUnmounted(() => clearInterval(timer))
 const learned = ref(null) // zone seen in an article (getNewsDetail timeZone)
 const timeOf = (x, date) => newsTime(date, newsOffset(x, { learned: learned.value, clock: props.clockOffset }), now.value)
 
-/** Day change % from a cached quote (live stream), else the broker position (calc/live dayChangePct). */
+/** Day change % from a cached quote (live stream, else the repo's position quote snapshot, as in
+ *  Holdings), else the broker position (calc/live dayChangePct). */
 function changeOf(tk) {
   void app.tick?.value
-  const q = app.live?.quotes?.get?.(tk)
+  const q = app.live?.quotes?.get?.(tk) ?? app.state?.value?.quotes?.get?.(tk)
   const p = (app.state?.value?.rawPs?.pos || []).find((x) => x.i === tk)
   return dayChangePct({ last: n(q?.ltp) ?? n(p?.mkt_price), prev: quotePrevClose(q) ?? n(p?.close_price), pct: q?.pcp })
 }

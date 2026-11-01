@@ -354,6 +354,8 @@ describe('scheduled refresh', () => {
     repo.ensurePrices.mockClear()
     await fire()
     expect(repo.refresh).toHaveBeenCalledTimes(1)
+    // the position quote snapshot is not refetched while live quotes stream (Task 42)
+    expect(repo.refresh).toHaveBeenCalledWith({ except: ['quotes'] })
     expect(repo.ensurePrices).not.toHaveBeenCalled()
   })
 
@@ -412,10 +414,13 @@ describe('scheduled refresh', () => {
     onUpdate()
     await flushPromises()
     expect(repo.ensurePrices).not.toHaveBeenCalled()
+    repo.refresh.mockClear()
     live = false
     onUpdate()
     await flushPromises()
     expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+    // the session's final prices: the position quote snapshot at once (Task 42)
+    expect(repo.refresh).toHaveBeenCalledWith({ force: true, only: ['quotes'] })
 
     live = true
     onUpdate()

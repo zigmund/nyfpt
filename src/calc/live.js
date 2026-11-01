@@ -51,8 +51,25 @@ export const dayChangePct = ({ last = null, prev = null, pct = null } = {}) => {
   return num(pct);
 };
 
-/** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object. */
-export const mergeQuote = (prev, delta) => ({ ...(prev || {}), ...(delta || {}) });
+/** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object.
+ *  A delta with `ltp` but no `chg` (not seen, not ruled out) must not move the previous close
+ *  (quotePrevClose = ltp - chg): chg and pcp are re-derived from the old previous close; without
+ *  a usable one the stale chg / pcp are dropped. */
+export const mergeQuote = (prev, delta) => {
+  const out = { ...(prev || {}), ...(delta || {}) };
+  if (!prev || !delta || num(delta.ltp) === null || delta.chg != null) return out;
+  const pl = num(prev.ltp);
+  const pc = num(prev.chg);
+  const base = pl !== null && pc !== null ? pl - pc : null;
+  if (base !== null && base > 0) {
+    out.chg = num(delta.ltp) - base;
+    if (delta.pcp == null) out.pcp = (out.chg / base) * 100;
+  } else {
+    delete out.chg;
+    if (delta.pcp == null) delete out.pcp;
+  }
+  return out;
+};
 
 /** Price multiplier `k` and USD rate `fx` of a raw position (see holdingsRows); usd = USD currval. */
 export const positionFactor = (p, usd = 1) => {

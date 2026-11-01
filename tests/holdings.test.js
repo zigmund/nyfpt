@@ -794,6 +794,27 @@ describe('dev mock (?mock) on a weekend', () => {
     expect(d.filter((r) => r.ticker === 'AAA.US').at(-1).date).toBe('2026-10-30')
   })
 
+  it('socket deltas: some carry ltp alone; merged quotes keep the previous close (fix round 1)', async () => {
+    vi.setSystemTime(Date.parse('2026-10-28T15:00:00Z')) // Wednesday: ticks run
+    const { MockSocket } = await import('../src/dev/mock.js')
+    const { mergeQuote, quotePrevClose } = await import('../src/calc/live.js')
+    const sock = new MockSocket()
+    const seen = []
+    sock.on('quote', (q) => seen.push(q))
+    sock.setQuotes(['AAA.US'])
+    sock.connect()
+    await vi.advanceTimersByTimeAsync(120e3)
+    sock.close()
+    const [snap, ...deltas] = seen
+    expect(deltas.some((d) => d.chg === undefined)).toBe(true)
+    expect(deltas.some((d) => d.chg !== undefined)).toBe(true)
+    let q = snap
+    for (const d of deltas) {
+      q = mergeQuote(q, d)
+      expect(quotePrevClose(q)).toBeCloseTo(quotePrevClose(snap), 1)
+    }
+  })
+
   it('weekday: FIX still open (live mock), no weekend bars', async () => {
     vi.setSystemTime(Date.parse('2026-10-28T15:00:00Z')) // Wednesday
     const { createMockBroker } = await import('../src/dev/mock.js')
