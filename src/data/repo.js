@@ -401,10 +401,15 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
             const mc = marketClockFor(clock(), mkt)
             const m = regularCloses(own, mc, at)
             for (const d of m.keys()) sessions.add(d)
-            got.set(t, { mc, m })
+            // Judged only when asked and readable: with bars, the market's hours must be known;
+            // without bars, the ticker must have been in the request (hlocTolerant skips a ticker
+            // rejected alone for a while; a ticker the broker named unknown counts as asked).
+            const judged = own.length ? !!mc && mc.dt != null : !(skipUntil.get(t) > now())
+            got.set(t, { mc, m, judged })
           }
           for (const t of tickers) {
-            const { mc, m } = got.get(t)
+            const { mc, m, judged } = got.get(t)
+            if (!judged) continue // asked again later
             // A market without a regular close (KASE, EU): nothing to wait for. Otherwise a date
             // without this ticker's close is remembered as null (not asked again: not listed yet,
             // halted) only when other tickers of the same answer had that session; else (the

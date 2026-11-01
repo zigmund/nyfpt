@@ -4,6 +4,7 @@ import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { openAccountDb } from '../src/store/db.js'
+import { BrokerError } from '../src/api/transport.js'
 import { createRepo } from '../src/data/repo.js'
 import { holdingsRows, holdingsTotal } from '../src/calc/live.js'
 
@@ -64,6 +65,8 @@ function fakeBroker() {
     // with the after-hours trade from 16:00. The axis carries the exchange wall clock (docs §5.4).
     async hlocIntraday(tickers, dateFrom, dateTo, tf) {
       if (tf === 60) calls.hourly.push({ tickers: [...tickers], dateFrom, dateTo })
+      const err = tf === 60 && b.hourlyError?.(tickers)
+      if (err) throw err
       const a = { hloc: {}, xSeries: {}, info: {} }
       for (const t of tickers) {
         const xs = []
@@ -78,7 +81,8 @@ function fakeBroker() {
             hl.push([c, c, c, c])
           }
         })
-        a.info[t] = { mkt_name: mktOf(t), mrkt: MRKT[mktOf(t)] }
+        const odd = tf === 60 && b.oddMarket?.has(t) // a market whose hours the repo does not know
+        a.info[t] = odd ? { mkt_name: 'ODD' } : { mkt_name: mktOf(t), mrkt: MRKT[mktOf(t)] }
         a.hloc[t] = hl
         a.xSeries[t] = xs
       }
@@ -151,6 +155,35 @@ describe('regular closes in the repo (Task 51)', () => {
     await repo.ensurePrices('7d', '2026-11-02')
     expect(b.calls.hourly).toHaveLength(3)
     expect(repo.coreFor('7d', '2026-11-02').summary.spy).toBeCloseTo((595 / 600 - 1) * 100, 2)
+  })
+
+  // Fix round 2: null only for a ticker that was asked and judged.
+  const storedQqq = async () => ((await db.getKv('regular')).data.closes['QQQ.US'] || {})
+
+  it('a ticker left out of the request (rejected alone, skipped for a while) is not cached as null', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.load()
+    await repo.ensurePrices('1d')
+    // the combined request and QQQ.US alone fail without naming a ticker; SPY.US alone has bars
+    b.hourlyError = (ts) => (ts.length > 1 || ts[0] === 'QQQ.US' ? new BrokerError('Bad request') : null)
+    await repo.ensurePrices('7d', '2026-11-02')
+    expect(await storedQqq()).not.toHaveProperty('2026-10-26')
+    expect((await db.getKv('regular')).data.closes['SPY.US']['2026-10-26']).toBe(600)
+  })
+
+  it('bars of a market with unknown hours are not judged: no null, asked again later', async () => {
+    const b = fakeBroker()
+    b.oddMarket = new Set(['QQQ.US'])
+    const repo = mk(b)
+    await repo.load()
+    await repo.ensurePrices('1d')
+    expect(await storedQqq()).toEqual({})
+    b.calls.hourly.length = 0
+    b.oddMarket = new Set()
+    await repo.ensurePrices('1d')
+    expect(b.calls.hourly).toEqual([{ tickers: ['QQQ.US'], dateFrom: '2026-10-29', dateTo: '2026-10-31' }])
+    expect(await storedQqq()).toEqual({ '2026-10-29': 503, '2026-10-30': 497 })
   })
 
   it('the position quote snapshot keeps ClosePrice and ltt; a snapshot of the old shape is fetched again', async () => {

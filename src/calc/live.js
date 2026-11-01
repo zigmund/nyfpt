@@ -161,7 +161,10 @@ export const regularQuote = (q, mc, closes = null) => {
   if (bar !== null) {
     const pbar = cl.get(before(day)) ?? null
     price = names(cp, bar, pbar) ? cp : bar
-    prev = pbar !== null ? (names(pq, pbar, bar) ? pq : pbar) : ph.phase === 'post' ? pq : null
+    // No bar of the session before: after the close the official prev, unless it names the
+    // price's session too (within REGULAR_MATCH of the price).
+    const same = pq !== null && Math.abs(pq - price) <= REGULAR_MATCH * price
+    prev = pbar !== null ? (names(pq, pbar, bar) ? pq : pbar) : ph.phase === 'post' && !same ? pq : null
   } else if (ph.phase === 'post' && cp !== null) {
     price = cp
     prev = pq

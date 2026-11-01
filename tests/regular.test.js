@@ -271,3 +271,14 @@ describe('regularCloses: a bar still forming when the bars were fetched', () => 
     expect(regularCloses(rows, US).get('2026-10-30')).toBe(125) // fetch time unknown: not judged
   })
 })
+
+describe('regularQuote after hours with only the day\'s bar (fix round 2)', () => {
+  it('a prev naming the same session as the price is no previous close', () => {
+    const only = new Map([['2026-10-30', 100.33]])
+    // pp rolled to a value of Friday that differs from ClosePrice by cents: not Thursday's close
+    expect(regularQuote({ ltp: 100.5, chg: 0.18, pp: 100.32, ClosePrice: 100.3, ltt: '2026-10-30T17:00:00' }, US, only))
+      .toMatchObject({ price: 100.3, prev: null })
+    expect(regularQuote({ ltp: 100.5, chg: 0.5, pp: 100, ClosePrice: 100.3, ltt: '2026-10-30T17:00:00' }, US, only))
+      .toMatchObject({ price: 100.3, prev: 100 })
+  })
+})
