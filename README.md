@@ -44,9 +44,21 @@ Broker API reference: `docs/tradernet-api.md`.
 
 ## Run locally in Docker
 
-Requires Docker only (Node is not needed on the host). The image builds the app, runs the
-tests (the build fails if they fail), and serves `dist/` with nginx as a non-root user on
-port 8080.
+Requires Docker only (Node is not needed on the host). The image serves the built `dist/` with
+nginx as a non-root user on port 8080.
+
+Prebuilt image (linux/amd64 and linux/arm64, published by CI from main and release tags):
+
+```sh
+docker run --rm -p 8080:8080 zigmund/nyfpt
+```
+
+- Tags: `latest` is the main branch; versions are `vX.Y.Z` release tags and `sha-xxxxxxx`
+  commit tags.
+- Hardened variant with a read-only root filesystem: `docker run --rm --read-only --tmpfs /tmp -p 8080:8080 zigmund/nyfpt`.
+- Image page: https://hub.docker.com/r/zigmund/nyfpt
+
+Or build from source. The build runs the tests (the build fails if they fail):
 
 ```sh
 docker build -t nyfpt .
@@ -59,10 +71,10 @@ Open http://localhost:8080/ and log in with your broker account. Health check:
 - Optional version label (shown in Settings): `docker build --build-arg APP_VERSION=1.0 -t nyfpt .`
   (default `dev`).
 - Another host port: `-p 18080:8080`, then open http://localhost:18080/.
-- The image also runs with a read-only root filesystem:
+- The source build also runs with a read-only root filesystem:
   `docker run --rm --read-only --tmpfs /tmp -p 8080:8080 nyfpt`.
 - Run in the background: add `-d --name nyfpt`, stop with `docker stop nyfpt`.
-- On Apple Silicon no `--platform` flag is needed for a local run.
+- On Apple Silicon no `--platform` flag is needed for either option.
 - The `?mock` fake broker is a dev-server feature only; it is not in the production image.
   To try the app without an account, use `./scripts/serve.sh` (see below).
 
