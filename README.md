@@ -53,8 +53,8 @@ Prebuilt image (linux/amd64 and linux/arm64, published by CI from main and relea
 docker run --rm -p 8080:8080 zigmund/nyfpt
 ```
 
-- Tags: `latest` is the main branch; versions are `vX.Y.Z` release tags and `sha-xxxxxxx`
-  commit tags.
+- Tags: `latest` is the main branch; release versions are `X.Y.Z` (from git tags `vX.Y.Z`)
+  and `sha-xxxxxxx` are commit tags.
 - Hardened variant with a read-only root filesystem: `docker run --rm --read-only --tmpfs /tmp -p 8080:8080 zigmund/nyfpt`.
 - Image page: https://hub.docker.com/r/zigmund/nyfpt
 
