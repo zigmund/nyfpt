@@ -12,6 +12,7 @@
       </section>
       <SettingsScreen v-else-if="route === '/settings'" />
       <CompareScreen v-else-if="route === '/compare'" />
+      <PositionScreen v-else-if="card" :key="card.ticker" :ticker="card.ticker" :tab="card.tab" />
       <MainScreen v-else />
     </div>
     <LoginScreen v-if="expired" overlay />
@@ -19,16 +20,18 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import LoginScreen from './components/LoginScreen.vue'
 import SettingsScreen from './components/SettingsScreen.vue'
 import MainScreen from './components/MainScreen.vue'
 import CompareScreen from './components/CompareScreen.vue'
+import PositionScreen from './components/PositionScreen.vue'
 import { t } from './i18n.js'
-import { useApp } from './composables/useApp.js'
+import { useApp, positionRoute } from './composables/useApp.js'
 
 const app = useApp()
 const { session, expired, fatal, route, logout } = app
+const card = computed(() => positionRoute(route.value))
 
 const retrying = ref(false)
 async function retry() {

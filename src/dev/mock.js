@@ -1,7 +1,7 @@
 // Dev-only fake broker and socket, enabled by `?mock` in `npm run dev`.
 // Positions, trades and cashflows come from tests/fixtures/synthetic-api.json; daily and
-// intraday candles are generated deterministically so that each ticker's latest close equals
-// its last close in the fixture. The socket reports market FIX as OPEN and streams quote deltas.
+// intraday candles (with volumes) are generated deterministically so that each ticker's latest
+// close equals its last close in the fixture; getSecurityInfo is synthesized from them. The socket reports market FIX as OPEN and streams quote deltas.
 // main.js imports this module dynamically under `import.meta.env.DEV`: never in production builds.
 import fixture from '../../tests/fixtures/synthetic-api.json'
 
@@ -52,14 +52,18 @@ function dailyCloses(tk, fromMs, endMs = lastSession()) {
 
 const candle = (open, close) => [r2(Math.max(open, close) * 1.004), r2(Math.min(open, close) * 0.996), r2(open), r2(close)]
 
-function hlocAnswer(series) {
+const volume = (tk, ms, scale) => Math.round(scale * (0.5 + rand(`${tk}|v|${ms}`)))
+
+function hlocAnswer(series, scale) {
   const hloc = {}
   const xSeries = {}
+  const vl = {}
   for (const [tk, rows] of Object.entries(series)) {
     hloc[tk] = rows.map((r) => r.c)
     xSeries[tk] = rows.map((r) => Math.round(r.ts / 1000))
+    vl[tk] = rows.map((r) => volume(tk, r.ts, scale))
   }
-  return { hloc, xSeries }
+  return { hloc, xSeries, vl }
 }
 
 function hlocDaily(tickers, dateFrom, count = -6) {
@@ -70,7 +74,7 @@ function hlocDaily(tickers, dateFrom, count = -6) {
     const closes = dailyCloses(tk, from)
     series[tk] = closes.map(([ms, c], i) => ({ ts: ms, c: candle(i ? closes[i - 1][1] : c, c) }))
   }
-  return hlocAnswer(series)
+  return hlocAnswer(series, 2e6)
 }
 
 // 15-minute bars 09:30-15:45 New York time, encoded like the broker (wall clock as UTC).
@@ -95,7 +99,7 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
       }
     })
   }
-  return hlocAnswer(series)
+  return hlocAnswer(series, 8e4)
 }
 
 // --- live prices shared by the broker snapshot and the socket deltas
@@ -120,6 +124,32 @@ function step(tk) {
   return { c, ltp, chg, pcp }
 }
 
+const FUNDS = new Set(['SPY.US', 'QQQ.US', 'USO.US', 'GLD.US', 'SLV.US'])
+
+/** getSecurityInfo-like flat object (subset of fields the card reads). */
+function securityInfo(tk) {
+  const { ltp, pp } = priceOf(tk)
+  const kz = tk.endsWith('.KZ')
+  const now = Date.now()
+  return {
+    c: tk,
+    name: names[tk] || tk,
+    ltp: r2(ltp),
+    pp: r2(pp),
+    ClosePrice: r2(pp),
+    chg: r2(ltp - pp),
+    pcp: r2(((ltp - pp) / pp) * 100),
+    mintp: r2(Math.min(ltp, pp) * 0.992),
+    maxtp: r2(Math.max(ltp, pp) * 1.006),
+    vol: volume(tk, lastSession(now), 2e6),
+    kind: FUNDS.has(tk) ? 7 : 1,
+    x_curr: kz ? 'KZT' : 'USD',
+    codesub_nm: kz ? 'KASE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
+    ltr: kz ? 'KASE' : MARKET,
+    ltt: new Date(now - 4 * 3600e3).toISOString().slice(0, 19),
+  }
+}
+
 const MARKETS = () => ({
   t: new Date().toISOString().slice(0, 19).replace('T', ' '),
   m: [{ mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', o: '09:30:00', c: '16:00:00', dt: '0' }],
@@ -134,6 +164,7 @@ export function createMockBroker() {
         p.mkt_price = r2(priceOf(p.i).ltp)
         p.close_price = r2(priceOf(p.i).pp) // previous close: Day % / Day $ outside live mode
         p.market_value = r2(p.q * p.mkt_price)
+        p.bal_price_a = r2(p.mkt_price * (0.85 + rand(`${p.i}|cost`) * 0.25)) // average cost
       }
       return a
     },
@@ -147,6 +178,7 @@ export function createMockBroker() {
     async quotes(tickers) { await wait(150); return { result: { q: tickers.map(quote) } } },
     async hlocDaily(tickers, dateFrom, count) { await wait(); return hlocDaily(tickers, dateFrom, count) },
     async hlocIntraday(tickers, dateFrom, dateTo, tf) { await wait(); return hlocIntraday(tickers, dateFrom, dateTo, tf) },
+    async securityInfo(tk) { await wait(200); return securityInfo(tk) },
     async marketStatus() { await wait(150); return { result: { markets: MARKETS() } } },
     async checkSession() { return { SID: 'mock-sid', user_id: 'mock' } },
   }

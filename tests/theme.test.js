@@ -199,6 +199,18 @@ describe('contrast (WCAG AA)', () => {
     // Text colors in the stylesheet never use the bright (graphics-only) pos/neg tokens.
     expect(css).not.toMatch(/(^|[^-])color:\s*var\(--c-(pos|neg)\)/m)
   })
+  it('holdings change pills: text on the pill fill >= 4.5 in both themes, pills use the pill tokens', () => {
+    for (const [name, p] of [['light', lightT], ['dark', darkTokens()]]) {
+      for (const b of ['c-pill-pos', 'c-pill-neg']) {
+        expect(ratio(p['c-on-pill'], p[b]), `${name}: c-on-pill on ${b}`).toBeGreaterThanOrEqual(SMALL)
+      }
+      expect(ratio(p['c-fg'], p['c-pill-flat']), `${name}: c-fg on c-pill-flat`).toBeGreaterThanOrEqual(SMALL)
+    }
+    const d = tokens(':root[data-theme="dark"]')
+    for (const k of ['c-pill-pos', 'c-pill-neg', 'c-pill-flat', 'c-on-pill']) expect(d[k], k).toBeTruthy()
+    expect(rule('.pill--pos')).toContain('background: var(--c-pill-pos)')
+    expect(rule('.pill--neg')).toContain('background: var(--c-pill-neg)')
+  })
   it('price flashes: down as strong as up', () => {
     const pct = (name) => /var\(--c-(?:pos|neg)\)\s+(\d+)%/.exec(rule(`@keyframes ${name}`))?.[1]
     expect(rule('@keyframes flash-down')).toContain('var(--c-neg)')

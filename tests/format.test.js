@@ -7,7 +7,11 @@ describe('format', () => {
   it('money', () => {
     expect(money(123456.78)).toBe('$123,456.78')
     expect(money(-1234, { sign: true })).toBe('−$1,234.00')
-    expect(money(5, { hide: true })).toBe('***')
+    expect(money(5, { hide: true })).toBe('$***')
+    expect(money(5, { hide: true, sign: true })).toBe('+$***')
+    expect(money(-5, { hide: true, sign: true })).toBe('\u2212$***')
+    expect(money(-5, { hide: true })).toBe('\u2212$***')
+    expect(money(0, { hide: true, sign: true })).toBe('$***')
     expect(money(5, { sign: true })).toBe('+$5.00')
   })
   it('pct', () => {

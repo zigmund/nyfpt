@@ -9,9 +9,8 @@ function parts(v) {
 }
 
 export function money(v, { hide = false, sign = false } = {}) {
-  if (hide) return '***'
   const { neg, abs } = parts(v)
-  const s = '$' + usd.format(abs)
+  const s = hide ? '$***' : '$' + usd.format(abs)
   if (neg) return MINUS + s
   return sign && abs > 0 ? '+' + s : s
 }

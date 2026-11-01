@@ -1,5 +1,5 @@
 <!-- Main screen: markets strip, value card (value, chart, periods, contributions),
-     holdings, cash flows and positions over the period. -->
+     holdings (day / selected period) and cash flows. -->
 <template>
   <div class="screen">
     <header class="topbar">
@@ -26,11 +26,9 @@
       <Contributions :positions="core?.positions || null" :stale="stale" />
     </section>
 
-    <Holdings />
+    <Holdings :core="core" :stale="stale" :period="period" />
 
     <CashflowsCard :summary="core?.summary || null" :stale="stale" />
-
-    <PeriodPositions :rows="core?.positions || null" :stale="stale" :positions="state?.positions || null" />
   </div>
 </template>
 
@@ -45,7 +43,6 @@ import ValueBlock from './ValueBlock.vue'
 import PeriodPicker from './PeriodPicker.vue'
 import Contributions from './Contributions.vue'
 import CashflowsCard from './CashflowsCard.vue'
-import PeriodPositions from './PeriodPositions.vue'
 import Holdings from './Holdings.vue'
 
 const app = useApp()
@@ -74,7 +71,7 @@ const updated = computed(() => {
 })
 
 // Short, non-blocking: which datasets failed to refresh (cached data stays on screen).
-const ERR_KEYS = new Set(['positions', 'trades', 'cashflows', 'markets', 'candles'])
+const ERR_KEYS = new Set(['positions', 'trades', 'cashflows', 'markets', 'candles', 'sparks'])
 const errorNames = computed(() => [...new Set(Object.keys(state.value?.errors || {})
   .map((k) => t(`main.err.${ERR_KEYS.has(k) ? k : 'other'}`)))].join(', '))
 </script>

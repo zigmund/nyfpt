@@ -702,13 +702,17 @@ POST https://tradernet.kz/api/getHloc
 - **`getCrossRatesForDate`** — публичная [ПРОВЕРЕНО]. Параметры: `base_currency`*, `currencies`* (массив), `date` (`YYYY-MM-DD`, опц., иначе сегодня). Ответ `{rates:{KZT:440.86, EUR:0.885…}}`, то есть единиц валюты за 1 базовую.
 - Раздел «Список валют» — статическая таблица кодов.
 
-### 5.11. Новости (V3)
+### 5.11. Новости (спайк Task 15, 2026-11-01)
 
-- `getNewsProvidersList {lang}` → `{list:[{alias, name, newsLanguage}]}`. Провайдеры: `fbrokerkz`, `Oninvest`, `OninvestCompanyNews`.
-- `getNewsList {ticker, provider, lang, take 1..100, skip}` → `{list:[{id, title, provider, providerAlias, lang, date, url, sentiment, tickers[], images[]}], total, take, skip}`.
-- `getNewsDetail {id}` → `{id, title, text (HTML), …, dateTime, timeZone}`.
-- Ошибки `{error:"Validation failed",code:400}`, `{error:"Новость не найдена",code:404}`.
-- [MCP] есть ещё `getCombinedNews` (ответ `items`).
+Проверено из браузера с чужого origin (`http://localhost:5173`), form POST `q={cmd,SID,params}` на `tradernet.global`, реальный счёт (viewOnly).
+
+- **Доступ**: через SID работает, CORS проходит **[ПРОВЕРЕНО]**. Анонимно (без SID) любой тикер/язык: HTTP 200 и `{"error":"Invalid CSRF","code":12}` **[НЕ РАБОТАЕТ]**. Вход нужен.
+- `getNewsList {ticker, lang, take, skip}` **[ПРОВЕРЕНО]** → `{list:[{id, title, provider, providerAlias, lang, date, url, sentiment (строка), tickers[], images[]}], total, take, skip}`. Тикер в формате `AAPL.US`. Сортировка: новые первыми. `take:10` — ~3.8 КБ, ~0.8 с. `date` — строка `YYYY-MM-DD HH:MM:SS` без зоны (в detail зона `+0300`). `url` бывает пустым/относительным или внешним (например, `finance.yahoo.com`). `images[]` — хост `tradernet.global` (при `img-src 'self' data:` блокируются, не показывать). Параметр `provider` не проверялся.
+- `getNewsDetail {id}` **[ПРОВЕРЕНО]** → `{id, title, text, provider, providerAlias, lang, dateTime, timeZone:"+0300", url, sentiment, tickers, images}`. ~7 КБ, ~0.24 с. `text` — полный текст, не тизер (HTML 4–11 тыс. знаков). Теги в выборке: `a, b, h2, i, p`; атрибуты `href, target`; `img/script/iframe/style/object/form` не встречались; относительных ссылок нет; ссылки ведут на `tap.tradernet.global`. Для KZ-новости текст без тегов (plain text).
+- **Языки** **[ПРОВЕРЕНО]**: `en` и `ru`. US-тикеры: AAPL.US en 3711 / ru 4186, SPY.US en 40 / ru 31 (разные наборы, не переводы). KZTO.KZ: en `total=0`, ru `total=3` (2024 год). Провайдеры: `Oninvest`, `OninvestCompanyNews`.
+- **Свежесть**: AAPL — новейшая 2026-10-31 11:01 (выходные), 10 штук за ~2 суток; SPY — новейшая 2026-10-19 (за ~13 дней до проверки), 40 за ~3 недели; KZTO — старые (2024).
+- `sentiment`: тип строка; набор значений **не проверен**.
+- Не проверено: `getNewsProvidersList`, `getCombinedNews`, пагинация дальше `skip=0`, лимиты частоты, ошибки 400 `Validation failed` / 404 `Новость не найдена` (взяты из документации), фильтр `provider`.
 
 ### 5.12. Списки бумаг (watchlists) и алерты
 
@@ -841,3 +845,57 @@ POST https://tradernet.kz/api/getHloc
     - отчёты — `YYYY-MM-DD`;
     - `getSecurityInfo.firstDate` — `MM.DD.YYYY`;
     - формат дат в фильтрах cashflows — не указан.
+
+---
+
+## 8. Данные о бумаге для карточки (спайк Task 22, 2026-10-31)
+
+Проверено анонимным form POST `q=` на `tradernet.global` с `Origin: https://portfolio.zigmund.xyz`: все ответы 200 с `access-control-allow-origin`, то есть читаются из браузера без SID. Тикеры: AAPL.US, MSFT.US, SPY.US, QQQ.US, KZTO.KZ, KSPI.KZ. WS-поля и SID-варианты не проверялись (нужен вход владельца).
+
+### 8.1. `getSecurityInfo {ticker, sup:false}` — одна бумага, 150 полей, плоский объект (без обёртки `result`)
+Числа — настоящие числа. Живое состояние на момент запроса, обновляется с биржей.
+
+| Что нужно | Поле | Заметки |
+|---|---|---|
+| последняя цена, время | `ltp`, `ltt` | `ltt` без TZ |
+| предыдущее закрытие | `pp` (приложение берёт его как Previous close) | AAPL.US, выходные 2026-10-31: `chg = ltp − pp` ровно (345.13 − 348.91 = −3.78), тогда как `ClosePrice` держал официальное закрытие пятницы. Семантика `pp`/`ClosePrice` во время живой US-сессии не проверена |
+| изменение за день | `chg` (абс.), `pcp` (%) | считаются от `pp` (см. выше), не от `ClosePrice` |
+| диапазон дня | `mintp`, `maxtp` | |
+| объём дня | `vol` (шт., включая пре/пост), `vlt` (сумма) | |
+| bid/ask | `bbp`, `bap` | на закрытом рынке может быть 0 |
+| доходность периодов | `chg1w/1m/6m/1y` (%), цены `p1w/p1m/p6m/p1y` | |
+| волатильность | `volatility7/30/90/180/365` (%) | это не beta |
+| прогнозные квантили | `target{7,30,90,180,365}_p{0.05..0.95}` | вероятностные коридоры в % к цене, не цели аналитиков |
+| тип | `kind`: 1 акция, 7 ETF/фонд | `type` всегда 1 |
+| валюта, рынок | `x_curr`, `ltr` (FIX/KASE), `codesub_nm` (NASDAQ/ARCA/KASE) | |
+| статус | `marketStatus` (`TECH`, `CLOSE`, …) | |
+| ISIN, описание | `issue_nb`, `x_descr` (русский текст) | |
+
+Ненадёжные поля: `op` (AAPL 140.98, SPY 393.1 — не дневное открытие; открытие брать из дневной свечи `getHloc`), `x_min`/`x_max` (у US-бумаг похожи на 52-недельный диапазон (AAPL 246.85/352.06 против 245.72/352.6 по свечам), у KZTO явно мусор 797/898.95 при цене 1386; считать 52w из `getHloc`), `mtd`, `ncd`.
+Нет: P/E, beta, market cap, дивидендная доходность, EPS, NAV, чистые активы, пре/пост-цена.
+
+`sup:true` — 11 полей (`id, short_name, currency, lot, mkt_name, firstDate` и `mrkt`). `mrkt` для US: `{p:"14:10:00" (пре-маркет с), o:"16:30:00" (open), c:"03:00:00", post:"23:00:00", dayoff, tz:"America/New_York", dt:420}`. Часы в серверной зоне, зависят от перевода часов (DST), использовать только справочно.
+
+### 8.2. `getStockData {ticker}` — «витрина» (shop), ~90 полей, ответ плоский
+Анонимно доступен, но данные витрины **устаревшие и точечные**: `market_cap` AAPL 2.46T (реально >5T), `investbank_recommendations` датированы 2023 (Goldman, Morgan Stanley… `{date,name,target,recommendation}`), `revenue`/`gross_profit` не соответствуют TTM, `dividend_income` строкой `"0,57%"`, `points[]`, `potential` (число-цель). Для KZTO/QQQ эти поля пустые, для KSPI.KZ `null`. Есть `attributes` (CUSIP, LEI, `CFICode`, `appropriateness_type: etf_regular`, `tradestart_date_EU`), `quotes` (строки, в том числе `limit_up/limit_down`, `volume_q`), `nrd_data` (справочник НРД: эмитент, управляющая компания и сайт фонда, размещённый объём), `text` (HTML, v-html запрещён), `logo` (путь на tradernet).
+Вывод: не годится как источник Key statistics и Analysis (stale, пустые для KZ и ETF). Можно брать: `nrd_data.issuer.name_full_en`, `issuesize` (число акций, для оценки капитализации умножением на `ltp`, при условии актуальности), `x_descr`/`text` как описание (только текстом).
+
+### 8.3. `getHloc` — свечи (CORS ок)
+- `timeframe:1440`, `count:-400`, `date_from:"01.01.2026 00:00"`, `date_to:"31.10.2026 00:00"` вернул 609 дневных свечей (с 2024-05, то есть `count` не ограничивает окно жёстко). Свеча `[high, low, open, close]`, `vl` — объём шт., `xSeries` — unix сек (дневная свеча = 21:00 UTC предыдущих суток).
+- 52-недельный диапазон: max high / min low по последним ~252 свечам (AAPL 352.6 / 245.72). Средний объём: среднее `vl` по последним 63 свечам (AAPL ~19.6M, но свеча последнего дня включает пре/пост).
+- Дневное открытие: `[2]` последней дневной свечи.
+- `timeframe:5` за сутки: 192 свечи, покрывают пре-маркет, основную сессию и пост-маркет (сумма объёмов 68.95M = `quotes.volume_q`). Объём пре/пост-баров мал (единицы тысяч за 5 минут). Ось `xSeries` сдвинута относительно UTC (04:00-20:00 по Нью-Йорку выглядит как 01:00-16:55), точный сдвиг проверить в браузере.
+
+### 8.4. `GET /securities/export?tickers=A+B&params=f1+f2` (CORS ок)
+Отдаёт только поля из `getSecurityInfo` (проверено `c ltp pp x_min x_max vol name kind type x_descr`). Несуществующие поля (`market_cap`, `trailing_pe`, `beta`, `eps`, `dividend_yield`) молча отбрасываются. Фундаментала нет.
+
+### 8.5. Что отсутствует
+- Команды `getCorpActions, getDividends, getNews, getAnalytics, getFinancials, getEarnings, getFundamentals, getRecommendations, getIdeas, getFundComposition, getEtfHoldings` — `Command not found` (code 5). Отчётности, EPS, прогнозов, состава ETF нет.
+- `getReadyList` — `Command not found` анонимно.
+- `getNewsList` анонимно: `Invalid CSRF` (code 12), нужен SID, см. §5.11.
+- `getPlannedCorpActions {reception:35}` анонимно работает, но отдаёт **весь корпоративный календарь одним ответом: 254 474 записи, ~150 МБ, 504 по таймауту при повторных вызовах**. Фильтры `ticker`, `tickers`, `date_from/to`, `from/till`, `take` не сработали (ответ пустой по таймауту или `Incorrect request parameters`). Запись: `{type: dividend|split|coupon|maturity|stock_dividend|spin_off|…, ticker, ex_date, pay_date, currency, amount_per_one (строка), …}`. Для браузера непригодно. Повторно не вызывать без идеи фильтра.
+
+### 8.6. SID против анонимного доступа и поля WS `quotes` (Task 22/15, 2026-11-01)
+- `getSecurityInfo` с SID **идентичен** анонимному: AAPL.US и SPY.US по 150 полей, различий нет. Полей пре/пост-цены нет.
+- WS (`mode=prod`) подписка `quotes` на AAPL.US/SPY.US/QQQ.US за 20 с в воскресенье: 1 `userData`, по 3 сообщения `q`. Имена полей: `c ltp ltt lts ltr bbp bbs bbt bap bas bat bbf baf op pp pcp chg ClosePrice TradingReferencePrice mintp maxtp vol vlt marketStatus TradingSessionSubID(строка) chg1w/1m/6m/1y/5/22/110/220 p1w/p1m/p6m/p1y volatility{7..365} target{7..365}_p{0.05..0.95} x_curr x_descr x_lot x_min x_max x_min_lot_q x_istrade kind type name name2 codesub_nm issue_nb UTCOffset acc_srv_tm` и др. (опционные `delta gamma theta vega rho iv strike_price`, облигационные `yld*`, служебные `*_source`). Сравнение с полями `getSecurityInfo` не делалось.
+- Значения `marketStatus` / `TradingSessionSubID` в пре/пост-сессии **не проверены** (выходной), нужна US-сессия.

@@ -5,21 +5,35 @@
 //   cashflows    rows                 parseCashflows rows (whole history)
 //   trades       {from, rows}         parseTrades rows since `from` (beginDate watermark)
 //   markets      {daily, intraday}    parseHloc rows for MARKET_STRIP
+//   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
+// Position card data (security info, full candles per ticker) is kept in memory only, TTL-gated.
 import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
 } from '../calc/portfolio.js'
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
+import { daySparks } from '../calc/sparks.js'
+
+import { parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { SessionExpiredError } from '../api/transport.js'
 
-const DATASETS = ['positions', 'cashflows', 'trades', 'markets']
-const TTL_OF = { positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday }
+const DATASETS = ['positions', 'cashflows', 'trades', 'markets', 'sparks']
+const TTL_OF = {
+  positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.intraday, sparks: TTL.sparks,
+}
 const AUTHED = new Set(['positions', 'cashflows', 'trades'])
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
+
+// Position card datasets: TTL per part; daily reaches back far enough for 1Y, YTD and 52 weeks.
+const SEC_TTL = { info: TTL.quotes, intraday: TTL.intraday, daily: 5 * 60e3, max: 60 * 60e3 }
+const SEC_DAILY_DAYS = 400
+const SEC_INTRADAY_DAYS = 8 // 5 sessions back, weekends and a holiday included
+const SEC_MAX_FROM = '1990-01-01'
+const SESSION_INDEX = 'SP500.IDX' // its intraday bars mark the regular US session
 
 const nyFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
 /** Calendar date in New York ('YYYY-MM-DD'): candle dates are US trading dates. */
@@ -34,7 +48,7 @@ const isExpired = (e) => e instanceof SessionExpiredError
 const psOf = (a) => (a && a.result && a.result.ps) || (a && a.ps) || null
 
 export function createRepo({ broker, db, now = () => Date.now() }) {
-  const cache = { positions: null, cashflows: null, trades: null, markets: null }
+  const cache = { positions: null, cashflows: null, trades: null, markets: null, sparks: null }
   const fetchedAt = {}
   const candles = new Map() // ticker -> [{date, close}] asc
   let cover = {}
@@ -53,6 +67,90 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     return cache.markets ? computeMarkets(cache.markets.daily, cache.markets.intraday) : null
   }
 
+  // Day sparks, recomputed only when their inputs change (state() runs on every emit).
+  let sparksMemo = { src: undefined, mkts: undefined, value: null }
+  function sparksState() {
+    if (!cache.sparks) return null
+    if (sparksMemo.src !== cache.sparks || sparksMemo.mkts !== cache.markets) {
+      sparksMemo = { src: cache.sparks, mkts: cache.markets, value: daySparks(cache.sparks.intraday, cache.markets?.intraday) }
+    }
+    return sparksMemo.value
+  }
+
+  // Tickers of the open positions (currency pairs skipped), sorted.
+  const positionTickers = () => [...new Set((cache.positions?.rows || [])
+    .filter((r) => r.kind === 'position').map((r) => r.ticker))].filter((t) => !String(t).includes('/')).sort()
+  // Cached sparks were fetched for a different set of positions.
+  const sparksOutdated = () => !!cache.positions && !!cache.sparks
+    && cache.sparks.tickers.join(',') !== positionTickers().join(',')
+
+  // --- position card: per ticker {info, intraday, daily, max} + fetch times, errors, in-flight
+  const sec = new Map()
+  function secEntry(ticker) {
+    let e = sec.get(ticker)
+    if (!e) sec.set(ticker, (e = { info: null, intraday: null, daily: null, max: null, at: {}, errors: {}, inflight: new Map() }))
+    return e
+  }
+  const secFetchers = {
+    async info(tk) {
+      const a = await broker.securityInfo(tk)
+      if (!a || typeof a !== 'object') throw new Error('No security info')
+      return a
+    },
+    async intraday(tk) {
+      const t = today()
+      return parseCandles(await broker.hlocIntraday([tk], addDays(t, -SEC_INTRADAY_DAYS), addDays(t, 1), 15), tk)
+    },
+    async daily(tk) {
+      return parseCandles(await broker.hlocDaily([tk], addDays(today(), -SEC_DAILY_DAYS), -1), tk)
+    },
+    async max(tk) {
+      return parseCandles(await broker.hlocDaily([tk], SEC_MAX_FROM, -1), tk)
+    },
+  }
+
+  /** Fetch the parts ('info' | 'intraday' | 'daily' | 'max') of a ticker that are past their TTL.
+   *  Never rejects: errors land in security(ticker).errors[part], the old data stays. */
+  function loadSecurity(ticker, parts = ['info', 'daily'], { force = false } = {}) {
+    const e = secEntry(ticker)
+    return Promise.all(parts.filter((p) => p in secFetchers).map((part) => {
+      if (e.inflight.has(part)) return e.inflight.get(part)
+      if (!force && e.at[part] != null && now() - e.at[part] < SEC_TTL[part]) return null
+      const pr = (async () => {
+        try {
+          e[part] = await secFetchers[part](ticker)
+          e.at[part] = now()
+          delete e.errors[part]
+        } catch (err) {
+          e.errors[part] = (err && err.message) || String(err)
+        } finally {
+          e.inflight.delete(part)
+          emit()
+        }
+      })()
+      e.inflight.set(part, pr)
+      emit()
+      return pr
+    })).then(() => {})
+  }
+
+  /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: regular US
+   *  session bounds by date (sessionBounds over SP500.IDX bars), only for US tickers. */
+  function security(ticker) {
+    const e = sec.get(ticker)
+    const us = String(ticker).endsWith('.US')
+    const idx = us ? (cache.markets?.intraday || []).filter((r) => r.ticker === SESSION_INDEX) : []
+    return {
+      info: e?.info ?? null,
+      intraday: e?.intraday ?? null,
+      daily: e?.daily ?? null,
+      max: e?.max ?? null,
+      sessions: us ? sessionBounds(idx) : null,
+      errors: { ...(e?.errors || {}) },
+      loading: e ? [...e.inflight.keys()] : [],
+    }
+  }
+
   // null = never loaded.
   function state() {
     return {
@@ -61,6 +159,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       trades: cache.trades ? cache.trades.rows : null,
       cashflows: cache.cashflows,
       markets: marketsStrip(),
+      sparks: sparksState(), // {ticker: {date, spark}}: last-session 15-min closes
+      closes: candles, // ticker -> [{date, close}] daily closes (period sparks)
       inception: inceptionFromCashflows(cache.cashflows),
       updatedAt: fetchedAt.positions ?? null,
       errors: { ...errors },
@@ -136,6 +236,16 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
         broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15),
       ])
       await save('markets', { daily: parseHloc({ answer: d }).rows, intraday: parseHloc({ answer: i }).rows })
+    },
+    // One multi-ticker request for all positions; needs the positions, so waits for their fetch.
+    // Nothing is saved without positions: the next refresh tries again.
+    async sparks() {
+      if (inflight.has('positions')) await inflight.get('positions')
+      const tickers = positionTickers()
+      if (!tickers.length) return
+      const t = today()
+      const a = await broker.hlocIntraday(tickers, addDays(t, -6), addDays(t, 1), 15)
+      await save('sparks', { tickers, intraday: parseHloc({ answer: a }).rows })
     },
   }
 
@@ -236,7 +346,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
   async function refresh({ force = false, only } = {}) {
     await loadCache()
     const names = (only || DATASETS).filter((n) => DATASETS.includes(n))
-    const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n])
+    const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n]
+      || (n === 'sparks' && sparksOutdated()))
     await Promise.all(due.map(refreshOne))
   }
 
@@ -283,6 +394,8 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
     },
 
     marketsStrip,
+    security,
+    loadSecurity,
 
     /** Positions pushed by the WS `portfolio` event (raw `ps`). */
     async applyPortfolio(ps) {

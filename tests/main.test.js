@@ -5,7 +5,6 @@ import { fPrice, fWeight, fPct } from '../src/display.js'
 import { nextTick } from 'vue'
 import ValueBlock from '../src/components/ValueBlock.vue'
 import PeriodPicker from '../src/components/PeriodPicker.vue'
-import PeriodPositions from '../src/components/PeriodPositions.vue'
 import MainScreen from '../src/components/MainScreen.vue'
 import CompareScreen from '../src/components/CompareScreen.vue'
 import { createAppState, installApp } from '../src/composables/useApp.js'
@@ -108,13 +107,13 @@ describe('ValueBlock', () => {
     await w.get('[data-test="eye"]').trigger('click')
     expect(app.prefs.hide).toBe(true)
     expect(w.get('[data-test="eye"]').attributes('aria-pressed')).toBe('true')
-    expect(w.get('[data-test="v-big"]').text()).toBe('***')
+    expect(w.get('[data-test="v-big"]').text()).toBe('$***')
     const day = w.get('[data-test="v-day"]').text()
-    expect(day).toContain('***')
+    expect(day).toContain('$***')
     expect(day).toContain(pct(-0.42))
-    expect(day).not.toContain('$')
+    expect(day).not.toMatch(/\$\d/)
     const per = w.get('[data-test="v-period"]').text()
-    expect(per).toContain('***')
+    expect(per).toContain('$***')
     expect(per).toContain(pct(0.8))
     // tone survives hiding
     expect(w.get('[data-test="v-day"] span').classes()).toContain('neg')
@@ -152,29 +151,6 @@ describe('PeriodPicker', () => {
   })
 })
 
-describe('PeriodPositions', () => {
-  it('sorts by value desc by default and persists a header-click sort', async () => {
-    const { app } = makeApp()
-    const w = mount(PeriodPositions, { props: { rows: CORE.positions } })
-    const tickers = () => w.findAll('tbody th').map((x) => x.text())
-    expect(tickers()).toEqual(['AAA.US', 'BBB.US', 'CCC.US'])
-    await w.get('[data-sort="pnl"]').trigger('click')
-    expect(app.prefs.sorts.positions).toEqual({ key: 'pnl', dir: -1 })
-    expect(tickers()).toEqual(['AAA.US', 'CCC.US', 'BBB.US'])
-    await w.get('[data-sort="pnl"]').trigger('click')
-    expect(tickers()).toEqual(['BBB.US', 'CCC.US', 'AAA.US'])
-    expect(w.text()).toContain(t('ppos.status.new'))
-  })
-
-  it('hide amounts: quantities, P&L and value hidden; prices, Δ and weights stay', async () => {
-    makeApp({ prefs: { hide: true } })
-    const w = mount(PeriodPositions, { props: { rows: CORE.positions } })
-    const cells = w.findAll('tbody tr')[0].findAll('td').map((x) => x.text())
-    // status, start, end, price, Δ, P&L, value, weight
-    expect(cells).toEqual(['', '***', '***', '105.00', pct(5), '***', '***', '9.9%'])
-  })
-})
-
 describe('MainScreen', () => {
   it('coreFor null: skeletons instead of "$0.00", positions total shown', async () => {
     const { repo } = makeApp({ core: null })
@@ -184,7 +160,7 @@ describe('MainScreen', () => {
     expect(w.find('[data-test="v-skel"]').exists()).toBe(true)
     expect(w.text()).not.toContain('$0.00')
     expect(w.get('[data-test="v-big"]').text()).toBe(money(1550))
-    expect(w.find('[data-test="ppos-current"]').exists()).toBe(true)
+    expect(w.find('[data-test="ppos"]').exists()).toBe(false)
     expect(w.get('[data-test="updated"]').text()).toBe(t('main.updatedMin', { n: 3 }))
     w.unmount()
   })
@@ -199,6 +175,26 @@ describe('MainScreen', () => {
     await flushPromises()
     expect(repo.ensurePrices.mock.calls.at(-1)[0]).toBe('7d')
     expect(repo.coreFor).toHaveBeenLastCalledWith('7d', undefined, undefined)
+    w.unmount()
+  })
+})
+
+describe('MainScreen: holdings merged with positions over the period', () => {
+  it('no separate period positions card; Holdings period total equals the value card numbers', async () => {
+    makeApp({ prefs: { vmode: 'perf', holdingsMode: 'period' } })
+    const w = mount(MainScreen)
+    await flushPromises()
+    expect(w.find('[data-test="ppos"]').exists()).toBe(false)
+    expect(w.findAll('[data-test="holdings"]')).toHaveLength(1)
+    const v = w.get('[data-test="v-period"]').text()
+    const h = w.get('[data-test="h-total"]').text()
+    for (const s of [money(CORE.summary.pnl, { sign: true }), pct(CORE.summary.twr)]) {
+      expect(v).toContain(s)
+      expect(h).toContain(s)
+    }
+    expect(w.get('[data-test="hmode-period"]').text()).toBe('YTD')
+    await w.get('[data-period="7d"]').trigger('click')
+    expect(w.get('[data-test="hmode-period"]').text()).toBe('7D')
     w.unmount()
   })
 })

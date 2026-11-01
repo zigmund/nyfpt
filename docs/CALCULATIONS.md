@@ -59,7 +59,7 @@ P&L $ = V_end − V_start − Σ e_t          // результат без по�
 
 - `series[]` по дням: `date, portfolio (TWR %), spy %, qqq %, value (V_t), pnl (V_t − V_0 − Σe)`.
   Первая строка — база (всё 0).
-- `positions[]` по бумагам (включая проданные за период):
+- `positions[]` по бумагам (включая проданные за период и купленные и проданные внутри него):
   `ticker, status (новая/докуплена/сокращена/закрыта/''), qty_start, qty_end,
   price_start, price_end, change_pct, pnl, value, weight`.
   `pnl = q_end × p_end − q_start × p_start − покупки(с комиссией) + продажи(минус комиссия)`.

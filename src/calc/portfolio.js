@@ -122,7 +122,7 @@ export const computeCore = (positions, trades, cashflows, prices) => {
       const v1 = endQ[t] * (p1 || 0);
       const status = endQ[t] === 0 ? 'закрыта' : startQ[t] === 0 ? 'новая' : endQ[t] > startQ[t] ? 'докуплена' : endQ[t] < startQ[t] ? 'сокращена' : '';
       return { ticker: t, name: names[t] || t, status, qty_start: startQ[t], qty_end: endQ[t], price_start: p0, price_end: p1, change_pct: p0 ? r2((p1 / p0 - 1) * 100) : null, pnl: r2(v1 - startQ[t] * (p0 || 0) - buys + sells), value: r2(v1), weight: r2((v1 / Vend) * 100) };
-    }).filter((r) => r.qty_start || r.qty_end);
+    }).filter((r) => r.qty_start || r.qty_end || wk.some((x) => x.ticker === r.ticker)); // keep round-trips inside the period
     const sum = (re) => r2(flows.filter((c) => re.test(c.type)).reduce((s, c) => s + c.sum, 0));
     const last = series[series.length - 1];
     const twr = r2((idx - 1) * 100);
@@ -139,8 +139,12 @@ export const computeMarkets = (mkt_daily, mkt_intraday) => {
     const order = ['SP500.IDX', 'NASDAQ.IDX', 'USO.US', 'GLD.US', 'SLV.US'];
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
+    // Anchor on the last intraday session: some tickers (NASDAQ.IDX) carry an extra daily bar dated after it
+    // (weekend), which would otherwise pick a date with no candles.
+    const anchor = idx.length ? idx[idx.length - 1].date : null;
     return order.map((t) => {
-      const d = by(mkt_daily, t);
+      const all = by(mkt_daily, t);
+      const d = anchor ? all.filter((r) => r.date <= anchor) : all;
       if (d.length < 2) return { ticker: t, date: null, last: null, prev: null, change_pct: null, spark: [] };
       const last = d[d.length - 1], prev = d[d.length - 2];
       const sess = idx.filter((r) => r.date === last.date);
