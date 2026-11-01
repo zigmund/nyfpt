@@ -1,5 +1,6 @@
 // Position card price chart: close line by bar index (no gaps for nights and weekends),
-// dashed previous close (1D), max/min labels, volume bars, hover rule with a price pill.
+// dashed previous close (1D), max/min labels, volume bars, hover rule with a price pill (the
+// hovered row is reported to the caller: the card header shows it).
 import { select, scaleLinear, line, area, maxIndex, minIndex, max } from 'd3'
 import { svgIn, widthOf, heightOf, splitPaint, segOf, dateFull, monthOf, measure, onOutsidePointer, pointerX } from './util.js'
 import { dateShort } from '../format.js'
@@ -52,12 +53,17 @@ export function axisLabels(rows, intraday) {
  * Draws into `el`, returns a cleanup function.
  * @param {HTMLElement} el
  * @param {Array<{ts, date, close, vol, min}>} rows ascending
- * @param {{base?: number|null, intraday?: boolean}} opts base: previous close (dashed level, color reference)
+ * @param {{base?: number|null, intraday?: boolean, onHover?: (row|null) => void, hoverTs?: number|null}} opts
+ *   base: previous close (dashed level, color reference); onHover: the hovered row, null when the
+ *   hover ends; hoverTs: `ts` of the row hovered before a redraw (live tick), shown again when still drawn.
  */
-export function drawPriceChart(el, rows, { base = null, intraday = false } = {}) {
+export function drawPriceChart(el, rows, { base = null, intraday = false, onHover = () => {}, hoverTs = null } = {}) {
   el.replaceChildren()
   const pts = (rows || []).filter((r) => Number.isFinite(r.close))
-  if (pts.length < 2) return () => el.replaceChildren()
+  if (pts.length < 2) {
+    if (hoverTs != null) onHover(null) // nothing to hover: drop the kept hover
+    return () => el.replaceChildren()
+  }
 
   const W = widthOf(el)
   const H = heightOf(el)
@@ -133,9 +139,9 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
   const pill = select(el).append('div').attr('class', 'chart-pill num').attr('aria-hidden', 'true').style('opacity', 0)
 
   let active = false
-  const show = (ev) => {
-    const mx = pointerX(ev, svg.node(), W)
-    const i = Math.max(0, Math.min(pts.length - 1, Math.round(x.invert(mx))))
+  let at = -1
+  const showAt = (i) => {
+    if (active && i === at) return // same bar: nothing moves, no hover event per pointer pixel
     const r = pts[i]
     const px = x(i)
     rule.attr('x1', px).attr('x2', px).style('opacity', 0.5)
@@ -146,18 +152,30 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
     const pw = pill.node().offsetWidth || 0
     pill.style('left', `${Math.min(Math.max(px * (cw / W), pw / 2), cw - pw / 2)}px`).style('opacity', 1)
     active = true
+    at = i
+    onHover(r)
+  }
+  const show = (ev) => {
+    const mx = pointerX(ev, svg.node(), W)
+    showAt(Math.max(0, Math.min(pts.length - 1, Math.round(x.invert(mx)))))
   }
   const hide = () => {
     if (!active) return
     active = false
+    at = -1
     rule.style('opacity', 0)
     dot.style('opacity', 0)
     endDot.style('opacity', 1)
     pill.style('opacity', 0)
+    onHover(null)
   }
   svg.append('rect').attr('class', 'chart-hit').attr('x', 0).attr('y', 0).attr('width', W).attr('height', H)
     .on('pointerdown', show).on('pointermove', show).on('pointercancel', hide)
     .on('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hide() })
+
+  const kept = hoverTs != null ? pts.findIndex((r) => r.ts === hoverTs) : -1
+  if (kept >= 0) showAt(kept)
+  else if (hoverTs != null) onHover(null)
 
   const ac = new AbortController()
   onOutsidePointer(el, hide, ac.signal)

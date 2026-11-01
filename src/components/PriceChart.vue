@@ -1,4 +1,4 @@
-<!-- Position card price chart wrapper (charts/priceChart.js). -->
+<!-- Position card price chart wrapper (charts/priceChart.js); emits the hovered row (or null). -->
 <template>
   <div ref="el" class="pchart__box" />
 </template>
@@ -14,8 +14,16 @@ const props = defineProps({
   base: { type: Number, default: null },
   intraday: { type: Boolean, default: false },
 })
+const emit = defineEmits(['hover'])
 
 const el = ref(null)
+// The hovered bar survives redraws (live ticks move the last bar): the chart shows it again and
+// reports the redrawn row; it is dropped only when the bar left the rows (as PerfChart).
+let hoverTs = null
+const onHover = (r) => {
+  hoverTs = r ? r.ts : null
+  emit('hover', r)
+}
 // Redraw only when what is drawn changes (live ticks often repeat the price).
 const key = () => {
   const r = props.rows
@@ -23,5 +31,5 @@ const key = () => {
   const b = r[r.length - 1]
   return [props.intraday, props.base, r.length, a?.ts, b?.ts, b?.close].join('|')
 }
-useChart(el, key, (node) => drawPriceChart(node, props.rows, { base: props.base, intraday: props.intraday }))
+useChart(el, key, (node) => drawPriceChart(node, props.rows, { base: props.base, intraday: props.intraday, hoverTs, onHover }))
 </script>

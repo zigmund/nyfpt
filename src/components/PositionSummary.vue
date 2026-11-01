@@ -1,6 +1,8 @@
 <!-- Security card, Summary tab: name and price (Live / As of while its market is open / At close),
      price chart with periods, My holdings (held or closed positions only, else no block), Key
-     statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation. -->
+     statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation.
+     Header change (Task 44): 1D — the day change; other periods — the price vs the first point of
+     the chart, with the period label; pointer on the chart — that point's price, change and time. -->
 <template>
   <div class="psum">
     <p v-if="loadError" class="banner" role="status" data-test="p-error">
@@ -12,15 +14,23 @@
       <p v-if="venue" class="card__hint" data-test="p-venue">{{ venue }}</p>
       <h2 v-if="nameLoading" class="phead__name skel" aria-hidden="true" data-test="p-name-skel">&nbsp;</h2>
       <h2 v-else class="phead__name" data-test="p-name">{{ pos.name === ticker ? ticker : `${pos.name} (${ticker})` }}</h2>
-      <p class="phead__line">
-        <span v-if="pos.price != null" ref="bigEl" class="big num" data-test="p-price">{{ fPrice(pos.price) }}</span>
+      <p ref="lineEl" class="phead__line" :style="lineLock">
+        <span v-if="bigPrice != null" ref="bigEl" class="big num" data-test="p-price">{{ fPrice(bigPrice) }}</span>
         <span v-else-if="priceSettled" ref="bigEl" class="big num" data-test="p-price">—</span>
         <span v-else ref="bigEl" class="big skel" aria-hidden="true">&nbsp;</span>
-        <span v-if="pos.change != null" class="phead__chg num" :class="tone(pos.change)" data-test="p-change">{{ fChange(pos.change) }} ({{ fPct(pos.changePct) }})</span>
-        <span v-else-if="pos.price == null && !priceSettled" class="phead__chg skel" aria-hidden="true">&nbsp;</span>
+        <!-- change + label wrap together: the line breaks between price and change, whatever the figures -->
+        <span v-if="chg.kind !== 'none'" class="phead__chgrp">
+          <span v-if="chg.kind === 'value'" class="phead__chg num" :class="tone(chg.change)" data-test="p-change">{{ chgText(chg) }}</span>
+          <span v-else-if="chg.kind === 'dash'" class="phead__chg num" data-test="p-change">—</span>
+          <span v-else class="phead__chg skel" aria-hidden="true">&nbsp;</span>
+          <span v-if="chg.label && chg.kind !== 'skel'" class="phead__per" data-test="p-chg-label">{{ chg.label }}</span>
+        </span>
       </p>
+      <!-- The period change for screen readers: announced on a period switch only (not per pointer move or tick). -->
+      <p class="vh" aria-live="polite" data-test="p-chg-live">{{ announced }}</p>
       <p class="status" data-test="p-asof">
-        <template v-if="pos.isLive">
+        <span v-if="hoverWhen">{{ hoverWhen }}</span>
+        <template v-else-if="pos.isLive">
           <span class="dot dot--on" aria-hidden="true" />
           <span>{{ t('pos.live') }}</span>
         </template>
@@ -37,7 +47,7 @@
         data-test="p-chart"
       >
         <div v-if="shown" class="pchart__plot" :class="{ 'is-stale': chartStale }">
-          <PriceChart :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" />
+          <PriceChart :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" @hover="hover = $event" />
         </div>
         <div v-else-if="chartLoading" class="pchart__skel skel" aria-hidden="true" data-test="p-chart-skel" />
         <p v-else class="card__hint pchart__none" data-test="p-chart-none">{{ t('pos.noChart') }}</p>
@@ -143,6 +153,7 @@ import { usePeriodCore } from '../composables/usePeriodCore.js'
 import { localDay } from '../calc/marketTime.js'
 import { PERIODS } from '../calc/periods.js'
 import { CHART_PERIOD, chartRows, chartSource, rangePos } from '../calc/position.js'
+import { whenOf } from '../charts/priceChart.js'
 import { DATASET } from '../data/repo.js'
 import PriceChart from './PriceChart.vue'
 
@@ -198,13 +209,73 @@ const chartLoading = computed(() => {
 // period loads, so the area never collapses.
 const last = shallowRef(null)
 watch([rows, base, intraday], ([r, b, i]) => {
-  if (r.length > 1) last.value = { rows: r, base: b, intraday: i }
+  if (r.length > 1) last.value = { rows: r, base: b, intraday: i, period: props.period }
 }, { immediate: true })
 const shown = computed(() => {
-  if (rows.value.length > 1) return { rows: rows.value, base: base.value, intraday: intraday.value }
+  if (rows.value.length > 1) return { rows: rows.value, base: base.value, intraday: intraday.value, period: props.period }
   return chartLoading.value ? last.value : null
 })
 const chartStale = computed(() => chartLoading.value && rows.value.length <= 1 && !!shown.value)
+
+// --- header change: the period's or the hovered chart point's (Task 44)
+const hover = shallowRef(null)
+// The chart reports null when the hovered bar is gone after a redraw; it also goes away with the chart.
+watch(() => !!shown.value, (on) => { if (!on) hover.value = null })
+const posNum = (v) => {
+  const x = n(v)
+  return x !== null && x > 0 ? x : null
+}
+/** Base of a period: the first drawable point of its chart (the chart's waterline); unknown -> null. */
+const firstClose = (list) => {
+  const pts = (list || []).filter((r) => Number.isFinite(r.close))
+  return pts.length > 1 ? posNum(pts[0].close) : null
+}
+/** What the drawn chart measures against: the previous close on 1D, else its first point. */
+const baseOf = (d) => (d.period === '1D' ? posNum(d.base) : firstClose(d.rows))
+const changeOf = (px, b) => {
+  const x = n(px)
+  return x !== null && b !== null ? { kind: 'value', change: x - b, pct: (x / b - 1) * 100 } : { kind: 'dash' }
+}
+const periodName = (p) => (p === '1D' ? '' : t(`pos.per.${p}`))
+
+/** Header change without a pointer: the day change on 1D (as before), else the period change. */
+const periodChg = computed(() => {
+  const loadingPrice = props.pos.price == null && !priceSettled.value
+  if (props.period === '1D') {
+    if (props.pos.change != null) return { kind: 'value', change: props.pos.change, pct: props.pos.changePct, label: '' }
+    return { kind: loadingPrice ? 'skel' : 'none', label: '' }
+  }
+  const label = periodName(props.period)
+  if (loadingPrice || (chartLoading.value && rows.value.length <= 1)) return { kind: 'skel', label }
+  const b = firstClose(rows.value)
+  return { ...(b === null ? { kind: 'dash' } : changeOf(props.pos.price, b)), label }
+})
+const chg = computed(() => {
+  const r = hover.value
+  const d = shown.value
+  if (!r || !d) return periodChg.value
+  const b = baseOf(d)
+  // The label stays the period's (the status line shows the point's time): no width change, no wrap.
+  return { ...(b === null ? { kind: 'dash' } : changeOf(r.close, b)), label: periodName(d.period) }
+})
+const bigPrice = computed(() => (hover.value && shown.value ? hover.value.close : props.pos.price))
+const hoverWhen = computed(() => (hover.value && shown.value ? whenOf(hover.value, shown.value.intraday) : ''))
+const chgText = (c) => `${fChange(c.change)} (${fPct(c.pct)})`
+// While the pointer is on the chart the price line keeps at least its height: a shorter figure
+// does not unwrap it and move the chart under the finger (the label keeps its text, see chg).
+const lineEl = ref(null)
+const lockH = ref(0)
+watch(() => !!hover.value, (on) => { lockH.value = on ? (lineEl.value?.offsetHeight || 0) : 0 }, { flush: 'pre' })
+const lineLock = computed(() => (lockH.value ? { minHeight: `${lockH.value}px` } : null))
+
+// Screen readers hear the change once per period switch: live ticks and pointer moves stay silent.
+const announced = ref('')
+let announcedFor = props.period
+watch([() => props.period, periodChg], ([p, c]) => {
+  if (p === announcedFor || c.kind === 'skel') return
+  announcedFor = p
+  announced.value = [c.kind === 'value' ? chgText(c) : c.kind === 'dash' ? '—' : '', c.label].filter(Boolean).join(' ')
+})
 
 // --- My holdings; a closed position shows its result for the selected (main) period.
 const h = computed(() => props.pos.holding)
