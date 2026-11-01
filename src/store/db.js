@@ -115,9 +115,11 @@ export async function openAccountDb(accountKey, idb = globalThis.indexedDB, { ve
       const rows = await Promise.all(probe.map(rawKv))
       if (!rows.some((r) => r && r.v !== version)) return 0
       const tx = db.transaction(['kv', 'candles'], 'readwrite')
-      const done = txDone(tx)
-      const [a, b] = await Promise.all(['kv', 'candles'].map((s) => deleteStale(tx.objectStore(s), accountRange(), version)))
-      await done
+      // Awaited together: a failing cursor aborts the transaction, and `done` must not reject unhandled.
+      const [[a, b]] = await Promise.all([
+        Promise.all(['kv', 'candles'].map((s) => deleteStale(tx.objectStore(s), accountRange(), version))),
+        txDone(tx),
+      ])
       return a + b
     },
 

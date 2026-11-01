@@ -7,6 +7,22 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * Day change % of a security: ONE rule for every view (Holdings, the card header, the markets
+ * strip, search rows, news tickers). Callers resolve `last` and `prev` field by field, the live
+ * quote first (ltp / pp), then their snapshot (security info, position mkt_price / close_price,
+ * strip daily closes); `pct` likewise (quote pcp, cached quote, strip change_pct).
+ *   1. last vs prev when both are known and prev > 0 (an index quote may carry pp 0);
+ *   2. else the broker's own day change % (`pct`);
+ *   3. else null (unknown, not zero).
+ */
+export const dayChangePct = ({ last = null, prev = null, pct = null } = {}) => {
+  const l = num(last);
+  const p = num(prev);
+  if (l !== null && p !== null && p > 0) return ((l - p) / p) * 100;
+  return num(pct);
+};
+
 /** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object. */
 export const mergeQuote = (prev, delta) => ({ ...(prev || {}), ...(delta || {}) });
 
@@ -42,8 +58,10 @@ export const holdingsRows = (ps, quotes) => {
     const prevClose = pp ? pp : null;
     const valueUsd = price === null ? (mv ?? 0) : q * price * k * fx;
     const dayChangeUsd = prevClose === null || price === null ? null : q * (price - prevClose) * k * fx;
-    const dayChangePct = prevClose === null || price === null ? null : ((price - prevClose) / prevClose) * 100;
-    return { ticker: p.i, name: p.name, qty: q, price, prevClose, dayChangePct, dayChangeUsd, valueUsd, weight: 0, currency: p.curr };
+    return {
+      ticker: p.i, name: p.name, qty: q, price, prevClose, dayChangePct: dayChangePct({ last: price, prev: prevClose }),
+      dayChangeUsd, valueUsd, weight: 0, currency: p.curr,
+    };
   });
   const total = cash + rows.reduce((s, r) => s + r.valueUsd, 0);
   for (const r of rows) r.weight = total ? r.valueUsd / total : 0;

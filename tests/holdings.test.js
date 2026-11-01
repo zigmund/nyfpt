@@ -236,6 +236,19 @@ describe('Holdings: Day / period switch', () => {
     expect(cur.findAll('tbody th').map((x) => x.text())).toEqual(['CCC.US', 'AAA.US', 'BBB.US'])
   })
 
+  it('closed rows and the current-positions fallback link to the card like open rows', async () => {
+    setup({ prefs: { holdingsMode: 'period', holdingsClosedOpen: true } })
+    let w = mountH()
+    const link = w.get('[data-test="hc-row"][data-ticker="EEE.US"] a.hrow__link')
+    expect(link.attributes('href')).toBe('#/position/EEE.US')
+    expect(link.text()).toBe('EEE.US')
+    expect(w.get('[data-test="hc-row"][data-ticker="EEE.US"]').classes()).toContain('hrow')
+    w.unmount()
+    w = mountH({ core: null })
+    const links = w.findAll('[data-test="hold-current"] tbody a.hrow__link')
+    expect(links.map((a) => a.attributes('href'))).toEqual(['#/position/CCC.US', '#/position/AAA.US', '#/position/BBB.US'])
+  })
+
   it('Period stale: tables dimmed and aria-busy, closed button without N', () => {
     setup({ prefs: { holdingsMode: 'period', holdingsClosedOpen: true } })
     const w = mountH({ stale: true })
@@ -254,6 +267,7 @@ describe('Holdings: Day / period switch', () => {
     const btn = () => w.get('[data-test="hc-toggle"]')
     expect(btn().text()).toBe(t('hold.closedN', { n: 2 }))
     expect(btn().attributes('aria-expanded')).toBe('false')
+    expect(btn().attributes('aria-controls')).toBeUndefined() // no reference to an absent body
     expect(w.find('[data-test="hc-body"]').exists()).toBe(false)
     expect(pTickers(w)).not.toContain('DDD.US')
 
@@ -604,6 +618,44 @@ describe('dev mock (?mock)', () => {
     for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
   })
 
+  it('broker server at UTC+3 with real-shaped getHloc info.mrkt (DST from the zone); daily bars at server midnight', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { dailyOffset, marketClock: mClock, axisDate } = await import('../src/calc/marketTime.js')
+    const b = createMockBroker()
+    vi.setSystemTime(Date.parse('2026-10-28T18:00:00Z')) // Wednesday, New York on summer time
+    let pending = Promise.all([b.hlocDaily(['AAA.US', 'CCC_KZ.KZ'], '2026-10-20', -1), b.marketStatus()])
+    await vi.advanceTimersByTimeAsync(1000)
+    let [d, st] = await pending
+    expect(st.result.markets.t).toBe('2026-10-28 21:00:00')
+    expect(mClock({ ...st.result.markets, at: Date.now() }).offset).toBe(10800)
+    expect(dailyOffset(d)).toBe(10800)
+    expect(d.info['AAA.US']).toMatchObject({ mkt_name: 'FIX', mrkt: { p: '14:10:00', o: '16:30:00', post: '23:00:00', c: '03:00:00', dt: 420, tz: 'America/New_York' } })
+    expect(d.info['CCC_KZ.KZ']).toMatchObject({ mkt_name: 'KASE', mrkt: { p: '09:20:00', o: '09:30:00', c: '20:00:00', dt: -120 } })
+    expect(d.info['CCC_KZ.KZ'].mrkt.post).toBeUndefined()
+    const clk = { offset: 10800, markets: {} }
+    expect(axisDate(clk, d.xSeries['AAA.US'].at(-1))).toBe('2026-10-28')
+    vi.setSystemTime(Date.parse('2026-11-04T18:00:00Z')) // after the US clock change
+    pending = b.hlocDaily(['AAA.US'], '2026-10-27', -1)
+    await vi.advanceTimersByTimeAsync(1000)
+    d = await pending
+    expect(d.info['AAA.US'].mrkt).toMatchObject({ p: '15:10:00', o: '17:30:00', post: '00:00:00', c: '04:00:00', dt: 480 })
+  })
+
+  it('NASDAQ.IDX: a Saturday single-print daily bar (volume 1) on a weekend, like the broker', async () => {
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { parseHloc } = await import('../src/calc/portfolio.js')
+    vi.setSystemTime(Date.parse('2026-10-31T18:00:00Z')) // Saturday
+    const b = createMockBroker()
+    const pending = b.hlocDaily(['SP500.IDX', 'NASDAQ.IDX'], '2026-10-20', -1)
+    await vi.advanceTimersByTimeAsync(1000)
+    const d = await pending
+    const rows = parseHloc({ answer: d }, { offset: 10800, markets: {} }).rows
+    const last = (t) => rows.filter((r) => r.ticker === t).at(-1).date
+    expect(last('SP500.IDX')).toBe('2026-10-30')
+    expect(last('NASDAQ.IDX')).toBe('2026-10-31')
+    expect(d.vl['NASDAQ.IDX'].at(-1)).toBe(1)
+  })
+
   it('positions carry close_price, so Day % and Day $ show outside live mode', async () => {
     const { createMockBroker } = await import('../src/dev/mock.js')
     const { holdingsRows, holdingsTotal } = await import('../src/calc/live.js')
@@ -663,7 +715,8 @@ describe('Holdings column stability (Task 32)', () => {
     expect(widthCh('.hcol--money')).toBeGreaterThanOrEqual(14)
     expect(widthCh('.hcol--qty')).toBeGreaterThanOrEqual(8)
     expect(widthCh('.hcol--price')).toBeGreaterThanOrEqual(10)
-    expect(widthCh('.hcol--pct')).toBeGreaterThanOrEqual(8)
+    // the pill column = the pill (8 chars + its side padding, root tokens) + cell gaps
+    expect(rule('.hcol--pct')).toMatch(/width:\s*calc\(var\(--pill-min\) \+ var\(--pill-pad\) \* 2 \+ var\(--gap\) \* 2\)/)
     expect(widthCh('.hcol--weight')).toBeGreaterThanOrEqual(7)
     expect(css).toMatch(/\.hcol--spark\s*\{[^}]*width:/)
     expect(rule('.hcol--sym')).not.toMatch(/width:/) // the symbol column takes the rest
@@ -716,7 +769,8 @@ describe('Holdings column stability (Task 32)', () => {
     }
     if (!expr) throw new Error(`no width for ${cls}`)
     const g = tight ? 4 : gap
-    const px = expr.replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
+    const px = expr.replace(/var\(--pill-min\)/g, '8ch').replace(/var\(--pill-pad\)/g, '.375rem')
+      .replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
       .replace(/([\d.]+)rem/g, (_, n) => `${n * 16}px`).replace(/([\d.]+)ch/g, (_, n) => `${n * ch}px`)
     try { return Function(`return (${px.replace(/^calc/, '').replace(/px/g, '')})`)() } catch (e) { throw new Error(`${cls}: ${expr} -> ${px}`) }
   }
@@ -744,10 +798,22 @@ describe('Holdings column stability (Task 32)', () => {
   it('mobile Cash row keeps Value in column 2 and Weight in the right column (same grid as positions)', () => {
     const m = mediaBody('(max-width: 47.99rem)')
     expect(m).toMatch(/\.hc-weight\s*\{[^}]*grid-column:\s*4/)
-    // column 4 floors at the pill's min width, otherwise a pill-less Cash row gets a narrower column 4
-    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:[^;]*minmax\(var\(--pill-min, 8ch\), auto\)/)
-    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*var\(--pill-min, 8ch\)/)
+    // column 4 has one fixed width in every row (price, pill, Cash weight): rows never shift their 1fr columns
+    expect(m).toMatch(/tbody tr\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\) var\(--price-w\);/)
+    expect(m).toMatch(/tbody tr\s*\{[^}]*font-size:\s*var\(--fs-body\)/) // ch of --price-w = the price's ch
+    expect(css).toMatch(/\.pill\s*\{[^}]*min-width:\s*calc\(var\(--pill-min\) \+ var\(--pill-pad\) \* 2\)/)
+    expect(css).toMatch(/\.pill\s*\{[^}]*padding:\s*\.0625rem var\(--pill-pad\)/)
     expect(m).toMatch(/\.hrow--cash \.hc-meta:not\(\.hc-weight\)\s*\{[^}]*grid-column:\s*2/)
+  })
+
+  it('root tokens: pill content 8ch ("+112.42%") + side padding; price column fits "$12,345.67" (10ch)', () => {
+    const root = css.match(/:root\s*\{([^}]*)\}/)[1]
+    expect(root).toMatch(/--pill-min:\s*8ch;/)
+    expect(root).toMatch(/--pill-pad:\s*\.375rem;/)
+    expect(root).toMatch(/--price-w:\s*10ch;/)
+    const m = mediaBody('(max-width: 47.99rem)')
+    // with the row at --fs-body, cells that were caption-sized say so themselves
+    expect(m).toMatch(/\.ptable\.htable \.hc-pill,\s*\.ptable\.htable \.hrow__name\s*\{[^}]*font-size:\s*var\(--fs-caption\)/)
   })
 
   it('mobile total line is a grid: placement does not depend on the figures', () => {

@@ -5,6 +5,7 @@ import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
 import { keyStats, positionHolding } from '../calc/position.js'
+import { dayChangePct } from '../calc/live.js'
 import { formatLocal, wallToUtc } from '../calc/marketTime.js'
 
 const REFRESH_MS = 60e3
@@ -63,7 +64,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   // `pp`: the broker's day change (chg = ltp - pp) is measured from it.
   const prevClose = computed(() => posN(quote.value?.pp) ?? posN(info.value?.pp) ?? posN(raw.value?.close_price) ?? dailyClose(1))
   const change = computed(() => (price.value !== null && prevClose.value !== null ? price.value - prevClose.value : null))
-  const changePct = computed(() => (change.value === null ? null : (change.value / prevClose.value) * 100))
+  const changePct = computed(() => dayChangePct({ last: price.value, prev: prevClose.value }))
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({

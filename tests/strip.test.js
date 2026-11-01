@@ -10,11 +10,12 @@ import SettingsScreen from '../src/components/SettingsScreen.vue'
 import { createAppState, installApp } from '../src/composables/useApp.js'
 import { marketStripOf } from '../src/store/session.js'
 import { MARKET_STRIP, MARKET_STRIP_MAX } from '../src/config.js'
+import { pct } from '../src/format.js'
 
 const DEFAULT_TICKERS = MARKET_STRIP.map((m) => m.ticker)
 const row = (ticker, last, change_pct = 1) => ({ ticker, date: '2026-10-30', last, prev: last ? last - 1 : null, change_pct: last ? change_pct : null, spark: [] })
 
-function makeApp({ prefs = {}, markets = null, loading = [], findTickers } = {}) {
+function makeApp({ prefs = {}, markets = null, loading = [], findTickers, quotes = new Map() } = {}) {
   const saved = []
   const created = []
   const state = {
@@ -36,7 +37,7 @@ function makeApp({ prefs = {}, markets = null, loading = [], findTickers } = {})
     openAccountDb: async () => ({ close() {}, clear: async () => {} }),
     createRepo: (opts) => { created.push(opts); return repo },
     createLive: () => ({
-      quotes: new Map(), isLive: () => false, marketsOpen: () => ({ us: false }),
+      quotes, isLive: () => false, marketsOpen: () => ({ us: false }),
       on: () => () => {}, start() {}, stop() {}, pause() {}, resume() {},
     }),
     socketFactory: () => () => ({}),
@@ -131,6 +132,16 @@ describe('MarketsStrip', () => {
     w.unmount()
   })
 
+  it('day change: a quote\'s price vs previous close wins over its pcp (the rule the card uses)', async () => {
+    const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltp: 6060, pp: 6000, pcp: 0.5 }]])
+    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }, { ticker: 'GLD.US', label: 'Gold' }] }, markets: [row('SP500.IDX', 6000), row('GLD.US', 245, 1.5)], quotes })
+    await flushPromises()
+    const w = mount(MarketsStrip)
+    // GLD without a quote: its daily last vs prev (245 vs 244 in this fake row), the same rule
+    expect(w.findAll('.mcard__chg').map((x) => x.text())).toEqual([pct(1), pct((245 / 244 - 1) * 100)])
+    w.unmount()
+  })
+
   it('an empty list hides the strip and its status line', () => {
     makeApp({ prefs: { marketStrip: [] }, markets: [row('SP500.IDX', 6000)] })
     const w = mount(MarketsStrip)
@@ -180,6 +191,33 @@ describe('MarketStripEditor', () => {
     await items()[2].get('[data-test="strip-remove"]').trigger('click')
     expect(saved.at(-1).marketStrip.map((m) => m.ticker)).toEqual(['NASDAQ.IDX', 'SP500.IDX', 'SLV.US', 'GLD.US'])
     expect(labels(w)).toEqual(['Nasdaq 100', 'S&P 500', 'Silver', 'Gold'])
+    w.unmount()
+  })
+
+  it('focus follows a moved card; at the top / bottom edge it lands on the opposite move button, never Remove', async () => {
+    makeApp()
+    const w = mount(MarketStripEditor, { attachTo: document.body })
+    const items = () => w.findAll('[data-test="strip-item"]')
+    const act = () => document.activeElement?.getAttribute('data-act')
+    const at = () => items().findIndex((li) => li.element.contains(document.activeElement))
+    await items()[2].get('[data-test="strip-up"]').trigger('click')
+    await nextTick()
+    expect([at(), act()]).toEqual([1, 'up'])
+    await items()[1].get('[data-test="strip-up"]').trigger('click') // reaches the top
+    await nextTick()
+    expect([at(), act()]).toEqual([0, 'down'])
+    await items()[3].get('[data-test="strip-down"]').trigger('click') // reaches the bottom
+    await nextTick()
+    expect([at(), act()]).toEqual([4, 'up'])
+    w.unmount()
+  })
+
+  it('a single card: both moves disabled, focus falls back to Remove', async () => {
+    makeApp({ prefs: { marketStrip: [{ ticker: 'GLD.US', label: 'Gold' }, { ticker: 'SLV.US', label: 'Silver' }] } })
+    const w = mount(MarketStripEditor, { attachTo: document.body })
+    await w.findAll('[data-test="strip-remove"]')[0].trigger('click')
+    await nextTick()
+    expect(document.activeElement?.getAttribute('data-act')).toBe('remove')
     w.unmount()
   })
 

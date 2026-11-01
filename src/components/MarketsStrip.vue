@@ -45,6 +45,7 @@ import { dateShort } from '../format.js'
 import { fPct, fPrice, tone, n } from '../display.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import MarketSpark from './MarketSpark.vue'
+import { dayChangePct } from '../calc/live.js'
 
 const app = useApp()
 const { state, tick, live } = app
@@ -67,7 +68,8 @@ const cards = computed(() => {
     const r = strip.value?.find((x) => x.ticker === m.ticker) || null
     const q = quotes?.get?.(m.ticker) || null
     const last = n(q?.ltp) ?? n(r?.last)
-    const change = n(q?.pcp) ?? n(r?.change_pct)
+    // calc/live dayChangePct: price vs previous close (quote, else the strip's daily closes), else pcp
+    const change = dayChangePct({ last, prev: n(q?.pp) ?? n(r?.prev), pct: n(q?.pcp) ?? n(r?.change_pct) })
     return {
       ...m,
       title: m.note ? `${m.label} ${m.note}` : m.label, // label and note as two words

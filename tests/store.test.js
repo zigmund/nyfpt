@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { openAccountDb, deleteDatabase } from '../src/store/db.js'
 import { CACHE_VERSION } from '../src/config.js'
 import {
@@ -142,6 +142,33 @@ describe('db: cache version', () => {
     expect(await db.getCandles('BBB')).toEqual([{ date: '2025-01-01', close: 5 }])
     expect((await other.getKv('positions')).data).toBe(3) // other account untouched
     expect(await db.purgeStale(['positions'])).toBe(0)
+  })
+
+  it('purgeStale: a failing cursor rejects once; the aborted transaction is not an unhandled rejection', async () => {
+    const old = await openAccountDb('global:1', idb, { version: CACHE_VERSION - 1 })
+    await old.putKv('positions', 1)
+    const db = await openAccountDb('global:1', idb)
+    const unhandled = []
+    const onUnhandled = (e) => unhandled.push(e)
+    process.on('unhandledRejection', onUnhandled)
+    const spy = vi.spyOn(globalThis.IDBObjectStore.prototype, 'openCursor').mockImplementation(function () {
+      const req = {}
+      const tx = this.transaction
+      queueMicrotask(() => {
+        req.error = new Error('cursor failed')
+        req.onerror?.()
+        try { tx.abort() } catch { /* the other store's cursor aborted it already */ }
+      })
+      return req
+    })
+    try {
+      await expect(db.purgeStale(['positions'])).rejects.toThrow()
+      await new Promise((r) => setTimeout(r, 20))
+      expect(unhandled).toEqual([])
+    } finally {
+      spy.mockRestore()
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })
 

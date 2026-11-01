@@ -48,6 +48,9 @@
   --gap-lg: 1rem;
   --pad: .875rem;
   --gutter: var(--gap-md);      /* page side gutters; wider on tablet / desktop (.app) */
+  --pill-min: 8ch;              /* change pill content: "+112.42%" (ch of the pill's own font) */
+  --pill-pad: .375rem;          /* change pill side padding */
+  --price-w: 10ch;              /* phone Holdings price / pill column: "$12,345.67" at --fs-body */
   --radius: 10px;
   --radius-sm: 7px;
   --control-h: 2.75rem;
@@ -154,6 +157,7 @@ button, input, select { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important; /* an infinite pulse at .01ms would flicker */
     transition-duration: .01ms !important;
   }
 }
@@ -609,7 +613,7 @@ html.srch-open { overflow: hidden; }
 .srch {
   position: fixed;
   inset: 0;
-  z-index: 8; /* above the top edge guard (5), below the session login overlay (10) */
+  z-index: 8; /* above the sticky bars and headers (1-3), below the session login overlay (10) */
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -1268,7 +1272,7 @@ html.srch-open { overflow: hidden; }
 .ptable--fixed { table-layout: fixed; }
 .hcol--spark { width: 6rem; }
 .hcol--price { width: calc(11ch + var(--gap) * 2); }
-.hcol--pct { width: calc(8ch + .75rem + var(--gap) * 2); } /* the pill: 8 chars + its padding */
+.hcol--pct { width: calc(var(--pill-min) + var(--pill-pad) * 2 + var(--gap) * 2); } /* the pill + cell gaps */
 .hcol--pcttxt { width: calc(8ch + var(--gap) * 2); } /* plain percent text (closed table) */
 .hcol--money { width: calc(14ch + var(--gap) * 2); }
 .hcol--value { width: calc(14ch + var(--gap) * 2); }
@@ -1453,8 +1457,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
 .pill {
   display: inline-block;
-  min-width: var(--pill-min, 8ch);
-  padding: .0625rem .375rem;
+  min-width: calc(var(--pill-min) + var(--pill-pad) * 2); /* border-box: 8 chars of content */
+  padding: .0625rem var(--pill-pad);
   border-radius: 5px;
   text-align: right;
   font-weight: 600;
@@ -1518,10 +1522,11 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 
   .ptable.htable tbody tr {
     display: grid;
-    /* The last track floors at the pill's min width (the same --pill-min; the row and the pill share
-       the table's font, so ch matches). A row without a pill (Cash) then gets the usual column 4;
-       rows are independent grids, so a position row with a wider price still has a wider column 4. */
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(var(--pill-min, 8ch), auto);
+    /* Rows are independent grids: column 4 (price, pill, Cash weight) has one fixed width, so the
+       1fr columns (symbol, spark) line up in every row whatever the price. The row is at --fs-body,
+       the price's size, so --price-w's ch is the price digit; caption cells say so themselves. */
+    font-size: var(--fs-body);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) var(--price-w);
     align-items: center;
     column-gap: var(--gap-md);
     padding: var(--gap) var(--pad);
@@ -1537,6 +1542,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
     text-align: left;
   }
 
+  .ptable.htable .hc-pill,
+  .ptable.htable .hrow__name { font-size: var(--fs-caption); }
   .ptable.htable .hc-sym { grid-column: 1 / 3; grid-row: 1 / 3; }
   .ptable.htable .hrow__sym { font-size: var(--fs-body); }
   .ptable.htable .hrow__name { max-width: none; }

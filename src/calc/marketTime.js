@@ -195,6 +195,16 @@ export function sessionBounds(indexRows) {
   return m
 }
 
+/** Daily rows up to the last session of the index (the latest date of its intraday rows). Some
+ *  tickers (NASDAQ.IDX) carry a daily bar dated after it, e.g. a Saturday single print with
+ *  volume 1; it is not a session. Without index rows the rows are returned as they are.
+ *  Trade-off: before the index's first bar of a new day (US pre-market) that day's bar waits too. */
+export function dailyThroughSession(daily, indexRows) {
+  let anchor = null
+  for (const r of indexRows || []) if (r && r.date && (anchor === null || r.date > anchor)) anchor = r.date
+  return anchor === null || !daily ? daily : daily.filter((r) => r.date <= anchor)
+}
+
 /** Bar length (seconds) of intraday rows: the smallest step between bars; 0 if unknown. */
 export function barSeconds(rows) {
   const ts = [...new Set((rows || []).map((r) => r.ts).filter(Number.isFinite))].sort((a, b) => a - b)

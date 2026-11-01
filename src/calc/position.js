@@ -144,6 +144,7 @@ const AVG_VOL_CANDLES = 63
  *   dayLow/dayHigh  `mintp` / `maxtp`
  *   low52/high52    min low / max high over the last 252 daily candles
  *   volume     `vol` (an index's 0 = none: null); avgVolume  mean `vl` of the last 63 daily candles
+ *              (none for an index: its `vl` is not a traded volume)
  *   kind       'index' | 'stock' | 'preferred' | 'fund' | null; index: `codesub_nm` INDEX, or without a
  *              codesub the .IDX suffix (`ticker`, else `c`): the broker sends kind 1 for indices
  */
@@ -168,7 +169,7 @@ export function keyStats({ info, daily, intraday, sessions, clock, today, ticker
     low52: lows.length ? Math.min(...lows) : null,
     high52: highs.length ? Math.max(...highs) : null,
     volume: vol !== null && vol >= 0 && !(index && vol === 0) ? vol : null,
-    avgVolume: vols.length ? vols.reduce((s, v) => s + v, 0) / vols.length : null,
+    avgVolume: !index && vols.length ? vols.reduce((s, v) => s + v, 0) / vols.length : null,
     kind: index ? 'index' : KINDS[num(i.kind)] || null,
   }
 }

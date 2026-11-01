@@ -1,7 +1,7 @@
 <!-- Main screen: header (status, search, settings), markets strip, value card (value, chart, periods,
-     contributions, cash flows), holdings (day / selected period) and cash flows. -->
+     contributions, cash flows), holdings (day / selected period, closed positions); search sheet. -->
 <template>
-  <div class="screen">
+  <div class="screen" @click.capture="app.rememberScroll?.()">
     <header class="topbar">
       <h1 class="topbar__title">{{ t('app.name') }}</h1>
       <p class="topbar__status" role="status" data-test="updated">
@@ -42,7 +42,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { t } from '../i18n.js'
 import { n } from '../display.js'
 import { useApp } from '../composables/useApp.js'
@@ -59,6 +59,17 @@ const app = useApp()
 const { live } = app
 const state = computed(() => app.state.value)
 const { core, stale, period } = usePeriodCore()
+
+// Back to this screen (history traversal): its entry carries the scroll it was left at. Restored
+// once mounted and laid out (the browser's own restore ran before this screen was rendered).
+onMounted(() => {
+  const y = app.savedScroll?.() || 0
+  if (!y) return
+  nextTick(() => {
+    const raf = globalThis.requestAnimationFrame || ((fn) => setTimeout(fn, 0))
+    raf(() => globalThis.window?.scrollTo?.(0, y))
+  })
+})
 
 // Search sheet; closing it returns focus to the search button.
 const searchOpen = ref(false)

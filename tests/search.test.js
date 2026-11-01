@@ -111,7 +111,7 @@ const STATE = {
   trades: [], cashflows: [], markets: null, inception: null, updatedAt: Date.now(), errors: {}, loading: [],
 }
 
-function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuotes = new Map() } = {}) {
+function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuotes = new Map(), auth } = {}) {
   const saved = []
   const recentSaved = []
   const repo = {
@@ -126,7 +126,8 @@ function makeApp({ prefs = {}, recent = [], findTickers, searchQuotes, liveQuote
     searchQuotes: searchQuotes || vi.fn(async (ts) => Object.fromEntries(ts.map((x) => [x, { last: 240.35, change: -1.41 }]))),
   }
   const app = installApp(createAppState({
-    createBroker: () => ({}),
+    createBroker: () => ({ positions: async () => ({ result: { ps: { acc: [{ curr: 'USD', s: 1 }], pos: [] } } }) }),
+    auth,
     openAccountDb: async () => ({ close() {}, clear: async () => {} }),
     createRepo: () => repo,
     createLive: () => ({
@@ -252,6 +253,14 @@ describe('search sheet: results', () => {
     expect(rows(w)[0].get('.srow__chg').text()).toBe('—')
     expect(rows(w)[1].get('.srow__price').text()).toBe('300.50')
     expect(rows(w)[1].get('.srow__chg').text()).toBe('+2.00%')
+  })
+
+  it('day change of a live quote: price vs previous close first, like the card', async () => {
+    const live = new Map([['GLD.US', { ltp: 300, pp: 250, pcp: 2 }]])
+    const { w } = await openSheet({ findTickers: vi.fn(async () => [GLD]), liveQuotes: live })
+    wrapper = w
+    await type(w, 'g')
+    expect(rows(w)[0].get('.srow__chg').text()).toBe('+20.00%')
   })
 
   it('an unknown type gets no label; broker text is shown as text', async () => {
@@ -401,6 +410,12 @@ describe('search sheet: star (markets strip)', () => {
     expect(off.attributes('title')).toBe(off.attributes('aria-label'))
     await off.trigger('click')
     expect(app.marketStrip.value).toHaveLength(MARKET_STRIP_MAX)
+    // a blocked tap is not silent (touch has no tooltip): the sheet's live region says why
+    const status = () => w.get('[data-test="search-status"]')
+    expect(status().attributes('role')).toBe('status')
+    expect(status().text()).toBe(t('search.stripFull', { max: MARKET_STRIP_MAX }))
+    await type(w, 'am') // a new text: the notice goes, the search status is back
+    expect(status().text()).not.toBe(t('search.stripFull', { max: MARKET_STRIP_MAX }))
     expect(star(w, 'GLD.US').attributes('aria-disabled')).toBeUndefined()
     await star(w, 'GLD.US').trigger('click')
     expect(app.marketStrip.value).toHaveLength(MARKET_STRIP_MAX - 1)
@@ -442,6 +457,18 @@ describe('fix round 1', () => {
   it('logout clears Recent (it lists the account’s activity)', async () => {
     const { app, recentSaved } = makeApp({ recent: [recentOf(AMZN), recentOf(HELD)] })
     await app.logout()
+    expect(app.recent.value).toEqual([])
+    expect(recentSaved.at(-1)).toEqual([])
+  })
+
+  it('a login as another account (e.g. after an expiry) clears Recent; the same account keeps it', async () => {
+    const auth = { loginByPassword: vi.fn(async () => ({ sid: 's2', userId: 1 })) }
+    const { app, recentSaved } = makeApp({ recent: [recentOf(AMZN), recentOf(HELD)], auth })
+    await flushPromises()
+    await app.login('global', { login: 'u', password: 'p' }) // same cabinet:user as the stored session
+    expect(app.recent.value.map((r) => r.ticker)).toEqual([AMZN.ticker, HELD.ticker])
+    auth.loginByPassword.mockResolvedValue({ sid: 's3', userId: 2 }) // another user on this device
+    await app.login('global', { login: 'v', password: 'p' })
     expect(app.recent.value).toEqual([])
     expect(recentSaved.at(-1)).toEqual([])
   })

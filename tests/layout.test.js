@@ -386,11 +386,36 @@ describe('Contributions open state is remembered', () => {
     expect(w.find('.contrib__body').exists()).toBe(true)
   })
 
+  it('aria-controls only while the body exists (no reference to an absent id)', async () => {
+    makeApp()
+    const w = mount(MainScreen)
+    await flushPromises()
+    for (const name of ['contrib', 'flows']) {
+      const btn = w.get(`[data-test="${name}-toggle"]`)
+      expect(btn.attributes('aria-controls'), name).toBeUndefined()
+      await btn.trigger('click')
+      await nextTick()
+      const id = btn.attributes('aria-controls')
+      expect(id, name).toBeTruthy()
+      expect(document.getElementById(id) || w.find(`#${id}`).exists(), name).toBeTruthy()
+    }
+    w.unmount()
+  })
+
   it('opens expanded when prefs say so', () => {
     makeApp({ prefs: { contribOpen: true } })
     const w = mount(Contributions, { props: { positions: CORE.positions } })
     expect(w.get('[data-test="contrib-toggle"]').attributes('aria-expanded')).toBe('true')
     expect(w.find('.contrib__body').exists()).toBe(true)
+  })
+})
+
+describe('reduced motion', () => {
+  it('infinite animations (skeleton pulse) run once instead of flickering at .01ms', () => {
+    const rm = media('(prefers-reduced-motion: reduce)')
+    expect(rm).toMatch(/animation-duration:\s*\.01ms !important/)
+    expect(rm).toMatch(/animation-iteration-count:\s*1 !important/)
+    expect(css).toMatch(/\.pchart__skel\s*\{[^}]*infinite/) // the case it guards
   })
 })
 

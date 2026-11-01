@@ -128,6 +128,7 @@ export const parseHash = (h) => {
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
  *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
  *   back(fallback = '/')  previous app history entry, or `fallback` replacing the first entry (deep link)
+ *   rememberScroll(), savedScroll()  main-screen scroll in its history entry (restored on Back)
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -246,9 +247,10 @@ export function createAppState(overrides = {}) {
   // In-app history depth, kept in each entry's history.state: 0 = the first entry of the app (a deep
   // link), each push (go() or a followed link) adds 1. back() uses the history only above 0.
   let depth = 0
-  function markDepth(d, hash) {
+  function markDepth(d, hash, fresh = false) {
     depth = d
-    const st = { ...(win.history.state || {}), depth: d }
+    // `fresh`: a pushed entry starts clean (no scroll of the entry it was pushed from).
+    const st = { ...(fresh ? {} : win.history.state || {}), depth: d }
     try {
       if (hash === undefined) win.history.replaceState(st, '')
       else win.history.replaceState(st, '', hash)
@@ -256,7 +258,23 @@ export function createAppState(overrides = {}) {
   }
   const depthOf = (st) => (Number.isInteger(st?.depth) && st.depth >= 0 ? st.depth : null)
 
+  // Main-screen scroll, kept in its own history entry next to `depth`: Back from a card (the main
+  // screen mounts again) restores it. Recorded when the main screen is left by go() and on any
+  // click inside it (a followed link changes the entry before the app hears of it).
+  function rememberScroll() {
+    if (!win || route.value !== '/') return
+    try {
+      win.history.replaceState({ ...(win.history.state || {}), scroll: Math.round(win.scrollY || 0) }, '')
+    } catch { /* no history */ }
+  }
+  /** Scroll saved in the current entry (main screen), 0 when none. */
+  const savedScroll = () => {
+    const y = win?.history?.state?.scroll
+    return Number.isFinite(y) && y > 0 ? y : 0
+  }
+
   function setRoute(path, replace = false) {
+    if (!replace) rememberScroll()
     route.value = path
     if (!win) return
     const hash = `#${path}`
@@ -265,7 +283,7 @@ export function createAppState(overrides = {}) {
     else {
       const d = depth + 1
       win.location.hash = hash
-      markDepth(d, hash)
+      markDepth(d, hash, true)
     }
   }
   /** Navigate; login is enforced while there is no session. `replace`: no new history entry. */
@@ -419,8 +437,11 @@ export function createAppState(overrides = {}) {
     if (userId == null) throw new AccountError(t('error.noUser'))
     if (!isUsdAccount(await broker.positions())) throw new AccountError(t('error.usdOnly'))
     const s = { cabinetId: cabinet.id, sid: res.sid, userId, loggedAt: deps.now() }
+    // The previous session (kept over an expiry): Recent lists its activity, not another account's.
+    const prev = session.value || deps.sessionStore.load()
     // Persist only after the account check passed and its storage opened.
     await attach(s, broker)
+    if (prev && `${prev.cabinetId}:${prev.userId}` !== `${s.cabinetId}:${s.userId}`) clearRecent()
     deps.sessionStore.save(s)
     session.value = s
     fatal.value = ''
@@ -488,7 +509,7 @@ export function createAppState(overrides = {}) {
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,
-    start, stop, go, back, login, requestCode, logout, clearCache, retry,
+    start, stop, go, back, login, requestCode, logout, clearCache, retry, rememberScroll, savedScroll,
     liveQuotesForCalc,
     isLiveFor,
     marketOpen,

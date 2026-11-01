@@ -2,7 +2,7 @@
 // Чистые функции: на вход — ответы API Tradernet или строки, на выход — строки/объекты.
 // Не зависят от браузера и от среды дашборда (dash.*).
 
-import { axisDate, barSeconds, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
+import { axisDate, barSeconds, dailyThroughSession, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
 
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
@@ -147,12 +147,9 @@ export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => 
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
-    // Anchor on the last intraday session: some tickers (NASDAQ.IDX) carry an extra daily bar dated after it
-    // (weekend), which would otherwise pick a date with no candles.
-    const anchor = idx.length ? idx[idx.length - 1].date : null;
     return order.map((t) => {
-      const all = by(mkt_daily, t);
-      const d = anchor ? all.filter((r) => r.date <= anchor) : all;
+      // Up to the last index session: a weekend daily bar (NASDAQ.IDX) would pick a date with no candles.
+      const d = dailyThroughSession(by(mkt_daily, t), idx);
       if (d.length < 2) return { ticker: t, date: null, last: null, prev: null, change_pct: null, spark: [] };
       const last = d[d.length - 1], prev = d[d.length - 2];
       const bars = by(mkt_intraday, t);
