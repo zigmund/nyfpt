@@ -61,9 +61,10 @@ export function daySparks(rows, anchorRows, clock, today) {
 /**
  * Period sparkline: the start price, cached daily closes strictly inside (from, to), the end price.
  * Endpoints are computeCore's price_start / price_end, so the line agrees with Range %.
+ * Session days only (isSessionDay, as computeCore): flat weekend .EU bars are no points.
  * @param {{date, close}[]|undefined} closes ascending
  */
 export function periodSpark(closes, from, to, first, last) {
-  const mid = (closes || []).filter((c) => c.date > from && c.date < to).map((c) => c.close)
+  const mid = (closes || []).filter((c) => c.date > from && c.date < to && isSessionDay(c.date)).map((c) => c.close)
   return [first, ...mid, last].filter(Number.isFinite)
 }

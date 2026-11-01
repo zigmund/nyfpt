@@ -2,22 +2,24 @@
 // Чистые функции: на вход — ответы API Tradernet или строки, на выход — строки/объекты.
 // Не зависят от браузера и от среды дашборда (dash.*).
 
-import { axisDate, barSeconds, dailyThroughSession, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
+import { axisDate, barSeconds, dailyThroughSession, isSessionDay, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
+import { positionFactor } from './live.js';
 
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
 
 // ---------- Разбор ответов API (были dash.loader) ----------
 
-/** getPositionJson -> {columns, rows}: позиции (kind=position) и денежные остатки (kind=cash, в USD) */
+/** getPositionJson -> {columns, rows}: позиции (kind=position) и денежные остатки (kind=cash, в USD).
+ *  Позиция несёт k и fx из positionFactor (live.js): q × price × k × fx = value (USD). */
 export const parsePositions = ({ answer }) => {
     const a = J(answer); brokerError(a);
     const ps = a && ((a.result && a.result.ps) || a.ps);
     if (!ps) throw new Error('В ответе нет ps');
     const usd = +((ps.acc || []).find((c) => c.curr === 'USD') || {}).currval || 1;
-    const rows = (ps.pos || []).map((p) => ({ ticker: p.i, name: p.name, kind: 'position', qty: +p.q, price: +p.mkt_price, value: +p.market_value }));
+    const rows = (ps.pos || []).map((p) => ({ ticker: p.i, name: p.name, kind: 'position', qty: +p.q, price: +p.mkt_price, value: +p.market_value, ...positionFactor(p, usd) }));
     for (const c of ps.acc || []) rows.push({ ticker: c.curr, name: c.curr, kind: 'cash', qty: +c.s, price: +c.currval / usd, value: (+c.s * +c.currval) / usd });
-    return { columns: ['ticker', 'name', 'kind', 'qty', 'price', 'value'], rows };
+    return { columns: ['ticker', 'name', 'kind', 'qty', 'price', 'value', 'k', 'fx'], rows };
   };
 
 /** getTradesHistory -> {columns, rows}: id, date (YYYY-MM-DD), ticker, side (1 покупка / -1 продажа), qty, price, commission */
@@ -73,15 +75,25 @@ export const parseHloc = ({ answer }, clock) => {
 /** Текущая стоимость: позиции + деньги. Вход — rows из parsePositions. */
 export const computeNow = (positions) => [{ value: Math.round(positions.reduce((s, p) => s + p.value, 0) * 100) / 100 }];
 
+/** USD per (quantity × quote price) of a position row: k × fx (positionFactor, one rule with
+ *  Holdings). Rows cached without k / fx: positionFactor over the row's own qty / price / value. */
+const rowFactor = (p) => {
+  const { k, fx } = Number.isFinite(p.k) && Number.isFinite(p.fx) ? p : positionFactor({ q: p.qty, mkt_price: p.price, market_value: p.value });
+  return k * fx;
+};
+
 /** Главный расчёт. Вход — rows из parsePositions, parseTrades, parseCashflows, parsePricesForPeriod.
- *  Выход: { series, positions, summary } — см. docs/CALCULATIONS.md. */
+ *  Выход: { series, positions, summary } — см. docs/CALCULATIONS.md.
+ *  Стоимость в USD: q × close × f, f = k × fx текущей позиции (rowFactor); у бумаги без позиции
+ *  (закрыта) f = positionFactor без снимка = 1. Сделки — по той же f. Дневные закрытия — только
+ *  дни сессии (isSessionDay): выходной бар .EU не бывает ни базой, ни forward fill. */
 export const computeCore = (positions, trades, cashflows, prices) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     if (!prices.length) return { series: [], positions: [], summary: null };
     let base = prices[0].window_start;
     const EXT = /intercompany|card|deposit|withdraw|transfer|cash_?in|cash_?out|payout/i;
     const px = {};
-    for (const r of prices) (px[r.ticker] = px[r.ticker] || []).push([r.date, r.close]);
+    for (const r of prices) if (isSessionDay(r.date)) (px[r.ticker] = px[r.ticker] || []).push([r.date, r.close]);
     for (const k in px) px[k].sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const at = (t, d) => { let v = null; for (const [dd, c] of px[t] || []) { if (dd <= d) v = c; else break; } return v; };
     const spyDates = (px['SPY.US'] || []).map((x) => x[0]);
@@ -90,19 +102,21 @@ export const computeCore = (positions, trades, cashflows, prices) => {
     const baseClose = spyDates.filter((d) => d <= base).pop() || base;
     const wk = trades.filter((t) => t.date > base && !String(t.ticker).includes('/'));
     const flows = cashflows.filter((c) => c.date > base);
-    const endQ = {}, names = {};
+    const endQ = {}, names = {}, fac = {};
     let cashEnd = 0;
     for (const p of positions) {
       if (p.kind === 'cash') cashEnd += p.value;
-      else { endQ[p.ticker] = (endQ[p.ticker] || 0) + p.qty; names[p.ticker] = p.name; }
+      else { endQ[p.ticker] = (endQ[p.ticker] || 0) + p.qty; names[p.ticker] = p.name; fac[p.ticker] = rowFactor(p); }
     }
+    const { k: k0, fx: fx0 } = positionFactor({}); // no snapshot: price per unit, USD quote
+    const f = (t) => fac[t] ?? k0 * fx0;
     const startQ = { ...endQ };
     for (const t of wk) { startQ[t.ticker] = (startQ[t.ticker] || 0) - t.side * t.qty; if (!(t.ticker in endQ)) endQ[t.ticker] = 0; }
     const tickers = Object.keys(startQ);
     const missing = tickers.filter((t) => !px[t]);
-    let cash = cashEnd - wk.reduce((s, t) => s - t.side * t.qty * t.price, 0) - flows.reduce((s, c) => s + c.sum, 0);
+    let cash = cashEnd - wk.reduce((s, t) => s - t.side * t.qty * t.price * f(t.ticker), 0) - flows.reduce((s, c) => s + c.sum, 0);
     const q = { ...startQ };
-    const val = (d) => tickers.reduce((s, t) => s + (q[t] ? q[t] * (at(t, d) || 0) : 0), 0) + cash;
+    const val = (d) => tickers.reduce((s, t) => s + (q[t] ? q[t] * (at(t, d) || 0) * f(t) : 0), 0) + cash;
     const dayOf = (d) => days.find((x) => x >= d) || days[days.length - 1];
     const s0 = at('SPY.US', base), n0 = at('QQQ.US', base);
     const V0 = val(base);
@@ -110,7 +124,7 @@ export const computeCore = (positions, trades, cashflows, prices) => {
     const series = [{ date: baseClose, pnl: 0, portfolio: 0, spy: 0, qqq: 0, value: Math.round(V0) }];
     for (const d of days) {
       let e = 0;
-      for (const t of wk) if (dayOf(t.date) === d) { q[t.ticker] += t.side * t.qty; cash -= t.side * t.qty * t.price; }
+      for (const t of wk) if (dayOf(t.date) === d) { q[t.ticker] += t.side * t.qty; cash -= t.side * t.qty * t.price * f(t.ticker); }
       for (const c of flows) if (dayOf(c.date) === d) { cash += c.sum; if (EXT.test(c.type)) e += c.sum; }
       const V = val(d);
       dayPnl = V - e - prev; dayPct = ((V - e) / prev - 1) * 100; dayDate = d;
@@ -121,12 +135,13 @@ export const computeCore = (positions, trades, cashflows, prices) => {
     const Vend = prev;
     const rows = tickers.map((t) => {
       const tt = wk.filter((x) => x.ticker === t);
-      const buys = tt.filter((x) => x.side > 0).reduce((s, x) => s + x.qty * x.price + x.commission, 0);
-      const sells = tt.filter((x) => x.side < 0).reduce((s, x) => s + x.qty * x.price - x.commission, 0);
+      const ft = f(t);
+      const buys = tt.filter((x) => x.side > 0).reduce((s, x) => s + x.qty * x.price * ft + x.commission, 0);
+      const sells = tt.filter((x) => x.side < 0).reduce((s, x) => s + x.qty * x.price * ft - x.commission, 0);
       const p0 = at(t, base), p1 = at(t, end);
-      const v1 = endQ[t] * (p1 || 0);
+      const v1 = endQ[t] * (p1 || 0) * ft;
       const status = endQ[t] === 0 ? 'закрыта' : startQ[t] === 0 ? 'новая' : endQ[t] > startQ[t] ? 'докуплена' : endQ[t] < startQ[t] ? 'сокращена' : '';
-      return { ticker: t, name: names[t] || t, status, qty_start: startQ[t], qty_end: endQ[t], price_start: p0, price_end: p1, change_pct: p0 ? r2((p1 / p0 - 1) * 100) : null, pnl: r2(v1 - startQ[t] * (p0 || 0) - buys + sells), value: r2(v1), weight: r2((v1 / Vend) * 100) };
+      return { ticker: t, name: names[t] || t, status, qty_start: startQ[t], qty_end: endQ[t], price_start: p0, price_end: p1, change_pct: p0 ? r2((p1 / p0 - 1) * 100) : null, pnl: r2(v1 - startQ[t] * (p0 || 0) * ft - buys + sells), value: r2(v1), weight: r2((v1 / Vend) * 100) };
     }).filter((r) => r.qty_start || r.qty_end || wk.some((x) => x.ticker === r.ticker)); // keep round-trips inside the period
     const sum = (re) => r2(flows.filter((c) => re.test(c.type)).reduce((s, c) => s + c.sum, 0));
     const last = series[series.length - 1];

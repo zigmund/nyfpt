@@ -575,6 +575,11 @@ describe('sparks calc', () => {
     expect(periodSpark(undefined, '2026-01-01', '2026-01-06', 1.5, 4.5)).toEqual([1.5, 4.5])
     expect(periodSpark(cs, '2026-01-01', '2026-01-06', null, 4.5)).toEqual([2, 3, 4.5])
   })
+
+  it('periodSpark: weekend daily bars (.EU flat Saturday / Sunday) are no session points', () => {
+    const cs = [['2026-10-29', 49], ['2026-10-30', 50], ['2026-10-31', 51], ['2026-11-01', 51], ['2026-11-02', 52]].map(([date, close]) => ({ date, close }))
+    expect(periodSpark(cs, '2026-10-29', '2026-11-03', 49, 53)).toEqual([49, 50, 52, 53])
+  })
 })
 
 describe('Holdings cash row', () => {

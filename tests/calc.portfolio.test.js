@@ -170,3 +170,99 @@ describe('parsers', () => {
     expect(() => parsePositions({ answer: { errMsg: 'boom' } })).toThrow('boom');
   });
 });
+
+// Task 47: position values in USD with the price multiplier k and fx (positionFactor), and session
+// days only for daily closes. Synthetic tickers and numbers.
+describe('computeCore: price factor k, fx and session days (Task 47)', () => {
+  const px = (ticker, rows, ws) => rows.map(([date, close]) => ({ ticker, date, close, window_start: ws }));
+  const bench = (dates, ws) => [...px('SPY.US', dates.map((d) => [d, 500]), ws), ...px('QQQ.US', dates.map((d) => [d, 400]), ws)];
+  // Bond quoted in % of face 1000 (k = 10): 10 @ 98.5 = $9,850.
+  const BOND_PS = {
+    acc: [{ curr: 'USD', currval: 1, s: 100 }],
+    pos: [{ i: 'ZBND.0130.AIX.KZ', name: 'Synthetic bond', q: 10, mkt_price: 98.5, market_value: 9850, face_val_a: 1000, currval: 1, curr: 'USD' }],
+  };
+
+  it('parsePositions keeps positionFactor k and fx on position rows', () => {
+    const [row] = parsePositions({ answer: { ps: BOND_PS } }).rows;
+    expect(row).toMatchObject({ ticker: 'ZBND.0130.AIX.KZ', k: 10, fx: 1 });
+  });
+
+  it('bond in % of face: q × close × k, trades valued the same way', () => {
+    const ws = '2026-10-29';
+    const prices = [...bench(['2026-10-29', '2026-10-30'], ws), ...px('ZBND.0130.AIX.KZ', [['2026-10-29', 97], ['2026-10-30', 98.5]], ws)];
+    // Bought 2 @ 98.0 on 10-30: start qty 8, cash at the start 100 + 2 × 980 = 2060.
+    const trades = [{ id: '1', date: '2026-10-30', ticker: 'ZBND.0130.AIX.KZ', side: 1, qty: 2, price: 98, commission: 0 }];
+    const positions = parsePositions({ answer: { ps: BOND_PS } }).rows;
+    const res = computeCore(positions, trades, [], prices);
+    // V0 = 8 × 97 × 10 + 2060 = 9820; V1 = 10 × 98.5 × 10 + 100 = 9950.
+    expect(res.summary.value_start).toBe(9820);
+    expect(res.summary.value_end).toBe(9950);
+    expect(res.summary.value_end).toBe(computeNow(positions)[0].value);
+    expect(res.summary.pnl).toBe(130);
+    expect(res.summary.day_pnl).toBe(130);
+    const [b] = res.positions;
+    expect(b).toMatchObject({ price_start: 97, price_end: 98.5, value: 9850, pnl: 130, change_pct: 1.55 });
+    // Rows cached before Task 47 (no k / fx): the same factor from value / (qty × price).
+    const old = positions.map(({ k, fx: _fx, ...r }) => r);
+    expect(computeCore(old, trades, [], prices)).toEqual(res);
+  });
+
+  it('non-USD quote: q × close × fx (the snapshot rate)', () => {
+    const ps = {
+      acc: [{ curr: 'USD', currval: 1, s: 100 }],
+      pos: [{ i: 'ZEU.EU', name: 'Synthetic EUR', q: 10, mkt_price: 50, market_value: 550, currval: 1.1, curr: 'EUR' }],
+    };
+    const ws = '2026-10-29';
+    const prices = [...bench(['2026-10-29', '2026-10-30'], ws), ...px('ZEU.EU', [['2026-10-29', 48], ['2026-10-30', 50]], ws)];
+    const positions = parsePositions({ answer: { ps } }).rows;
+    const res = computeCore(positions, [], [], prices);
+    // V0 = 10 × 48 × 1.1 + 100 = 628; V1 = 550 + 100 = 650.
+    expect(res.summary.value_start).toBe(628);
+    expect(res.summary.value_end).toBe(650);
+    expect(res.summary.pnl).toBe(22);
+    expect(res.positions[0]).toMatchObject({ value: 550, pnl: 22, weight: 84.62 });
+  });
+
+  it('a position closed in the period (no snapshot): factor 1 (USD quote, price per unit)', () => {
+    const ws = '2026-10-29';
+    const prices = [...bench(['2026-10-29', '2026-10-30'], ws), ...px('ZOLD.US', [['2026-10-29', 20], ['2026-10-30', 21]], ws)];
+    const trades = [{ id: '1', date: '2026-10-30', ticker: 'ZOLD.US', side: -1, qty: 5, price: 22, commission: 0 }];
+    const positions = [{ ticker: 'USD', name: 'USD', kind: 'cash', qty: 210, price: 1, value: 210 }];
+    const res = computeCore(positions, trades, [], prices);
+    expect(res.summary.value_start).toBe(200); // 5 × 20 + (210 − 110)
+    expect(res.positions[0]).toMatchObject({ ticker: 'ZOLD.US', qty_end: 0, pnl: 10 });
+  });
+
+  // A .EU-like ticker: the broker sends flat Saturday / Sunday daily bars that need not equal
+  // Friday's close (here 51 vs Friday 50). They are no session.
+  const EU_PS = {
+    acc: [{ curr: 'USD', currval: 1, s: 0 }],
+    pos: [{ i: 'ZEU.EU', name: 'Synthetic EU', q: 10, mkt_price: 52, market_value: 520, currval: 1, curr: 'USD' }],
+  };
+
+  it('weekend bar is never the period base (1D on Monday: base on Sunday)', () => {
+    const ws = '2026-11-01';
+    const prices = [
+      ...bench(['2026-10-29', '2026-10-30', '2026-11-02'], ws),
+      ...px('ZEU.EU', [['2026-10-30', 50], ['2026-10-31', 51], ['2026-11-01', 51], ['2026-11-02', 52]], ws),
+    ];
+    const res = computeCore(parsePositions({ answer: { ps: EU_PS } }).rows, [], [], prices);
+    expect(res.summary.base_close).toBe('2026-10-30');
+    expect(res.positions[0]).toMatchObject({ price_start: 50, price_end: 52, pnl: 20 });
+    expect(res.summary.value_start).toBe(500);
+    expect(res.summary.day_pnl).toBe(20);
+  });
+
+  it('weekend bar is never forward-filled into a weekday without a bar', () => {
+    const ws = '2026-10-29';
+    // No ZEU bar on Monday 11-02 (holiday of its market): Monday's price is Friday's 50, not Sunday's 51.
+    const prices = [
+      ...bench(['2026-10-29', '2026-10-30', '2026-11-02'], ws),
+      ...px('ZEU.EU', [['2026-10-29', 49], ['2026-10-30', 50], ['2026-10-31', 51], ['2026-11-01', 51]], ws),
+    ];
+    const res = computeCore(parsePositions({ answer: { ps: EU_PS } }).rows, [], [], prices);
+    expect(res.series.map((r) => r.value)).toEqual([490, 500, 500]);
+    expect(res.positions[0]).toMatchObject({ price_start: 49, price_end: 50, pnl: 10 });
+    expect(res.summary.day_pnl).toBe(0);
+  });
+});
