@@ -143,11 +143,14 @@ const AVG_VOL_CANDLES = 63
  *              only), `clock`: the market clock (marketClockFor), `today`: its trading date
  *   dayLow/dayHigh  `mintp` / `maxtp`
  *   low52/high52    min low / max high over the last 252 daily candles
- *   volume     `vol`; avgVolume  mean `vl` of the last 63 daily candles
- *   kind       'stock' | 'preferred' | 'fund' | null
+ *   volume     `vol` (an index's 0 = none: null); avgVolume  mean `vl` of the last 63 daily candles
+ *   kind       'index' | 'stock' | 'preferred' | 'fund' | null; index: `codesub_nm` INDEX, or without a
+ *              codesub the .IDX suffix (`ticker`, else `c`): the broker sends kind 1 for indices
  */
-export function keyStats({ info, daily, intraday, sessions, clock, today } = {}) {
+export function keyStats({ info, daily, intraday, sessions, clock, today, ticker = null } = {}) {
   const i = info || {}
+  const sub = i.codesub_nm ? String(i.codesub_nm).toUpperCase() : ''
+  const index = sub ? sub === 'INDEX' : String(ticker || i.c || '').toUpperCase().endsWith('.IDX')
   const d = daily || []
   const last = d.length ? d[d.length - 1] : null
   const session = intraday && intraday.length ? chartRows('1D', { intraday }, { sessions, clock, today }) : []
@@ -164,9 +167,9 @@ export function keyStats({ info, daily, intraday, sessions, clock, today } = {})
     dayHigh: posNum(i.maxtp),
     low52: lows.length ? Math.min(...lows) : null,
     high52: highs.length ? Math.max(...highs) : null,
-    volume: vol !== null && vol >= 0 ? vol : null,
+    volume: vol !== null && vol >= 0 && !(index && vol === 0) ? vol : null,
     avgVolume: vols.length ? vols.reduce((s, v) => s + v, 0) / vols.length : null,
-    kind: KINDS[num(i.kind)] || null,
+    kind: index ? 'index' : KINDS[num(i.kind)] || null,
   }
 }
 

@@ -239,6 +239,19 @@ describe('createLive', () => {
     expect(live.isOpenFor('NOPE.US')).toBe(false) // no quote, no market code
   })
 
+  it('isMarketOpen: a market by name, for securities without a streamed quote (Task 41)', () => {
+    const { live } = setup({ tickers: ['AAA.US'] })
+    live.start()
+    last().open()
+    expect(live.isMarketOpen('FIX')).toBe(false) // markets unknown
+    last().push('markets', OPEN)
+    expect(live.isMarketOpen('FIX')).toBe(true)
+    expect(live.isMarketOpen('fix')).toBe(true)
+    expect(live.isMarketOpen('KASE')).toBe(false)
+    expect(live.isMarketOpen(null)).toBe(false)
+    expect(live.isMarketOpen('')).toBe(false)
+  })
+
   it('seeds quotes over REST when markets open but no market codes are known', async () => {
     const { live, broker } = setup()
     live.start()

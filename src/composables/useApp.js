@@ -1,6 +1,6 @@
 // App state singleton: session, account partition, repo + live wiring, prefs and hash routing.
 import { ref, shallowRef, reactive, watch, computed } from 'vue'
-import { CABINETS, DEFAULT_CABINET, MARKET_STRIP, POLL_MS } from '../config.js'
+import { CABINETS, DEFAULT_CABINET, MARKET_STRIP, MARKET_STRIP_MAX, POLL_MS } from '../config.js'
 import { PERIODS } from '../calc/periods.js'
 import { t } from '../i18n.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../api/auth.js'
@@ -8,7 +8,8 @@ import { createBroker } from '../api/broker.js'
 import { LiveSocket } from '../api/ws.js'
 import { openAccountDb } from '../store/db.js'
 import {
-  loadSession, saveSession, clearSession, loadPrefs, savePrefs, marketStripOf, validStrip,
+  loadSession, saveSession, clearSession, loadPrefs, savePrefs, marketStripOf, validStrip, stripCardOf,
+  loadRecent, saveRecent, pushRecent,
 } from '../store/session.js'
 import { createRepo } from '../data/repo.js'
 import { localDay } from '../calc/marketTime.js'
@@ -32,6 +33,7 @@ const defaultDeps = () => ({
   socketFactory: (cabinet, sid) => () => new LiveSocket({ wsUrl: cabinet.ws, sid }),
   sessionStore: { load: loadSession, save: saveSession, clear: clearSession },
   prefsStore: { load: loadPrefs, save: savePrefs },
+  recentStore: { load: loadRecent, save: saveRecent },
   now: () => Date.now(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (id) => clearTimeout(id),
@@ -108,16 +110,24 @@ export const parseHash = (h) => {
  *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
  *   marketStrip  ComputedRef<[{ticker, label, note?}]> cards of the markets strip (prefs.marketStrip or the default)
  *   setMarketStrip(list | null)  save the strip (null / the default list: back to the default); false when invalid
- *   findTickers(text)  broker instrument search for the strip editor (repo.findTickers)
+ *   inStrip(ticker), stripFull  ComputedRef<boolean>: the strip has MARKET_STRIP_MAX cards
+ *   addToStrip({ticker, name, code})  a card at the end (label = name, note = code); false when full or shown
+ *   removeFromStrip(ticker)
+ *   findTickers(text)  broker instrument search (repo.findTickers)
+ *   searchQuotes(tickers)  {ticker: {last, change}} for search rows (repo.searchQuotes; never rejects)
+ *   recent       Ref<[{ticker, name, code, type, market, currency}]> securities opened from the search
+ *   addRecent(row), clearRecent()
  *   route        Ref<'/' | '/login' | '/compare' | '/settings' | '/position/<ticker>[/<tab>]'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   isLiveFor(ticker)    live and this security's own market is open (position card)
+ *   marketOpen(ltr)      that market is open (market status), for a card without a streamed quote
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
  *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
+ *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
+ *   back(fallback = '/')  previous app history entry, or `fallback` replacing the first entry (deep link)
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -159,6 +169,24 @@ export function createAppState(overrides = {}) {
     return true
   }
   watch(() => stripTickers().join(','), () => { repo?.setStrip?.(stripTickers())?.catch?.(() => {}) })
+  const inStrip = (ticker) => marketStrip.value.some((m) => m.ticker === ticker)
+  const stripFull = computed(() => marketStrip.value.length >= MARKET_STRIP_MAX)
+  function addToStrip(r) {
+    if (stripFull.value || inStrip(r.ticker)) return false
+    return setMarketStrip([...marketStrip.value, stripCardOf(r)])
+  }
+  function removeFromStrip(ticker) {
+    return setMarketStrip(marketStrip.value.filter((m) => m.ticker !== ticker))
+  }
+
+  // --- recent searches (localStorage, no prices)
+  const recent = ref(deps.recentStore.load())
+  function setRecent(list) {
+    recent.value = list
+    deps.recentStore.save(list)
+  }
+  const addRecent = (r) => setRecent(pushRecent(recent.value, r))
+  const clearRecent = () => setRecent([])
 
   // --- theme: prefs.theme -> <html data-theme>, meta tags; 'system' follows prefers-color-scheme
   if (!THEMES.includes(prefs.theme)) prefs.theme = 'light'
@@ -215,13 +243,30 @@ export function createAppState(overrides = {}) {
   }
 
   // --- routing
+  // In-app history depth, kept in each entry's history.state: 0 = the first entry of the app (a deep
+  // link), each push (go() or a followed link) adds 1. back() uses the history only above 0.
+  let depth = 0
+  function markDepth(d, hash) {
+    depth = d
+    const st = { ...(win.history.state || {}), depth: d }
+    try {
+      if (hash === undefined) win.history.replaceState(st, '')
+      else win.history.replaceState(st, '', hash)
+    } catch { /* no history */ }
+  }
+  const depthOf = (st) => (Number.isInteger(st?.depth) && st.depth >= 0 ? st.depth : null)
+
   function setRoute(path, replace = false) {
     route.value = path
     if (!win) return
     const hash = `#${path}`
     if (win.location.hash === hash) return
-    if (replace) win.history.replaceState(null, '', hash)
-    else win.location.hash = hash
+    if (replace) markDepth(depth, hash)
+    else {
+      const d = depth + 1
+      win.location.hash = hash
+      markDepth(d, hash)
+    }
   }
   /** Navigate; login is enforced while there is no session. `replace`: no new history entry. */
   function go(path, { replace = false } = {}) {
@@ -230,6 +275,10 @@ export function createAppState(overrides = {}) {
     setRoute(p === '/login' ? '/' : p, replace)
   }
   function onHash() {
+    // An entry of ours (back / forward) carries its depth; a new one (link, typed URL) is a push.
+    const d = depthOf(win.history.state)
+    if (d === null) markDepth(depth + 1)
+    else depth = d
     const p = parseHash(win.location.hash)
     if (!session.value && p !== '/login') return setRoute('/login', true)
     if (session.value && p === '/login') return setRoute('/', true)
@@ -313,6 +362,7 @@ export function createAppState(overrides = {}) {
   function start() {
     if (started) return
     started = true
+    if (win) markDepth(depthOf(win.history.state) ?? 0)
     win?.addEventListener('hashchange', onHash)
     doc?.addEventListener('visibilitychange', onVisibility)
     media?.addEventListener('change', applyTheme)
@@ -391,6 +441,7 @@ export function createAppState(overrides = {}) {
     }
     closeDb()
     deps.sessionStore.clear()
+    clearRecent() // built from this account's activity (held tickers): not left for the next user
     session.value = null
     expired.value = false
     fatal.value = ''
@@ -406,6 +457,18 @@ export function createAppState(overrides = {}) {
     await open(session.value) // fresh repo: in-memory cache dropped, reloads from the broker
   }
 
+  /** Back from a screen: the previous app entry when there is one, else `fallback` (deep link) in
+   *  place of this entry, so system Back does not bounce between the two. */
+  function back(fallback = '/') {
+    if (depth > 0 && win?.history) win.history.back()
+    else go(fallback, { replace: true })
+  }
+
+  /** Market `name` (getSecurityInfo / quote `ltr`) is open, per the live controller's market status. */
+  function marketOpen(name) {
+    return !!liveObj && !expired.value && !!liveObj.isMarketOpen?.(name)
+  }
+
   /** Live for one security: live mode and its own market open (a KASE card is not live
    *  because the US session is). */
   function isLiveFor(ticker) {
@@ -418,14 +481,17 @@ export function createAppState(overrides = {}) {
 
   return {
     session, expired, fatal, state, tick, live, prefs, route,
-    marketStrip, setMarketStrip,
+    marketStrip, setMarketStrip, inStrip, stripFull, addToStrip, removeFromStrip,
+    recent, addRecent, clearRecent,
     findTickers: (text) => (repo?.findTickers ? repo.findTickers(text) : Promise.resolve([])),
+    searchQuotes: (tickers) => (repo?.searchQuotes ? repo.searchQuotes(tickers) : Promise.resolve({})),
     mock: !!deps.mock,
     cabinets: CABINETS,
     cabinetOf,
-    start, stop, go, login, requestCode, logout, clearCache, retry,
+    start, stop, go, back, login, requestCode, logout, clearCache, retry,
     liveQuotesForCalc,
     isLiveFor,
+    marketOpen,
     getRepo: () => repo,
     coreFor: (period, day) => (repo ? repo.coreFor(period, day, liveQuotesForCalc()) : null),
     ensurePrices: (period, day) => (repo ? repo.ensurePrices(period, day) : Promise.resolve()),

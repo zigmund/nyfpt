@@ -1,6 +1,6 @@
-<!-- Position card, Summary tab: name and price, price chart with periods, My holdings,
-     Key statistics (Task 22 set; a stat without a value is hidden). Broker text is rendered
-     only through interpolation. -->
+<!-- Security card, Summary tab: name and price (Live / As of while its market is open / At close),
+     price chart with periods, My holdings (held or closed positions only, else no block), Key
+     statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation. -->
 <template>
   <div class="psum">
     <p v-if="loadError" class="banner" role="status" data-test="p-error">
@@ -23,6 +23,7 @@
           <span class="dot dot--on" aria-hidden="true" />
           <span>{{ t('pos.live') }}</span>
         </template>
+        <span v-else-if="pos.closedAt && pos.marketOpen">{{ t('pos.asOf', { at: pos.closedAt }) }}</span>
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
       </p>
 
@@ -223,7 +224,7 @@ const holdingsPending = computed(() => {
 const nameLoading = computed(() => props.pos.name === ticker.value && !props.pos.sec.info && !loadError.value)
 
 // --- key statistics
-const KIND_KEYS = { stock: 'pos.kind.stock', preferred: 'pos.kind.preferred', fund: 'pos.kind.fund' }
+const KIND_KEYS = { stock: 'pos.kind.stock', preferred: 'pos.kind.preferred', fund: 'pos.kind.fund', index: 'pos.kind.index' }
 const vol = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const ranges = computed(() => {
   const s = props.pos.stats
@@ -238,7 +239,8 @@ const statRows = computed(() => {
   return [
     { key: 'prevClose', v: s.prevClose, text: fPrice(s.prevClose) },
     { key: 'open', v: s.open, text: fPrice(s.open) },
-    { key: 'volume', v: s.volume, text: s.volume == null ? '' : vol.format(s.volume) },
+    // An index without a volume: a dash (the row stays, as on Yahoo); otherwise a missing value hides the row.
+    { key: 'volume', v: s.volume ?? (s.kind === 'index' ? 0 : null), text: s.volume == null ? '—' : vol.format(s.volume) },
     { key: 'avgVolume', v: s.avgVolume, text: s.avgVolume == null ? '' : vol.format(s.avgVolume) },
     { key: 'kind', v: s.kind, text: s.kind ? t(KIND_KEYS[s.kind]) : '' },
   ].filter((r) => r.v != null).map((r) => ({ ...r, label: t(`pos.ks.${r.key}`) }))

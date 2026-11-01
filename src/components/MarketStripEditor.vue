@@ -69,12 +69,11 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { t } from '../i18n.js'
 import { MARKET_STRIP_MAX } from '../config.js'
 import { useApp } from '../composables/useApp.js'
-
-const SEARCH_MS = 300
+import { useTickerSearch } from '../composables/useTickerSearch.js'
 
 const app = useApp()
 const root = ref(null)
@@ -82,8 +81,8 @@ const search = ref(null)
 
 const items = computed(() => app.marketStrip.value)
 const isDefault = computed(() => app.prefs.marketStrip == null)
-const full = computed(() => items.value.length >= MARKET_STRIP_MAX)
-const has = (ticker) => items.value.some((m) => m.ticker === ticker)
+const full = app.stripFull
+const has = app.inStrip
 
 const save = (list) => app.setMarketStrip(list)
 
@@ -109,7 +108,7 @@ function move(i, d) {
 }
 
 function remove(i) {
-  save(items.value.filter((_, k) => k !== i))
+  app.removeFromStrip(items.value[i].ticker)
   focusCard(i, 'remove')
 }
 
@@ -119,45 +118,13 @@ function rename(i, e) {
   save(items.value.map((m, k) => (k === i ? { ...m, label } : { ...m })))
 }
 
-// Note: the broker's code_nm (the ticker without its suffix, e.g. DIA, NVDA_KZ), else the ticker with
-// its market suffix stripped, like the default cards (USO.US -> USO).
-const noteOf = (r) => r.code || r.ticker.replace(/\.[^.]+$/, '') || r.ticker
-
-function add(r) {
-  if (full.value || has(r.ticker)) return
-  save([...items.value, { ticker: r.ticker, label: r.name || r.ticker, note: noteOf(r) }])
-}
+// Label = name, note = the broker's code_nm, else the ticker without its suffix (store/session.js stripCardOf).
+const add = (r) => app.addToStrip(r)
 
 function reset() {
   save(null)
 }
 
-// --- search: debounced; an answer to an older text is dropped
-const query = ref('')
-const results = ref([])
-const status = ref('')
-let timer = null
-let seq = 0
-
-watch(query, (v) => {
-  clearTimeout(timer)
-  const my = ++seq
-  const text = String(v || '').trim()
-  if (!text) { results.value = []; status.value = ''; return }
-  timer = setTimeout(async () => {
-    status.value = t('settings.stripSearching')
-    try {
-      const found = await app.findTickers(text)
-      if (my !== seq) return
-      results.value = found
-      status.value = found.length ? '' : t('settings.stripNone')
-    } catch {
-      if (my !== seq) return
-      results.value = []
-      status.value = t('settings.stripFailed')
-    }
-  }, SEARCH_MS)
-})
-
-onBeforeUnmount(() => { clearTimeout(timer); seq++ })
+// --- search: debounced; an answer to an older text is dropped (useTickerSearch)
+const { query, results, status } = useTickerSearch(app.findTickers)
 </script>

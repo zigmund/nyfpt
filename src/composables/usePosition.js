@@ -1,5 +1,6 @@
-// Position card data for one ticker: security info + candles (repo, TTL-gated), the live quote,
-// the broker position and the derived price, day change, My holdings and key statistics.
+// Security card data for one ticker (held or not): security info + candles (repo, TTL-gated), the
+// live quote (held / strip / benchmark tickers only), the broker position and the derived price, day
+// change, My holdings and key statistics.
 import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
@@ -21,7 +22,8 @@ const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric'
  */
 export function lastTradeTime(ltt, mc, timeZone) {
   const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(ltt || ''))
-  if (!m || Number(m[2]) > 23) return null
+  // Before 2000: no trade time (an index answers '1970-01-01T00:00:00' with zero prices).
+  if (!m || Number(m[2]) > 23 || m[1] < '2000') return null
   const wall = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4] || '00'}Z`) / 1000
   return Number.isFinite(wall) ? formatLocal(wallToUtc(wall, mc), timeZone) : null
 }
@@ -51,24 +53,39 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     return !!quote.value && !!app.isLiveFor?.(ticker)
   })
 
-  const price = computed(() => n(quote.value?.ltp) ?? posN(info.value?.ltp) ?? posN(raw.value?.mkt_price))
+  // Close of the daily candle `back` candles before the last (an index's security info has zero prices).
+  const dailyClose = (back) => {
+    const d = sec.value.daily
+    return d && d.length > back ? posN(d[d.length - 1 - back].close) : null
+  }
+  const infoPrice = computed(() => posN(info.value?.ltp))
+  const price = computed(() => n(quote.value?.ltp) ?? infoPrice.value ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
   // `pp`: the broker's day change (chg = ltp - pp) is measured from it.
-  const prevClose = computed(() => posN(quote.value?.pp) ?? posN(info.value?.pp) ?? posN(raw.value?.close_price))
+  const prevClose = computed(() => posN(quote.value?.pp) ?? posN(info.value?.pp) ?? posN(raw.value?.close_price) ?? dailyClose(1))
   const change = computed(() => (price.value !== null && prevClose.value !== null ? price.value - prevClose.value : null))
   const changePct = computed(() => (change.value === null ? null : (change.value / prevClose.value) * 100))
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({
-    info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
+    ticker, info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
   }))
 
-  const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || ticker)
+  // A ticker without a position or security info (an index): its strip card label or search name.
+  const known = computed(() => app.marketStrip?.value?.find((m) => m.ticker === ticker)?.label
+    || (app.recent?.value || []).find((r) => r.ticker === ticker)?.name || null)
+  const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || known.value || ticker)
   const currency = computed(() => info.value?.x_curr || raw.value?.curr || null)
   const exchange = computed(() => info.value?.codesub_nm || info.value?.ltr || null)
   const kind = computed(() => n(info.value?.kind))
-  /** 'At close' time: last trade time in the user's zone, else the last daily candle's date. */
+  /** This security's market is open (no streamed quote needed: a ticker the app does not track). */
+  const marketOpen = computed(() => {
+    void app.tick.value
+    return isLive.value || !!app.marketOpen?.(info.value?.ltr || quote.value?.ltr)
+  })
+  /** 'At close' / 'As of' time: last trade time in the user's zone, else the last daily candle's date. */
   const closedAt = computed(() => {
-    const at = lastTradeTime(info.value?.ltt, sec.value.clock)
+    // A trade time without a price is not one.
+    const at = infoPrice.value === null ? null : lastTradeTime(info.value?.ltt, sec.value.clock)
     if (at) return at
     const d = sec.value.daily
     return d && d.length ? fmtDay.format(new Date(`${d[d.length - 1].date}T00:00:00Z`)) : null
@@ -89,6 +106,6 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
 
   return {
     ticker, sec, info, raw, quote, isLive, price, prevClose, change, changePct, holding, stats,
-    name, currency, exchange, kind, closedAt, load,
+    name, currency, exchange, kind, marketOpen, closedAt, load,
   }
 }
