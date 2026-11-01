@@ -1,9 +1,36 @@
 # nyfpt
 
 Yahoo-Finance-style portfolio PWA for Tradernet / Freedom Broker clients. Vue 3 + Vite.
-The browser talks straight to the broker (`https://tradernet.global/api/` with a session ID,
-plus the `wss://wss.tradernet.global/` quotes socket) and caches data locally. The server side
-is nginx serving static files: no backend, no proxy, no server-side storage.
+Public site: https://portfolio.zigmund.xyz/
+
+## No backend: your data never touches our servers
+
+There is no application backend. The server only hands out static files (HTML, JS, CSS,
+icons) through nginx. Everything else happens in your browser:
+
+- Your login, password, SMS / push code, session ID and all account data go from the browser
+  straight to Tradernet (`https://tradernet.global/api/` and `wss://wss.tradernet.global/`).
+  They do not pass through the server that hosts the app and are not stored on it.
+- Cached data lives only in your browser (IndexedDB and localStorage). `Settings -> Clear cache`
+  and `Settings -> Log out` erase it on this device.
+- Access is read-only: login always uses `viewOnlyMode: true`.
+
+You can check this yourself:
+
+- The Content-Security-Policy (`nginx/security-headers.inc`) has
+  `connect-src 'self' https://tradernet.global wss://wss.tradernet.global`, so the browser
+  refuses to send requests anywhere else. The only `'self'` requests are for static files and
+  the service worker, which caches only those files from our own origin and never touches
+  broker requests or data.
+- No analytics, trackers, CDN, external fonts or other third-party requests.
+- DevTools -> Network shows every request the app makes.
+- The code is open. You can run your own copy (see "Run locally in Docker" below:
+  `docker run --rm -p 8080:8080 zigmund/nyfpt`), and then even the static files do not come
+  from anyone else's server.
+
+To be precise: like any web server, the one behind https://portfolio.zigmund.xyz/ sees ordinary
+HTTP requests for static files (IP address, User-Agent, path), but no account data. Your data
+is held by the broker and falls under the broker's policy.
 
 Calculation rules: `docs/CALCULATIONS.md`. UI notes: `docs/UI.md`. Decisions: `docs/DECISIONS.md`.
 Broker API reference: `docs/tradernet-api.md`.
