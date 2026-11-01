@@ -83,18 +83,25 @@ const rowFactor = (p) => {
 };
 
 /** Главный расчёт. Вход — rows из parsePositions, parseTrades, parseCashflows, parsePricesForPeriod.
+ *  `regular` (Task 51): Map ticker -> Map date -> закрытие основной сессии (US); заменяет дневное
+ *  закрытие той же даты (дневная свеча US закрывается последней сделкой расширенной сессии).
+ *  Дата без регулярного закрытия берёт дневное.
  *  Выход: { series, positions, summary } — см. docs/CALCULATIONS.md.
  *  Стоимость в USD: q × close × f, f = k × fx текущей позиции (rowFactor); у бумаги без позиции
  *  (закрыта) f = positionFactor без снимка = 1. Сделки — по той же f. Дневные закрытия — только
  *  дни сессии (isSessionDay): выходной бар .EU не бывает ни базой, ни forward fill. */
-export const computeCore = (positions, trades, cashflows, prices) => {
+export const computeCore = (positions, trades, cashflows, prices, regular = null) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     if (!prices.length) return { series: [], positions: [], summary: null };
     let base = prices[0].window_start;
     const EXT = /intercompany|card|deposit|withdraw|transfer|cash_?in|cash_?out|payout/i;
     const px = {};
     for (const r of prices) if (isSessionDay(r.date)) (px[r.ticker] = px[r.ticker] || []).push([r.date, r.close]);
-    for (const k in px) px[k].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    for (const k in px) {
+      px[k].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      const reg = regular && regular.get(k);
+      if (reg) px[k] = px[k].map(([d, c]) => [d, reg.get(d) ?? c]);
+    }
     const at = (t, d) => { let v = null; for (const [dd, c] of px[t] || []) { if (dd <= d) v = c; else break; } return v; };
     const spyDates = (px['SPY.US'] || []).map((x) => x[0]);
     let days = spyDates.filter((d) => d > base);
