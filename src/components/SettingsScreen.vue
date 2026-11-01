@@ -1,5 +1,5 @@
 <template>
-  <div class="screen">
+  <div class="screen screen--narrow">
     <header class="topbar">
       <a class="icon-btn" href="#/" :aria-label="t('nav.back')">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">

@@ -5,10 +5,12 @@ import { nextTick, reactive, ref } from 'vue'
 import Holdings from '../src/components/Holdings.vue'
 import MarketSpark from '../src/components/MarketSpark.vue'
 import { daySparks, periodSpark } from '../src/calc/sparks.js'
+import { marketClock } from '../src/calc/marketTime.js'
 import { installApp } from '../src/composables/useApp.js'
 import { money, pct } from '../src/format.js'
 import { computeCore } from '../src/calc/portfolio.js'
 import { t } from '../src/i18n.js'
+import { readFileSync } from 'node:fs'
 
 // Synthetic raw `ps` (broker shape); not real account data.
 const PS = {
@@ -457,6 +459,8 @@ describe('sparks calc', () => {
     bar('SP500.IDX', '2026-10-29', '09:30', 1), bar('SP500.IDX', '2026-10-29', '15:45', 1),
     bar('SP500.IDX', '2026-10-30', '09:30', 1), bar('SP500.IDX', '2026-10-30', '15:45', 1),
   ]
+  // Broker status of a server on UTC (axis = wall clock): US market opens 09:30, dt 0.
+  const CLK = marketClock({ t: '2026-10-31 12:00:00', at: Date.parse('2026-10-31T12:00:00Z'), m: [{ n: 'FIX', o: '09:30:00', c: '20:00:00', dt: '0' }] })
 
   it('US tickers: the last S&P 500 session, regular hours only', () => {
     const rows = [
@@ -467,7 +471,7 @@ describe('sparks calc', () => {
       bar('AAA.US', '2026-10-30', '17:00', 13), // post-market
       bar('AAA.US', '2026-10-31', '08:00', 14), // pre-market of a day without an index session yet
     ]
-    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-31')['AAA.US']).toEqual({ date: '2026-10-30', spark: [10, 11, 12] })
   })
 
   it('US tickers before their first regular bar of the index session: the previous session, flagged prior', () => {
@@ -477,8 +481,8 @@ describe('sparks calc', () => {
       bar('AAA.US', '2026-10-29', '09:30', 5), bar('AAA.US', '2026-10-29', '15:45', 6),
       bar('AAA.US', '2026-10-30', '08:00', 7), // pre-market only
     ]
-    expect(daySparks(rows, IDX)['AAA.US']).toEqual({ date: '2026-10-29', spark: [5, 6], prior: true })
-    expect(daySparks([bar('AAA.US', '2026-10-30', '08:00', 7)], IDX)['AAA.US']).toEqual({ date: '2026-10-30', spark: [] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-30')['AAA.US']).toEqual({ date: '2026-10-29', spark: [5, 6], prior: true })
+    expect(daySparks([bar('AAA.US', '2026-10-30', '08:00', 7)], IDX, CLK, '2026-10-30')['AAA.US']).toEqual({ date: '2026-10-30', spark: [] })
   })
 
   it('other markets (KZ): their own last session', () => {
@@ -486,12 +490,12 @@ describe('sparks calc', () => {
       bar('CCC_KZ.KZ', '2026-10-30', '11:30', 3),
       bar('CCC_KZ.KZ', '2026-10-31', '11:30', 4), bar('CCC_KZ.KZ', '2026-10-31', '12:00', 5),
     ]
-    expect(daySparks(rows, IDX)['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-31')['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
   })
 
   it('US tickers without index candles: their own last date', () => {
     const rows = [bar('AAA.US', '2026-10-29', '10:00', 5), bar('AAA.US', '2026-10-30', '10:00', 6), bar('AAA.US', '2026-10-30', '10:15', 7)]
-    expect(daySparks(rows, [])['AAA.US']).toEqual({ date: '2026-10-30', spark: [6, 7] })
+    expect(daySparks(rows, [], CLK, '2026-10-31')['AAA.US']).toEqual({ date: '2026-10-30', spark: [6, 7] })
   })
 
   it('periodSpark: start price, closes strictly inside (from, to), end price', () => {
@@ -590,10 +594,13 @@ describe('dev mock (?mock)', () => {
     const today = new Date().toISOString().slice(0, 10)
     const from = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10)
     const to = new Date(Date.now() + 864e5).toISOString().slice(0, 10)
-    const pending = Promise.all([b.hlocIntraday(tickers, from, to, 15), b.hlocIntraday(['SP500.IDX'], from, to, 15)])
+    const { marketClock, marketClockFor, marketDay } = await import('../src/calc/marketTime.js')
+    const pending = Promise.all([b.hlocIntraday(tickers, from, to, 15), b.hlocIntraday(['SP500.IDX'], from, to, 15), b.marketStatus()])
     await vi.advanceTimersByTimeAsync(1000)
-    const [pos, idx] = (await pending).map((a) => parseHloc({ answer: a }).rows)
-    const sp = daySparks(pos, idx)
+    const [ai, ax, st] = await pending
+    const clock = marketClock({ ...st.result.markets, at: Date.now() })
+    const [pos, idx] = [ai, ax].map((a) => parseHloc({ answer: a }, clock).rows)
+    const sp = daySparks(pos, idx, clock, marketDay(marketClockFor(clock, 'FIX'), Date.now()))
     for (const tk of tickers) expect(sp[tk]?.spark.length, `${tk} ${today}`).toBeGreaterThan(2)
   })
 
@@ -611,5 +618,131 @@ describe('dev mock (?mock)', () => {
       expect(r.dayChangeUsd, r.ticker).not.toBe(null)
     }
     expect(holdingsTotal(rows).dayChangePct).not.toBe(null)
+  })
+})
+
+// Task 32: columns must not move when amounts are hidden / shown or prices tick.
+describe('Holdings column stability (Task 32)', () => {
+  const css = readFileSync('src/styles/app.css', 'utf8').replace(/\/\*[^]*?\*\//g, '')
+  const rule = (sel) => {
+    const m = css.match(new RegExp(`(?:^|\\})\\s*${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'm'))
+    return m ? m[1] : ''
+  }
+  const widthCh = (sel) => Number((rule(sel).match(/width:\s*calc\((\d+(?:\.\d+)?)ch/) || [])[1])
+  const cols = (w, table) => w.get(table).findAll('col').map((c) => c.attributes('class'))
+
+  it('every Holdings table is fixed-layout with a colgroup per column, identical in hide and shown states', async () => {
+    const out = {}
+    for (const hide of [false, true]) {
+      setup({ prefs: { hide, holdingsMode: 'day', holdingsClosedOpen: true } })
+      const w = mountH()
+      const day = cols(w, 'table.htable')
+      await w.get('[data-test="hmode-period"]').trigger('click')
+      const period = cols(w, '[data-test="hp-table"]')
+      const closed = cols(w, '[data-test="hc-table"]')
+      for (const t of w.findAll('table')) expect(t.classes(), 'ptable--fixed').toContain('ptable--fixed')
+      expect(day).toHaveLength(8)
+      expect(period).toHaveLength(10)
+      expect(closed).toHaveLength(4)
+      out[hide] = { day, period, closed }
+      w.unmount()
+    }
+    expect(out.true).toEqual(out.false)
+  })
+
+  it('the current-positions table is fixed too', () => {
+    setup({ prefs: { holdingsMode: 'period' } })
+    const w = mountH({ core: null })
+    expect(w.get('[data-test="hold-current"]').classes()).toContain('ptable--fixed')
+    expect(w.get('[data-test="hold-current"]').findAll('col')).toHaveLength(4)
+  })
+
+  it('stylesheet: fixed table layout and widths reserve the widest mask / number', () => {
+    expect(rule('.ptable--fixed')).toMatch(/table-layout:\s*fixed/)
+    // "−$9,999,999.99" = 14 chars, "$9,999,999.99" = 13; a 6-digit quantity with sign and comma = 8.
+    expect(widthCh('.hcol--money')).toBeGreaterThanOrEqual(14)
+    expect(widthCh('.hcol--qty')).toBeGreaterThanOrEqual(8)
+    expect(widthCh('.hcol--price')).toBeGreaterThanOrEqual(10)
+    expect(widthCh('.hcol--pct')).toBeGreaterThanOrEqual(8)
+    expect(widthCh('.hcol--weight')).toBeGreaterThanOrEqual(7)
+    expect(css).toMatch(/\.hcol--spark\s*\{[^}]*width:/)
+    expect(rule('.hcol--sym')).not.toMatch(/width:/) // the symbol column takes the rest
+    expect(css).toMatch(/\.ptable\s*\{[^}]*width:\s*100%/)
+  })
+
+  it('numbers are tabular and right-aligned; the total line reserves width per figure', () => {
+    expect(rule('.num')).toMatch(/tabular-nums/)
+    expect(css).toMatch(/\.ptable td\s*\{[^}]*text-align:\s*right/)
+    expect(rule('.hold__total > .num-slot')).toMatch(/min-width:\s*\d+ch/)
+    expect(rule('.hold__total > .num-slot')).toMatch(/text-align:\s*right/)
+  })
+
+  it('the total line figures are slots in both modes', async () => {
+    setup()
+    const w = mountH()
+    expect(w.get('[data-test="h-total"]').findAll('.num-slot')).toHaveLength(3)
+    await w.get('[data-test="hmode-period"]').trigger('click')
+    expect(w.get('[data-test="h-total"]').findAll('.num-slot')).toHaveLength(3)
+  })
+
+  // --- width budget per breakpoint, computed from the parsed stylesheet
+  const mediaBody = (query) => {
+    const head = `@media ${query} {`
+    const out = []
+    let i = 0
+    while ((i = css.indexOf(head, i)) >= 0) {
+      let depth = 0
+      let j = i + head.length - 1
+      for (; j < css.length; j++) {
+        if (css[j] === '{') depth++
+        else if (css[j] === '}' && --depth === 0) break
+      }
+      out.push(css.slice(i + head.length, j))
+      i = j
+    }
+    return out.join('\n')
+  }
+  const baseCss = css.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, '')
+  /** Last `<sel> { width: calc(...) }` in the sources that apply, as px at the given digit width. */
+  function colPx(cls, { vw, gap, ch, tight }) {
+    const sources = [baseCss]
+    if (vw < 768) sources.push(mediaBody('(max-width: 47.99rem)'))
+    if (vw >= 768) sources.push(mediaBody('(min-width: 48rem)'))
+    if (vw >= 1024) sources.push(mediaBody('(min-width: 64rem)'))
+    let expr = null
+    for (const src of sources) {
+      const re = new RegExp(`(^|[\\s}])((?:\\.ptable--fixed:not\\(\\.htable\\) )?)\\.hcol--${cls}\\s*\\{\\s*width:\\s*([^;]+);`, 'g')
+      for (const m of src.matchAll(re)) if (!m[2] || tight) expr = m[3]
+    }
+    if (!expr) throw new Error(`no width for ${cls}`)
+    const g = tight ? 4 : gap
+    const px = expr.replace(/var\(--gap\)/g, `${g}px`).replace(/var\(--pad\)/g, '14px')
+      .replace(/([\d.]+)rem/g, (_, n) => `${n * 16}px`).replace(/([\d.]+)ch/g, (_, n) => `${n * ch}px`)
+    try { return Function(`return (${px.replace(/^calc/, '').replace(/px/g, '')})`)() } catch (e) { throw new Error(`${cls}: ${expr} -> ${px}`) }
+  }
+  const room = (cols, env) => {
+    const avail = env.vw - 2 * env.gutter - 2
+    return avail - cols.reduce((sum, c) => sum + colPx(c, env), 0)
+  }
+  // caption 13px (mono digit .6em) below 64rem, .875rem at 64rem+; gap .5rem, .75rem at 64rem+.
+  const MOBILE = { vw: 375, gutter: 12, gap: 8, ch: 7.8, tight: true }
+  const TABLET = { vw: 768, gutter: 20, gap: 8, ch: 7.8 }
+  const DESKTOP = { vw: 1280, gutter: 32, gap: 12, ch: 8.4 }
+  const DAY = ['spark', 'price', 'pct', 'money', 'qty', 'money', 'weight']
+
+  it('width budget: the Day table leaves >= 12ch for the symbol at tablet and desktop', () => {
+    expect(room(DAY, TABLET)).toBeGreaterThanOrEqual(12 * TABLET.ch)
+    expect(room(DAY, DESKTOP)).toBeGreaterThanOrEqual(12 * DESKTOP.ch)
+  })
+
+  it('width budget: closed / current tables on mobile leave a readable symbol column', () => {
+    // first cell has 14px left padding; "AAA.US" = 6 digits
+    expect(room(['qty', 'pcttxt', 'money'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
+    expect(room(['qty', 'price', 'value'], MOBILE) - 14).toBeGreaterThanOrEqual(8 * MOBILE.ch)
+  })
+
+  it('mobile total line is a grid: placement does not depend on the figures', () => {
+    const m = mediaBody('(max-width: 47.99rem)')
+    expect(m).toMatch(/\.hold__total\s*\{[^}]*display:\s*grid/)
   })
 })

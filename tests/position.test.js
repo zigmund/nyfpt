@@ -13,6 +13,7 @@ import {
   parseCandles, keyStats, positionHolding, chartRows, chartStart, sessionBounds, tabsFor, rangePos, CARD_TABS,
 } from '../src/calc/position.js'
 import { lastTradeTime } from '../src/composables/usePosition.js'
+import { marketClock, marketClockFor } from '../src/calc/marketTime.js'
 import { createBroker } from '../src/api/broker.js'
 import { createRepo } from '../src/data/repo.js'
 import { openAccountDb } from '../src/store/db.js'
@@ -47,7 +48,16 @@ const INTRADAY = [...bars('2026-10-29', 90), ...bars('2026-10-30', 100)]
 const SESSIONS = sessionBounds([
   { date: '2026-10-30', ts: TS('2026-10-30', 6, 30) }, { date: '2026-10-30', ts: TS('2026-10-30', 12, 45) },
 ])
-const SEC = { info: INFO, intraday: INTRADAY, daily: DAILY, max: null, sessions: SESSIONS, errors: {}, loading: [] }
+// Synthetic broker status: server UTC+3, FIX = New York summer time (dt 420), FIX open 16:30 server.
+const STATUS = {
+  t: '2026-10-31 12:00:00', at: Date.parse('2026-10-31T09:00:00Z'),
+  m: [{ n: 'FIX', n2: 'FIX', s: 'CLOSE', o: '16:30:00', c: '03:00:00', dt: '420' }],
+}
+// getHloc info adds the regular close (post 23:00 server = 16:00 NY); no pre-open here.
+const MC = marketClockFor(marketClock(STATUS, { offset: null, markets: { FIX: { post: 23 * 60 } } }), 'FIX')
+const SRV3 = marketClock(STATUS)
+const NY = 'America/New_York' // display zone of a viewer in New York (the app uses the browser zone)
+const SEC = { info: INFO, intraday: INTRADAY, daily: DAILY, max: null, sessions: SESSIONS, clock: MC, today: '2026-10-31', errors: {}, loading: [] }
 
 // computeCore-like period rows: ZZZ.US was closed within the period.
 const CORE_YTD = {
@@ -160,7 +170,7 @@ describe('Summary', () => {
     expect(w.get('[data-test="p-venue"]').text()).toBe('NASDAQ · USD')
     expect(w.get('[data-test="p-price"]').text()).toBe('110.00')
     expect(w.get('[data-test="p-change"]').text()).toBe(`+10.00 (${pct(10)})`)
-    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: 'Oct 30, 2026, 7:58 PM' }))
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: lastTradeTime(INFO.ltt, MC) }))
     expect(w.get('[data-test="p-change"]').classes()).toContain('pos')
   })
 
@@ -184,10 +194,10 @@ describe('Summary', () => {
     const quotes = { 'AAA.US': { c: 'AAA.US', ltp: 999, pp: 100 } }
     setup({ quotes, openFor: [], prefs: { period: '1d' } })
     const w = mountCard()
-    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: 'Oct 30, 2026, 7:58 PM' }))
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: lastTradeTime(INFO.ltt, MC) }))
     expect(w.get('[data-test="p-chart"]').text()).not.toContain('999.00')
     installApp(null)
-    setup({ quotes, openFor: ['AAA.US'], prefs: { period: '1d' } })
+    setup({ quotes, openFor: ['AAA.US'], sec: { ...SEC, today: '2026-10-30' }, prefs: { period: '1d' } }) // the session is today
     const w2 = mountCard()
     expect(w2.get('[data-test="p-asof"]').text()).toBe(t('pos.live'))
     expect(w2.get('[data-test="p-chart"]').text()).toContain('999.00') // last bar follows the quote
@@ -376,7 +386,7 @@ describe('calc', () => {
       hloc: { 'AAA.US': [[12, 9, 10, 11], [13, 10, 11, 12]] },
       xSeries: { 'AAA.US': [TS('2026-10-29', 21), TS('2026-10-28', 21)] },
       vl: { 'AAA.US': [100, 200] },
-    }, 'AAA.US')
+    }, 'AAA.US', SRV3)
     expect(rows).toEqual([
       { ts: TS('2026-10-28', 21), date: '2026-10-29', high: 13, low: 10, open: 11, close: 12, vol: 200 },
       { ts: TS('2026-10-29', 21), date: '2026-10-30', high: 12, low: 9, open: 10, close: 11, vol: 100 },
@@ -402,7 +412,7 @@ describe('calc', () => {
   })
 
   it('keyStats: Open = first regular-session bar of the last session (pre-market skipped)', () => {
-    expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: SESSIONS }).open).toBe(122)
+    expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: SESSIONS, clock: MC, today: '2026-10-31' }).open).toBe(122)
     // no session bounds (KASE and others): the session's own first bar, as on the 1D chart
     expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: null }).open).toBe(100)
   })
@@ -424,15 +434,17 @@ describe('calc', () => {
     expect(positionHolding(PS, 'NOPE.US')).toBeNull()
   })
 
-  it('chartRows: 1D = last session inside the regular session with NY minutes; 5D keeps both days', () => {
-    const d1 = chartRows('1D', { intraday: INTRADAY }, { today: '2026-10-30', sessions: SESSIONS })
+  const OPTS = { today: '2026-10-31', sessions: SESSIONS, clock: MC, timeZone: NY }
+  it('chartRows: 1D = last session inside the regular session with local minutes; 5D keeps both days', () => {
+    const d1 = chartRows('1D', { intraday: INTRADAY }, OPTS)
     expect(d1.every((r) => r.date === '2026-10-30')).toBe(true)
     expect(d1[0].ts).toBe(TS('2026-10-30', 6, 30))
     expect(d1[0].min).toBe(9 * 60 + 30)
     expect(d1.at(-1).ts).toBe(TS('2026-10-30', 12, 45))
     expect(d1.at(-1).min).toBe(15 * 60 + 45)
-    const d5 = chartRows('5D', { intraday: INTRADAY }, { today: '2026-10-30', sessions: SESSIONS })
-    // the older day has no index bars: the latest session's time of day applies
+    expect(d1[0]).toMatchObject({ ldate: '2026-10-30', zone: 'GMT-4' })
+    const d5 = chartRows('5D', { intraday: INTRADAY }, OPTS)
+    // the older day has no index bars: market open (o - dt) to the learned close
     expect(new Set(d5.map((r) => r.date))).toEqual(new Set(['2026-10-29', '2026-10-30']))
     expect(d5.filter((r) => r.date === '2026-10-29')).toHaveLength(26)
     // without session data all bars stay
@@ -442,12 +454,12 @@ describe('calc', () => {
   it('chartRows: US pre-market (today has only pre-market bars) keeps the last real sessions', () => {
     const pre = bars('2026-10-31', 200).slice(0, 22) // 01:00-06:15 = 04:00-09:15 NY, no index bars yet
     const intraday = [...INTRADAY, ...pre]
-    const d1 = chartRows('1D', { intraday }, { today: '2026-10-31', sessions: SESSIONS })
+    const d1 = chartRows('1D', { intraday }, OPTS)
     expect(d1).toHaveLength(26)
     expect(d1.every((r) => r.date === '2026-10-30')).toBe(true)
-    const d5 = chartRows('5D', { intraday }, { today: '2026-10-31', sessions: SESSIONS })
+    const d5 = chartRows('5D', { intraday }, OPTS)
     expect(new Set(d5.map((r) => r.date))).toEqual(new Set(['2026-10-29', '2026-10-30']))
-    expect(keyStats({ info: INFO, daily: DAILY, intraday, sessions: SESSIONS }).open).toBe(122)
+    expect(keyStats({ info: INFO, daily: DAILY, intraday, sessions: SESSIONS, clock: MC, today: '2026-10-31' }).open).toBe(122)
   })
 
   // During a session: 10-29 full index session, 10-30 index bars only up to 08:00 (11:00 NY).
@@ -458,19 +470,19 @@ describe('calc', () => {
 
   it('chartRows 5D during a session: older days keep a full session, not today\'s time of day', () => {
     const intraday = [...bars('2026-10-28', 80), ...INTRADAY] // 10-28: no index bars
-    const d5 = chartRows('5D', { intraday }, { today: '2026-10-30', sessions: LIVE_SESSIONS })
+    const d5 = chartRows('5D', { intraday }, { today: '2026-10-30', sessions: LIVE_SESSIONS, clock: MC, timeZone: NY })
     const on = (d) => d5.filter((r) => r.date === d)
     expect(on('2026-10-28')).toHaveLength(26)
     expect(on('2026-10-28').at(-1).min).toBe(15 * 60 + 45)
     expect(on('2026-10-29')).toHaveLength(26)
-    // today is open-ended up to a full session, post-market still excluded
+    // today is open-ended up to the learned close (10-29's last index bar), post-market still excluded
     expect(on('2026-10-30')).toHaveLength(26)
     expect(on('2026-10-30').at(-1).ts).toBe(TS('2026-10-30', 12, 45))
   })
 
   it('chartRows 1D: today\'s newest bars stay while the index bars lag', () => {
     const today = bars('2026-10-30', 100).filter((r) => r.ts <= TS('2026-10-30', 8, 30)) // stock up to 11:30 NY
-    const d1 = chartRows('1D', { intraday: [...bars('2026-10-29', 90), ...today] }, { today: '2026-10-30', sessions: LIVE_SESSIONS })
+    const d1 = chartRows('1D', { intraday: [...bars('2026-10-29', 90), ...today] }, { today: '2026-10-30', sessions: LIVE_SESSIONS, clock: MC, timeZone: NY })
     expect(d1).toHaveLength(9) // 09:30 .. 11:30 NY
     expect(d1.at(-1).min).toBe(11 * 60 + 30)
   })
@@ -495,8 +507,13 @@ describe('calc', () => {
     expect(rangePos(105, 110, 110)).toBeNull()
   })
 
-  it('lastTradeTime formats the broker wall clock without a zone shift', () => {
-    expect(lastTradeTime('2026-10-30T19:58:25')).toBe('Oct 30, 2026, 7:58 PM')
+  it('lastTradeTime: exchange wall clock -> the viewer\'s zone with a zone label', () => {
+    expect(lastTradeTime('2026-10-30T19:58:25', MC, NY)).toBe('Oct 30, 2026, 7:58 PM GMT-4')
+    expect(lastTradeTime('2026-10-30T19:58:25', MC, 'Asia/Almaty')).toBe('Oct 31, 2026, 4:58 AM GMT+5')
+    // the broker's zone for the market: exact on the other side of a clock change
+    const winter = marketClockFor(marketClock({ ...STATUS, m: [{ n: 'FIX', o: '17:30:00', c: '04:00:00', dt: '480' }] }), 'FIX', { tz: NY })
+    expect(lastTradeTime('2026-10-30T19:58:25', winter, 'Asia/Almaty')).toBe('Oct 31, 2026, 4:58 AM GMT+5')
+    expect(lastTradeTime('2026-10-30T19:58:25', null)).toBeNull()
     expect(lastTradeTime('')).toBeNull()
   })
 })
@@ -518,6 +535,7 @@ describe('data layer', () => {
     let clock = Date.parse('2026-10-30T18:00:00Z')
     const calls = []
     const broker = {
+      async marketStatus() { return { result: { markets: { ...STATUS, t: new Date(clock + 3 * 3600e3).toISOString().slice(0, 19).replace('T', ' ') } } } },
       async securityInfo(tk) { calls.push(['info', tk]); return { ...INFO } },
       async hlocDaily(ts, from, count) {
         calls.push(['daily', ts.join(','), from, count])
@@ -525,7 +543,7 @@ describe('data layer', () => {
       },
       async hlocIntraday(ts, from, to, tf) {
         calls.push(['intraday', ts.join(','), from, to, tf])
-        return { hloc: { [ts[0]]: [[1, 1, 1, 1]] }, xSeries: { [ts[0]]: [TS('2026-10-30', 7)] } }
+        return { hloc: { [ts[0]]: [[1, 1, 1, 1]] }, xSeries: { [ts[0]]: [TS('2026-10-30', 7)] }, info: { [ts[0]]: { mkt_name: 'FIX', mrkt: { o: '16:30:00', c: '03:00:00', post: '23:00:00', dt: 420, tz: NY } } } }
       },
     }
     const db = await openAccountDb('global:1', new IDBFactory())
@@ -545,6 +563,10 @@ describe('data layer', () => {
     expect(s.intraday).toHaveLength(1)
     expect(s.max).toHaveLength(1)
     expect(s.sessions).toBeInstanceOf(Map)
+    // the card's market clock: server offset from its daily bars (21:00 UTC), FIX hours and zone
+    // from getHloc info (regular close = post - dt = 16:00), no getMarketStatus needed
+    expect(s.clock).toMatchObject({ offset: 10800, dt: 420, open: 570, regular: 960, tz: NY })
+    expect(s.today).toBe('2026-10-30')
     expect(seen.length).toBeGreaterThan(1)
 
     // within TTL: nothing refetched; past the info TTL only info

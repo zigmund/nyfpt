@@ -9,6 +9,7 @@ import { LiveSocket } from '../api/ws.js'
 import { openAccountDb } from '../store/db.js'
 import { loadSession, saveSession, clearSession, loadPrefs, savePrefs } from '../store/session.js'
 import { createRepo } from '../data/repo.js'
+import { localDay } from '../calc/marketTime.js'
 import { createLive } from '../data/live.js'
 
 export const THEMES = ['system', 'light', 'dark']
@@ -395,6 +396,7 @@ export function createAppState(overrides = {}) {
     ensurePrices: (period, day) => (repo ? repo.ensurePrices(period, day) : Promise.resolve()),
     refresh: (opts) => (repo ? repo.refresh(opts) : Promise.resolve()),
     marketsStrip: () => (repo ? repo.marketsStrip() : null),
+    today: (ms = Date.now()) => (repo?.today ? repo.today(ms) : localDay(ms)),
     security: (ticker) => (repo ? repo.security(ticker) : null),
     loadSecurity: (ticker, parts, opts) => (repo ? repo.loadSecurity(ticker, parts, opts) : Promise.resolve()),
   }

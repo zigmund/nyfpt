@@ -1,10 +1,9 @@
 // Cumulative return chart: portfolio vs S&P 500 vs Nasdaq 100, with a 3-value tooltip.
 import { select, scaleLinear, scalePoint, line, minIndex, min, max } from 'd3'
-import { svgIn, measure, widthOf, onOutsidePointer, pointerX } from './util.js'
+import { svgIn, measure, widthOf, heightOf, onOutsidePointer, pointerX } from './util.js'
 import { dateShort } from '../format.js'
 import { fMoney, fPct } from '../display.js'
 
-const H = 280
 // Series: class sets stroke color/dash (see app.css .cmp-*).
 export const SERIES = [
   { key: 'portfolio', cls: 'cmp-portfolio' },
@@ -28,6 +27,7 @@ export function drawCompareChart(el, series, { labels, hide = () => false, hover
   }
 
   const W = widthOf(el)
+  const H = heightOf(el)
   const m = { t: 12, r: 12, b: 26, l: 0 }
   const vals = rows.flatMap((r) => SERIES.map((s) => r[s.key])).filter((v) => v != null)
   const y = scaleLinear([Math.min(0, min(vals) ?? 0), Math.max(0, max(vals) ?? 0)], [H - m.b, m.t]).nice(5)

@@ -1,4 +1,5 @@
-<!-- "Contributions" disclosure: P&L bars per position for the period (collapsed by default). -->
+<!-- "Contributions" disclosure: P&L bars per position for the period (collapsed by default;
+     the open state is remembered in prefs.contribOpen). -->
 <template>
   <div class="contrib">
     <button
@@ -8,7 +9,7 @@
       :aria-expanded="open ? 'true' : 'false'"
       :aria-controls="id"
       data-test="contrib-toggle"
-      @click="open = !open"
+      @click="prefs.contribOpen = !open"
     >
       <span>{{ t('contrib.title') }}</span>
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
@@ -22,7 +23,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { t } from '../i18n.js'
 import { drawBarsChart } from '../charts/barsChart.js'
 import { useChart } from '../composables/useChart.js'
@@ -36,7 +37,7 @@ const props = defineProps({
 
 const { prefs } = useApp()
 const id = `contrib-${Math.random().toString(36).slice(2, 8)}`
-const open = ref(false)
+const open = computed(() => prefs.contribOpen === true)
 const el = ref(null)
 
 const key = () => {

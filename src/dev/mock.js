@@ -31,9 +31,14 @@ function rand(s) {
 }
 const dayMove = (tk, date) => (rand(`${tk}|${date}`) - 0.47) * 0.024
 
-// Latest US trading date (New York is roughly UTC-4; holidays ignored).
+// The fake broker's server and markets run on UTC (getMarketStatus t = UTC, dt 0), so the
+// candle axis is the market's wall clock and dates are UTC dates. Session hours: FAKE_HOURS.
+const FAKE_HOURS = { o: '09:30:00', c: '16:00:00' }
+const hm = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5))
+
+// Latest trading date (holidays ignored).
 function lastSession(now = Date.now()) {
-  let ms = midnight(iso(now - 4 * 3600e3))
+  let ms = midnight(iso(now))
   while (!isWeekday(ms)) ms -= DAY
   return ms
 }
@@ -54,16 +59,20 @@ const candle = (open, close) => [r2(Math.max(open, close) * 1.004), r2(Math.min(
 
 const volume = (tk, ms, scale) => Math.round(scale * (0.5 + rand(`${tk}|v|${ms}`)))
 
+const marketOf = (tk) => (tk.endsWith('.KZ') ? 'KASE' : MARKET)
+
 function hlocAnswer(series, scale) {
   const hloc = {}
   const xSeries = {}
   const vl = {}
+  const info = {}
   for (const [tk, rows] of Object.entries(series)) {
     hloc[tk] = rows.map((r) => r.c)
     xSeries[tk] = rows.map((r) => Math.round(r.ts / 1000))
     vl[tk] = rows.map((r) => volume(tk, r.ts, scale))
+    info[tk] = { id: tk, mkt_name: marketOf(tk), mrkt: { ...FAKE_HOURS, dt: 0 } }
   }
-  return { hloc, xSeries, vl }
+  return { hloc, xSeries, vl, info }
 }
 
 function hlocDaily(tickers, dateFrom, count = -6) {
@@ -77,11 +86,12 @@ function hlocDaily(tickers, dateFrom, count = -6) {
   return hlocAnswer(series, 2e6)
 }
 
-// 15-minute bars 09:30-15:45 New York time, encoded like the broker (wall clock as UTC).
+// 15-minute bars over FAKE_HOURS, encoded like the broker (wall clock on the axis).
 function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
   const from = midnight(dateFrom)
   const to = midnight(dateTo)
-  const bars = Math.floor((6.5 * 60) / timeframe)
+  const open = hm(FAKE_HOURS.o)
+  const bars = Math.floor((hm(FAKE_HOURS.c) - open) / timeframe)
   const series = {}
   for (const tk of tickers) {
     const all = dailyCloses(tk, from - 7 * DAY)
@@ -94,7 +104,7 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
         const k = (b + 1) / bars
         const noise = (rand(`${tk}|${ms}|${b}`) - 0.5) * 0.004 * Math.sin(Math.PI * k)
         const c = prev + (close - prev) * k + close * noise
-        series[tk].push({ ts: ms + (9.5 * 60 + b * timeframe) * 60e3, c: candle(last, c) })
+        series[tk].push({ ts: ms + (open + b * timeframe) * 60e3, c: candle(last, c) })
         last = c
       }
     })
@@ -145,14 +155,17 @@ function securityInfo(tk) {
     kind: FUNDS.has(tk) ? 7 : 1,
     x_curr: kz ? 'KZT' : 'USD',
     codesub_nm: kz ? 'KASE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
-    ltr: kz ? 'KASE' : MARKET,
-    ltt: new Date(now - 4 * 3600e3).toISOString().slice(0, 19),
+    ltr: marketOf(tk),
+    ltt: new Date(now).toISOString().slice(0, 19),
   }
 }
 
 const MARKETS = () => ({
   t: new Date().toISOString().slice(0, 19).replace('T', ' '),
-  m: [{ mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', o: '09:30:00', c: '16:00:00', dt: '0' }],
+  m: [
+    { mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', ...FAKE_HOURS, dt: '0' },
+    { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE', ...FAKE_HOURS, dt: '0' },
+  ],
 })
 
 export function createMockBroker() {

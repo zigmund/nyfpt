@@ -1,11 +1,10 @@
 // Position card price chart: close line by bar index (no gaps for nights and weekends),
 // dashed previous close (1D), max/min labels, volume bars, hover rule with a price pill.
 import { select, scaleLinear, line, area, maxIndex, minIndex, max } from 'd3'
-import { svgIn, widthOf, nextId, dateFull, monthOf, measure, onOutsidePointer, pointerX } from './util.js'
+import { svgIn, widthOf, heightOf, splitPaint, segOf, dateFull, monthOf, measure, onOutsidePointer, pointerX } from './util.js'
 import { dateShort } from '../format.js'
 import { fPrice } from '../display.js'
 
-const H = 240
 const VOL_H = 32
 
 /** '10:15 AM' from minutes since midnight. */
@@ -19,9 +18,9 @@ const hourLabel = (min) => {
   return `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`
 }
 
-/** Hover text of a row: time for intraday bars, the date otherwise. */
+/** Hover text of a row: local date, time and zone for intraday bars (see chartRows), the date otherwise. */
 export function whenOf(r, intraday) {
-  if (intraday) return r.min != null ? `${dateShort(r.date)}, ${clock(r.min)}` : dateShort(r.date)
+  if (intraday) return r.min != null ? `${dateShort(r.ldate || r.date)}, ${clock(r.min)}${r.zone ? ` ${r.zone}` : ''}` : dateShort(r.date)
   return dateFull(r.date)
 }
 
@@ -61,26 +60,27 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
   if (pts.length < 2) return () => el.replaceChildren()
 
   const W = widthOf(el)
+  const H = heightOf(el)
   const hasVol = pts.some((r) => r.vol > 0)
   const m = { t: 22, r: 8, b: 22, l: 4 }
   const bottom = H - m.b - (hasVol ? VOL_H + 6 : 0)
   const ref = Number.isFinite(base) ? base : pts[0].close
   const last = pts[pts.length - 1]
-  const col = last.close >= ref ? 'var(--c-pos)' : 'var(--c-neg)'
+  const lastSeg = segOf(last.close, ref)
   const lo = Math.min(...pts.map((r) => r.close), ...(Number.isFinite(base) ? [base] : []))
   const hi = Math.max(...pts.map((r) => r.close), ...(Number.isFinite(base) ? [base] : []))
   const y = scaleLinear([lo, hi === lo ? lo + 1 : hi], [bottom, m.t])
   const x = scaleLinear([0, pts.length - 1], [m.l, W - m.r])
 
   const svg = svgIn(el, W, H, 'pchart__svg')
-  const gid = nextId('pgrad')
-  const grad = svg.append('defs').append('linearGradient').attr('id', gid)
-    .attr('x1', 0).attr('x2', 0).attr('y1', 0).attr('y2', 1)
-  for (const [o, a] of [[0, 0.22], [0.6, 0.06], [1, 0]]) {
-    grad.append('stop').attr('offset', o).style('stop-color', col).style('stop-opacity', a)
-  }
-  svg.append('path').datum(pts).attr('fill', `url(#${gid})`)
-    .attr('d', area().x((r, i) => x(i)).y0(bottom).y1((r) => y(r.close)))
+  const yb = y(ref)
+  const paint = splitPaint(svg, {
+    yb, W, ys: pts.map((r) => y(r.close)), span: [m.t, bottom],
+    lineD: line().x((r, i) => x(i)).y((r) => y(r.close))(pts),
+    fillD: area().x((r, i) => x(i)).y0(yb).y1((r) => y(r.close))(pts),
+    lineCls: 'chart-line', fillCls: 'pchart__fill',
+  })
+  paint.fill()
 
   if (Number.isFinite(base)) {
     svg.append('line').attr('class', 'chart-base').attr('data-test', 'pc-base')
@@ -97,8 +97,7 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
       .attr('y', (r) => H - m.b - vy(r.vol || 0)).attr('height', (r) => vy(r.vol || 0))
   }
 
-  svg.append('path').datum(pts).attr('class', 'chart-line').style('stroke', col)
-    .attr('d', line().x((r, i) => x(i)).y((r) => y(r.close)))
+  paint.line()
 
   // Max / min close labels, kept inside the plot.
   const mark = (i, dy, cls) => {
@@ -113,7 +112,7 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
   mark(iMax, -6, 'pchart__max')
   if (iMin !== iMax) mark(iMin, 14, 'pchart__min')
 
-  const endDot = svg.append('circle').attr('class', 'chart-dot').style('fill', col)
+  const endDot = svg.append('circle').attr('class', `chart-dot ${lastSeg}`)
     .attr('cx', x(pts.length - 1)).attr('cy', y(last.close)).attr('r', 4)
 
   // X labels, thinned to fit.
@@ -130,7 +129,7 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
     .attr('x', (d) => x(d.i)).attr('y', H - 6).attr('text-anchor', 'middle').text((d) => d.text)
 
   const rule = svg.append('line').attr('class', 'chart-rule').attr('y1', m.t - 4).attr('y2', bottom).style('opacity', 0)
-  const dot = svg.append('circle').attr('class', 'chart-dot').attr('r', 5).style('fill', col).style('opacity', 0)
+  const dot = svg.append('circle').attr('class', 'chart-dot').attr('r', 5).style('opacity', 0)
   const pill = select(el).append('div').attr('class', 'chart-pill num').attr('aria-hidden', 'true').style('opacity', 0)
 
   let active = false
@@ -140,7 +139,7 @@ export function drawPriceChart(el, rows, { base = null, intraday = false } = {})
     const r = pts[i]
     const px = x(i)
     rule.attr('x1', px).attr('x2', px).style('opacity', 0.5)
-    dot.attr('cx', px).attr('cy', y(r.close)).style('opacity', 1)
+    dot.attr('class', `chart-dot ${segOf(r.close, ref)}`).attr('cx', px).attr('cy', y(r.close)).style('opacity', 1)
     endDot.style('opacity', 0)
     pill.text(`${fPrice(r.close)} · ${whenOf(r, intraday)}`)
     const cw = el.clientWidth || W

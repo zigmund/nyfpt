@@ -4,23 +4,26 @@ import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
 import { keyStats, positionHolding } from '../calc/position.js'
+import { formatLocal, wallToUtc } from '../calc/marketTime.js'
 
 const REFRESH_MS = 60e3
-const EMPTY = { info: null, intraday: null, daily: null, max: null, sessions: null, errors: {}, loading: [] }
+const EMPTY = { info: null, intraday: null, daily: null, max: null, sessions: null, clock: null, today: null, errors: {}, loading: [] }
 const posN = (v) => {
   const x = n(v)
   return x !== null && x > 0 ? x : null
 }
 const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 
-/** Broker 'YYYY-MM-DDTHH:mm[:ss]' (exchange wall clock, no zone) -> 'Oct 30, 2026, 7:58 PM'; null if unparsable. */
-export function lastTradeTime(ltt) {
-  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(String(ltt || ''))
-  if (!m) return null
-  const d = new Date(`${m[1]}T00:00:00Z`)
-  const h = Number(m[2])
-  if (Number.isNaN(d.getTime()) || h > 23) return null
-  return `${fmtDay.format(d)}, ${h % 12 || 12}:${m[3]} ${h < 12 ? 'AM' : 'PM'}`
+/**
+ * Broker `ltt` 'YYYY-MM-DDTHH:mm[:ss]' (exchange wall clock, no zone) -> 'Oct 31, 2026, 4:58 AM GMT+5'
+ * in the user's zone (or `timeZone`); `mc`: the security market's clock (marketClockFor).
+ * null if unparsable or the market's offset is unknown.
+ */
+export function lastTradeTime(ltt, mc, timeZone) {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(ltt || ''))
+  if (!m || Number(m[2]) > 23) return null
+  const wall = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4] || '00'}Z`) / 1000
+  return Number.isFinite(wall) ? formatLocal(wallToUtc(wall, mc), timeZone) : null
 }
 
 /**
@@ -56,16 +59,16 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({
-    info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions,
+    info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
   }))
 
   const name = computed(() => raw.value?.name || info.value?.name || info.value?.short_name || ticker)
   const currency = computed(() => info.value?.x_curr || raw.value?.curr || null)
   const exchange = computed(() => info.value?.codesub_nm || info.value?.ltr || null)
   const kind = computed(() => n(info.value?.kind))
-  /** 'At close' time: last trade time, else the last daily candle's date. */
+  /** 'At close' time: last trade time in the user's zone, else the last daily candle's date. */
   const closedAt = computed(() => {
-    const at = lastTradeTime(info.value?.ltt)
+    const at = lastTradeTime(info.value?.ltt, sec.value.clock)
     if (at) return at
     const d = sec.value.daily
     return d && d.length ? fmtDay.format(new Date(`${d[d.length - 1].date}T00:00:00Z`)) : null

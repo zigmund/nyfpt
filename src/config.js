@@ -18,6 +18,7 @@ export const TTL = {
   cashflows: 10 * 60e3,
   quotes: 60e3,
   markets: 60e3,
+  clock: 10 * 60e3, // getMarketStatus snapshot: server offset and market hours
   intraday: 60e3,
   sparks: 5 * 60e3, // holdings sparklines: 15-min candles
 }

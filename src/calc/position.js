@@ -1,6 +1,7 @@
 // Position card: candles, chart windows, key statistics and My holdings. Pure functions over
 // broker answers (getSecurityInfo, getHloc, getPositionJson `ps`); numbers may come as strings.
 import { positionFactor } from './live.js'
+import { axisDate, axisToUtc, barSeconds, localParts, sessionWindow } from './marketTime.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -31,15 +32,16 @@ export const chartSource = (period) =>
 /** Security kind label key (getSecurityInfo `kind`: 1 stock, 2 preferred, 7 fund/ETF). */
 export const KINDS = { 1: 'stock', 2: 'preferred', 7: 'fund' }
 
-/** getHloc answer -> [{ts, date, open, high, low, close, vol}] ascending for one ticker.
- *  Candle order is [high, low, open, close]; `date` as parseHloc (NY trading date). */
-export function parseCandles(answer, ticker) {
+/** getHloc answer -> [{ts, date, mkt, open, high, low, close, vol}] ascending for one ticker.
+ *  Candle order is [high, low, open, close]; `date` via the server offset of `clock` (marketTime). */
+export function parseCandles(answer, ticker, clock) {
   const a = answer || {}
   const hl = a.hloc || {}
   const key = ticker in hl ? ticker : Object.keys(hl)[0]
   if (!key) return []
   const xs = (a.xSeries && a.xSeries[key]) || []
   const vl = (a.vl && a.vl[key]) || []
+  const mkt = candleZone(a, key).mkt || undefined
   const out = []
   hl[key].forEach((c, i) => {
     const close = num(c && c[3])
@@ -47,7 +49,8 @@ export function parseCandles(answer, ticker) {
     if (close === null || ts === null) return
     out.push({
       ts,
-      date: new Date((ts + 14400) * 1000).toISOString().slice(0, 10),
+      date: axisDate(clock, ts),
+      mkt,
       high: num(c[0]),
       low: num(c[1]),
       open: num(c[2]),
@@ -58,21 +61,13 @@ export function parseCandles(answer, ticker) {
   return out.sort((x, y) => x.ts - y.ts)
 }
 
-/** Regular-session bounds per date from index bars (an index trades only in the main session):
- *  Map date -> [firstTs, lastTs]. Broker intraday timestamps are not plain UTC, so the session
- *  is taken from the data, not from the clock. */
-export function sessionBounds(indexRows) {
-  const m = new Map()
-  for (const r of indexRows || []) {
-    const b = m.get(r.date)
-    if (!b) m.set(r.date, [r.ts, r.ts])
-    else { b[0] = Math.min(b[0], r.ts); b[1] = Math.max(b[1], r.ts) }
-  }
-  return m
+/** Market of a getHloc answer's ticker: {mkt: market name, tz: the broker's IANA zone} (nulls if absent). */
+export function candleZone(answer, ticker) {
+  const i = (answer && answer.info && answer.info[ticker]) || {}
+  return { mkt: i.mkt_name || null, tz: (i.mrkt && i.mrkt.tz) || null }
 }
 
-const SESSION_OPEN_MIN = 9 * 60 + 30 // 09:30 New York
-const FULL_SESSION_S = 6.5 * 3600 - 1 // 09:30 to 16:00 NY: bars starting before the close
+export { sessionBounds } from './marketTime.js'
 
 const addDays = (s, n) => {
   const d = new Date(`${s}T00:00:00Z`)
@@ -97,32 +92,30 @@ export function chartStart(period, today) {
 
 /**
  * Rows to draw for a chart period.
- * Intraday (1D: last session, 5D: last 5 sessions): with `sessions` (sessionBounds) only bars
- * inside the regular session, which get `min` = minutes since midnight NY; the sessions are the
- * last dates that still have such bars (a pre-market-only today is skipped).
+ * Intraday (1D: last session, 5D: last 5 sessions): only bars inside the session window, from
+ * the broker's pre-open to the regular close (marketTime.sessionWindow over `sessions`, the
+ * market `clock` and `today`), each with the user's local
+ * `min` (minutes since midnight), `ldate` and `zone` label; the sessions are the last dates that
+ * still have such bars (a day with only bars before the pre-open is skipped). Without any
+ * bounds all bars stay.
  * Daily: rows after the period start plus the last close at or before it (the baseline).
+ * @param {{today?: string, sessions?: Map|null, clock?: object|null, timeZone?: string}} opts
+ *   clock: marketClockFor(...) of the security's market; timeZone: display zone (default: browser)
  */
-export function chartRows(period, { intraday, daily, max } = {}, { today, sessions } = {}) {
+export function chartRows(period, { intraday, daily, max } = {}, { today, sessions, clock, timeZone } = {}) {
   const src = chartSource(period)
   if (src === 'intraday') {
-    // Bounds per date: past sessions their own index bounds; the latest (possibly running)
-    // session is open-ended up to a full session, so bars newer than the cached index bars
-    // stay; dates without index bars (older ones, today before the open) get a full session
-    // from the known opening time of day.
-    const latest = sessions && sessions.size ? [...sessions.keys()].sort().pop() : null
-    const open0 = latest ? sessions.get(latest)[0] % 86400 : null
-    const boundsOf = (r) => {
-      const b = sessions && sessions.get(r.date)
-      if (b) return r.date === latest ? [b[0], Math.max(b[1], b[0] + FULL_SESSION_S)] : b
-      if (open0 === null) return null
-      const day = r.ts - (r.ts % 86400)
-      return [day + open0, day + open0 + FULL_SESSION_S]
+    const win = sessionWindow(sessions, clock, today, barSeconds(intraday))
+    const local = (r) => {
+      const at = axisToUtc(r.ts, clock)
+      if (at === null) return { ...r, min: null }
+      const p = localParts(at, timeZone)
+      return { ...r, min: p.min, ldate: p.date, zone: p.zone }
     }
     const inSession = (intraday || []).flatMap((r) => {
-      const b = boundsOf(r)
-      if (!b) return [{ ...r, min: null }]
-      if (r.ts < b[0] || r.ts > b[1]) return []
-      return [{ ...r, min: SESSION_OPEN_MIN + Math.round((r.ts - b[0]) / 60) }]
+      const b = win && win(r.date)
+      if (b && (r.ts < b[0] || r.ts > b[1])) return []
+      return [local(r)]
     })
     // The last sessions that have bars in the session: pre-market-only days do not count.
     const dates = [...new Set(inSession.map((r) => r.date))].sort()
@@ -143,19 +136,20 @@ const AVG_VOL_CANDLES = 63
 /**
  * Key statistics (Task 22 set). Missing values are null and hidden by the UI.
  *   prevClose  `pp`: the broker's own day change (chg = ltp - pp) is measured from it
- *   open       open of the first regular-session bar of the last intraday session (as on the
- *              1D chart; daily candles start with the pre-market), else of the last daily
- *              candle (`op` is unreliable); `sessions`: sessionBounds, null for non-US
+ *   open       open of the first bar of the last intraday session window (from the broker's
+ *              pre-open, as on the 1D chart; owner's choice), else of the last daily
+ *              candle (`op` is unreliable); `sessions`: sessionBounds (index-anchored market
+ *              only), `clock`: the market clock (marketClockFor), `today`: its trading date
  *   dayLow/dayHigh  `mintp` / `maxtp`
  *   low52/high52    min low / max high over the last 252 daily candles
  *   volume     `vol`; avgVolume  mean `vl` of the last 63 daily candles
  *   kind       'stock' | 'preferred' | 'fund' | null
  */
-export function keyStats({ info, daily, intraday, sessions } = {}) {
+export function keyStats({ info, daily, intraday, sessions, clock, today } = {}) {
   const i = info || {}
   const d = daily || []
   const last = d.length ? d[d.length - 1] : null
-  const session = intraday && intraday.length ? chartRows('1D', { intraday }, { sessions }) : []
+  const session = intraday && intraday.length ? chartRows('1D', { intraday }, { sessions, clock, today }) : []
   const first = session.find((r) => posNum(r.open) !== null)
   const year = d.slice(-YEAR_CANDLES)
   const lows = year.map((r) => posNum(r.low)).filter((v) => v !== null)

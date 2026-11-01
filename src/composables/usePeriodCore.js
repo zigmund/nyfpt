@@ -3,7 +3,7 @@
 // with nothing to show yet `core` is null and the UI renders skeletons.
 import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue'
 import { useApp, periodOf } from './useApp.js'
-import { nyDate } from '../data/repo.js'
+import { localDay } from '../calc/marketTime.js'
 
 export { periodOf }
 
@@ -25,9 +25,12 @@ export function usePeriodCore({ now = () => Date.now(), period: fixed = null, fe
 
   const period = computed(() => fixed || periodOf(prefs))
 
-  // NY trading date, checked on a clock and when the app becomes visible again (resumed PWA).
-  const day = ref(nyDate(now()))
-  const checkDay = () => { day.value = nyDate(now()) }
+  // US trading date (repo: market clock from the broker), checked on a clock, on repo / live
+  // updates (the market clock may arrive later) and when the app becomes visible again (resumed PWA).
+  const dayOf = (ms) => (app.today ? app.today(ms) : localDay(ms))
+  const day = ref(dayOf(now()))
+  const checkDay = () => { day.value = dayOf(now()) }
+  watch(tick, checkDay)
   const clock = setInterval(checkDay, CLOCK_MS)
   const doc = globalThis.document
   const onVisible = () => { if (!doc.hidden) checkDay() }
