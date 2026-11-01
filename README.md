@@ -11,8 +11,11 @@ icons) through nginx. Everything else happens in your browser:
 - Your login, password, SMS / push code, session ID and all account data go from the browser
   straight to Tradernet (`https://tradernet.global/api/` and `wss://wss.tradernet.global/`).
   They do not pass through the server that hosts the app and are not stored on it.
-- Cached data lives only in your browser (IndexedDB and localStorage). `Settings -> Clear cache`
-  and `Settings -> Log out` erase it on this device.
+- Cached data lives only in your browser: the session and display preferences and recent
+  searches in localStorage, cached broker data in IndexedDB. `Settings -> Clear cache` deletes
+  the cached account data (IndexedDB). `Settings -> Log out` also forgets the broker session
+  and recent searches; only display preferences (theme, hidden amounts, period, sorting,
+  markets strip and open/closed sections) stay on the device.
 - Access is read-only: login always uses `viewOnlyMode: true`.
 
 You can check this yourself:
@@ -22,7 +25,8 @@ You can check this yourself:
   refuses to send requests anywhere else. The only `'self'` requests are for static files and
   the service worker, which caches only those files from our own origin and never touches
   broker requests or data.
-- No analytics, trackers, CDN, external fonts or other third-party requests.
+- No analytics, trackers, CDN or external fonts, and no automatic third-party requests. News
+  items may contain links; they open only when you click them (`Referrer-Policy: no-referrer`).
 - DevTools -> Network shows every request the app makes.
 - The code is open. You can run your own copy (see "Run locally in Docker" below:
   `docker run --rm -p 8080:8080 zigmund/nyfpt`), and then even the static files do not come
@@ -52,22 +56,14 @@ Broker API reference: `docs/tradernet-api.md`.
 
 ## Security model
 
-- Read-only access: login always uses `viewOnlyMode: true`, so the session cannot place orders.
-- Your password and SMS / push code go from the browser directly to the broker. They are never
-  stored (not in localStorage, not in IndexedDB) and never sent anywhere else. Nothing is sent
-  to the server that hosts the app.
-- No third-party requests: no CDN, analytics or external fonts. Everything is in the bundle.
+How data flows and what is stored is described in "No backend" above. In addition:
+
+- Your password and SMS / push code are never stored (not in localStorage, not in IndexedDB)
+  and never sent anywhere except the broker.
 - Broker data is rendered only through Vue interpolation; `v-html` is not used for it.
-- `nginx/security-headers.inc` sets a Content-Security-Policy that allows scripts and styles
-  from `'self'` only and `connect-src` only to `'self'`, `https://tradernet.global` and
-  `wss://wss.tradernet.global`. It also sets `Referrer-Policy: no-referrer`,
+- `nginx/security-headers.inc` also sets `script-src` and `style-src` to `'self'` only,
   `X-Content-Type-Options: nosniff`, a restrictive `Permissions-Policy`, and
   `frame-ancestors 'none'`.
-- Stored in the browser: the session (broker session ID, account ID, cabinet) and display
-  preferences in localStorage, recent searches in localStorage, and cached broker data in
-  IndexedDB. `Settings -> Clear cache` deletes the saved data for the account;
-  `Settings -> Log out` also forgets the broker session and deletes the account's saved data
-  on this device.
 
 ## Run locally in Docker
 
