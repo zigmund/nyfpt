@@ -332,6 +332,9 @@ const daySorted = computed(() => daySort.apply(rows.value || []))
 function daySpark(r) {
   const s = app.state.value?.sparks?.[r.ticker]
   const spark = s?.spark || EMPTY
+  // US broker pre-open: the spark is today's while the price is the last regular close (an earlier
+  // day): its level is that close, which the pre-market moves against (as the card's 1D chart).
+  if (r.priceDay && s?.date && s.date > r.priceDay) return { spark, prev: n(r.price) }
   return { spark, prev: s?.prior ? null : n(r.prevClose) }
 }
 

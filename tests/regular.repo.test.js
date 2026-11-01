@@ -137,6 +137,22 @@ describe('regular closes in the repo (Task 51)', () => {
     expect(repo.coreFor('7d', '2026-11-02').positions.find((r) => r.ticker === 'AAA.US').price_start).toBe(90)
   })
 
+  it('an answer without any bars for a date stores nothing: the date is asked again later', async () => {
+    const b = fakeBroker()
+    const repo = mk(b)
+    await repo.load()
+    await repo.ensurePrices('1d')
+    b.calls.hourly.length = 0
+    b.noHourly = new Set(['QQQ.US', 'SPY.US'])
+    await repo.ensurePrices('7d', '2026-11-02')
+    await repo.ensurePrices('7d', '2026-11-02')
+    expect(b.calls.hourly).toHaveLength(2)
+    b.noHourly = new Set()
+    await repo.ensurePrices('7d', '2026-11-02')
+    expect(b.calls.hourly).toHaveLength(3)
+    expect(repo.coreFor('7d', '2026-11-02').summary.spy).toBeCloseTo((595 / 600 - 1) * 100, 2)
+  })
+
   it('the position quote snapshot keeps ClosePrice and ltt; a snapshot of the old shape is fetched again', async () => {
     await db.putKv('quotes', { tickers: ['AAA.US', 'KZ.KZ'], rows: [{ c: 'AAA.US', ltp: 106, chg: 6, pp: 100 }] }, SUNDAY - 1000)
     const rows = POS.pos.map((p) => ({ ticker: p.i, name: p.name, kind: 'position', qty: p.q, price: p.mkt_price, value: p.market_value }))

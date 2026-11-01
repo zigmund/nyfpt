@@ -213,3 +213,61 @@ describe('markets strip outside live: US cards on regular closes', () => {
     expect(r.spark.at(-1)).toBe(104) // up to the regular close
   })
 })
+
+// Fix round 1: on quiet days (moves under 0.5%) a stale or rolled broker value must not pass for
+// another session's close (it would show a believable ~0 day change).
+describe('regularQuote on quiet days (rolled / not rolled broker fields)', () => {
+  // bars: Thu 100.02 (official 100.00), Fri 100.33 (official 100.30): a 0.3% day
+  const c3 = new Map([['2026-10-28', 99.5], ['2026-10-29', 100.02], ['2026-10-30', 100.33]])
+  // bars: Thu 100.01 (official 100.00), Fri 100.11 (official 100.10): a 0.1% day
+  const c1 = new Map([['2026-10-28', 99.5], ['2026-10-29', 100.01], ['2026-10-30', 100.11]])
+  const pre = (f) => ({ ltp: 100.5, ltt: '2026-11-02T08:15:00', ...f })
+  const post = (f) => ({ ltp: 100.5, ltt: '2026-10-30T17:00:00', ...f })
+
+  it('pre-market, pp / chg already rolled to Friday: prev is Thursday, not Friday', () => {
+    const r = regularQuote(pre({ chg: 0.2, pp: 100.3, ClosePrice: 100.3 }), US, c3)
+    expect(r).toMatchObject({ price: 100.3, prev: 100.02, day: '2026-10-30' })
+    const r1 = regularQuote(pre({ chg: 0.4, pp: 100.1, ClosePrice: 100.1 }), US, c1)
+    expect(r1).toMatchObject({ price: 100.1, prev: 100.01 })
+  })
+
+  it('pre-market, not rolled: official Friday close against official Thursday close', () => {
+    expect(regularQuote(pre({ chg: 0.5, pp: 100, ClosePrice: 100.3 }), US, c3)).toMatchObject({ price: 100.3, prev: 100 })
+    expect(regularQuote(pre({ chg: 0.5, pp: 100, ClosePrice: 100.1 }), US, c1)).toMatchObject({ price: 100.1, prev: 100 })
+  })
+
+  it('a ClosePrice still holding Thursday is not taken for Friday (pre-market and after hours)', () => {
+    // ClosePrice = pp: both name one session, so neither is trusted; the bars give both closes
+    expect(regularQuote(pre({ chg: 0.5, pp: 100, ClosePrice: 100 }), US, c3)).toMatchObject({ price: 100.33, prev: 100.02 })
+    expect(regularQuote(post({ chg: 0.5, pp: 100, ClosePrice: 100 }), US, c3)).toMatchObject({ price: 100.33, prev: 100.02 })
+    expect(regularQuote(post({ chg: 0.5, pp: 100, ClosePrice: 100 }), US, c1)).toMatchObject({ price: 100.11, prev: 100.01 })
+    // a stale ClosePrice next to a right pp: the official previous close stays
+    expect(regularQuote(post({ chg: 0.5, pp: 100, ClosePrice: 100.01 }), US, c3)).toMatchObject({ price: 100.33, prev: 100 })
+  })
+
+  it('after hours, not rolled and rolled', () => {
+    expect(regularQuote(post({ chg: 0.5, pp: 100, ClosePrice: 100.3 }), US, c3)).toMatchObject({ price: 100.3, prev: 100 })
+    expect(regularQuote(post({ chg: 0.2, pp: 100.3, ClosePrice: 100.3 }), US, c3)).toMatchObject({ price: 100.3, prev: 100.02 })
+    expect(regularQuote(post({ chg: 0.4, pp: 100.1, ClosePrice: 100.1 }), US, c1)).toMatchObject({ price: 100.1, prev: 100.01 })
+  })
+
+  it('without bars: an official prev equal to the official close is no prev (a dash, not 0%)', () => {
+    expect(regularQuote(post({ chg: 0.2, pp: 100.3, ClosePrice: 100.3 }), US)).toMatchObject({ price: 100.3, prev: null })
+    expect(regularQuote(post({ chg: 0.5, pp: 100, ClosePrice: 100.3 }), US)).toMatchObject({ price: 100.3, prev: 100 })
+  })
+
+  it('a closing-auction print stamped 16:00:0x is no after-hours trade', () => {
+    const r = regularQuote({ ltp: 100.3, chg: 0.3, pp: 100, ClosePrice: 100.3, ltt: '2026-10-30T16:00:03' }, US, c3)
+    expect(r).toMatchObject({ price: 100.3, prev: 100, ext: null })
+  })
+})
+
+describe('regularCloses: a bar still forming when the bars were fetched', () => {
+  it('the 15:45 bar of bars fetched at 15:50 is no close; fetched after 16:00 it is', () => {
+    const rows = bars('2026-10-30', '09:30', '15:45', (i) => 100 + i)
+    const at = (hhmm) => (axisAt(OFF, '2026-10-30', hm(hhmm))) * 1000 // US dt 0: axis = UTC seconds
+    expect(regularCloses(rows, US, at('15:50')).size).toBe(0)
+    expect(regularCloses(rows, US, at('16:00')).get('2026-10-30')).toBe(125)
+    expect(regularCloses(rows, US).get('2026-10-30')).toBe(125) // fetch time unknown: not judged
+  })
+})

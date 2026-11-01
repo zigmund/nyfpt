@@ -189,7 +189,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   /** Rows of the cached strip tickers (computeMarkets), null before the first fetch. */
   function marketsStrip() {
     return cache.markets
-      ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today(), cachedMarketTickers())
+      ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today(), cachedMarketTickers(), fetchedAt.markets)
       : null
   }
 
@@ -279,18 +279,21 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     const mk = cache.markets
     const clk = clock()
     if (barMemo.sp !== sp || barMemo.mk !== mk || barMemo.clk !== clk) {
-      const by = new Map()
-      for (const r of [...(sp?.intraday || []), ...(mk?.intraday || [])]) {
-        if (!by.has(r.ticker)) by.set(r.ticker, [])
-        by.get(r.ticker).push(r)
-      }
       const closes = new Map()
       const markets = new Map()
-      for (const [t, rows] of by) {
-        const mkt = (rows.find((r) => r.mkt) || {}).mkt
-        if (mkt) markets.set(t, mkt)
-        const m = regularCloses(rows, marketClockFor(clk, mkt))
-        if (m.size) closes.set(t, m)
+      // Per source: a bar still forming when that source was fetched is no close (asOf).
+      for (const [src, asOf] of [[mk, fetchedAt.markets], [sp, fetchedAt.sparks]]) {
+        const by = new Map()
+        for (const r of src?.intraday || []) {
+          if (!by.has(r.ticker)) by.set(r.ticker, [])
+          by.get(r.ticker).push(r)
+        }
+        for (const [t, rows] of by) {
+          const mkt = (rows.find((r) => r.mkt) || {}).mkt
+          if (mkt) markets.set(t, mkt)
+          const m = regularCloses(rows, marketClockFor(clk, mkt), asOf)
+          if (m.size) closes.set(t, new Map([...(closes.get(t) || []), ...m]))
+        }
       }
       barMemo = { sp, mk, clk, closes, markets }
     }
@@ -386,21 +389,33 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
           const a = await hlocTolerant((ts) => broker.hlocIntraday(ts, ds[0], addDays(ds[ds.length - 1], 1), REGULAR_TF), tickers)
           await learn(a, false)
           const rows = parseHloc({ answer: a }, await intradayClock()).rows
+          const at = now()
           const closes = { ...regularStore.closes }
           const markets = { ...regularStore.markets }
+          const got = new Map() // ticker -> {mkt, mc, closes}
+          const sessions = new Set() // dates some ticker of this answer has a regular close for
           for (const t of tickers) {
             const own = rows.filter((r) => r.ticker === t)
             const mkt = (own.find((r) => r.mkt) || {}).mkt
             if (mkt) markets[t] = mkt
             const mc = marketClockFor(clock(), mkt)
-            // No bars for a ticker the broker did not drop: no session that day (not listed yet,
-            // halted), remembered as null so it is not asked again; bars of a market whose hours
-            // are unknown are not judged (asked again later).
-            const asked = own.length ? !!mc && mc.dt != null : !badTickers.has(t) && !(skipUntil.get(t) > now())
-            if (!asked) continue
-            const m = regularCloses(own, mc)
+            const m = regularCloses(own, mc, at)
+            for (const d of m.keys()) sessions.add(d)
+            got.set(t, { mc, m })
+          }
+          for (const t of tickers) {
+            const { mc, m } = got.get(t)
+            // A market without a regular close (KASE, EU): nothing to wait for. Otherwise a date
+            // without this ticker's close is remembered as null (not asked again: not listed yet,
+            // halted) only when other tickers of the same answer had that session; else (the
+            // ticker or the whole answer came back empty) it is asked again later.
+            const none = !!mc && mc.dt != null && mc.regular == null
             const next = { ...(closes[t] || {}) }
-            for (const d of ds) if (miss.get(d).has(t)) next[d] = m.get(d) ?? null
+            for (const d of ds) {
+              if (!miss.get(d).has(t)) continue
+              if (m.has(d)) next[d] = m.get(d)
+              else if (none || sessions.has(d)) next[d] = null
+            }
             closes[t] = next
           }
           regularStore = { closes, markets }
@@ -521,7 +536,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     if (k && k.store === regularStore && k.bc === bc && k.intra === e.intraday && k.clk === clk && k.mkt === e.zone?.mkt) return k.value
     const value = new Map(Object.entries(regularStore.closes[ticker] || {}).filter(([, c]) => c != null))
     for (const [d, c] of bc.get(ticker) || []) value.set(d, c)
-    for (const [d, c] of regularCloses(e?.intraday, mc)) value.set(d, c)
+    for (const [d, c] of regularCloses(e?.intraday, mc, e?.at?.intraday)) value.set(d, c)
     if (e) e.reg = { store: regularStore, bc, intra: e.intraday, clk, mkt: e.zone?.mkt, value }
     return value
   }
@@ -543,6 +558,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     return {
       info: e?.info ?? null,
       intraday: e?.intraday ?? null,
+      intradayAt: e?.at?.intraday ?? null, // fetch time of `intraday` (regularCloses asOf)
       daily: sessionCandles(e, 'daily', anchored ? idx : null, reg),
       max: sessionCandles(e, 'max', anchored ? idx : null, reg),
       sessions: anchored ? sessionBounds(idx) : null,

@@ -165,8 +165,9 @@ export const computeCore = (positions, trades, cashflows, prices, regular = null
  *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
  *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
  *  по барам SP500.IDX за этот день.
- *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row. */
-export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => {
+ *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row.
+ *  `asOf` (ms): when the intraday bars were fetched (a bar still forming then is no regular close). */
+export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order, asOf = null) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
@@ -187,7 +188,7 @@ export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => 
       }
       const spark = bars.filter((r) => r.date === last.date && r.ts >= lo && r.ts <= hi).map((r) => r.close);
       // US: the regular closes of the two sessions (Task 51), else the daily closes.
-      const reg = clock ? regularCloses(bars, marketClockFor(clock, mkt)) : null;
+      const reg = clock ? regularCloses(bars, marketClockFor(clock, mkt), asOf) : null;
       const lc = (reg && reg.get(last.date)) ?? last.close, pc = (reg && reg.get(prev.date)) ?? prev.close;
       return { ticker: t, date: last.date, last: lc, prev: pc, change_pct: r2((lc / pc - 1) * 100), spark };
     });

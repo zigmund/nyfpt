@@ -62,7 +62,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   const infoPrice = computed(() => posN(info.value?.ltp))
   // calc/live regularQuote (Task 51): US on the regular close, sessions named by the card's own
   // intraday bars; other markets: ltp and quotePrevClose (ltp - chg, then pp, then pcp).
-  const closes = computed(() => regularCloses(sec.value.intraday, sec.value.clock))
+  const closes = computed(() => regularCloses(sec.value.intraday, sec.value.clock, sec.value.intradayAt))
   const regQuote = computed(() => (quote.value ? regularQuote(quote.value, sec.value.clock, closes.value) : null))
   const regInfo = computed(() => regularQuote(info.value, sec.value.clock, closes.value))
   const reg = computed(() => regQuote.value || regInfo.value)
@@ -79,7 +79,9 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({
     ticker, info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
-    prevClose: regInfo.value.prev,
+    // the header's quote previous close (live quote, else security info); the position / candle
+    // fallbacks stay out (no Key statistics before the security data, Task 28)
+    prevClose: regQuote.value?.prev ?? regInfo.value.prev,
   }))
 
   // A ticker without a position or security info (an index): its strip card label or search name.

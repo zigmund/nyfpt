@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import Holdings from '../src/components/Holdings.vue'
+import MarketSpark from '../src/components/MarketSpark.vue'
 import { installApp } from '../src/composables/useApp.js'
 import { regularQuote } from '../src/calc/live.js'
 import { money, pct } from '../src/format.js'
@@ -37,5 +38,27 @@ describe('Holdings Day on the regular close (Task 51)', () => {
     expect(row.get('[data-test="h-price"]').text()).toBe('104.00')
     expect(row.get('[data-test="h-daypct"]').text()).toBe(pct(4))
     expect(w.get('[data-test="h-total"]').text()).toContain(money(40))
+  })
+})
+
+describe('Holdings day spark in the US pre-open (fix round 1)', () => {
+  it('today\'s pre-open spark is levelled at the last regular close, not the one before', () => {
+    const pre = new Map([['AAA.US', { c: 'AAA.US', ltr: 'FIX', ltp: 106, chg: 2, pp: 104, ClosePrice: 104, ltt: '2026-11-02T08:00:00' }]])
+    const closes = new Map([['2026-10-29', 100], ['2026-10-30', 104]])
+    installApp({
+      state: ref({ rawPs: PS, positions: [], trades: [], sparks: { 'AAA.US': { date: '2026-11-02', spark: [104.5, 105, 106] } }, closes: new Map(), quotes: pre }),
+      tick: ref(0),
+      live: { isLive: ref(false), usOpen: ref(false), quotes: new Map() },
+      prefs: reactive({ hide: false, sorts: {} }),
+      liveQuotesForCalc: () => undefined,
+      coreFor: vi.fn(() => null),
+      ensurePrices: vi.fn(async () => {}),
+      regularQuote: (tk, q) => regularQuote(q, US, closes),
+    })
+    const w = mount(Holdings, { props: { core: null, period: 'YTD' } })
+    const row = w.get('[data-ticker="AAA.US"]')
+    expect(row.get('[data-test="h-price"]').text()).toBe('104.00')
+    expect(row.get('[data-test="h-daypct"]').text()).toBe(pct(4))
+    expect(row.findComponent(MarketSpark).props('prev')).toBe(104)
   })
 })

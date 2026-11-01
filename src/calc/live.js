@@ -56,9 +56,11 @@ export const dayChangePct = ({ last = null, prev = null, pct = null } = {}) => {
   return num(pct);
 };
 
-// A quote value names the same session as a bar close when within this share of it: the closing
-// auction differs from the last trade before 16:00 by cents (verified 2026-11-01: 0.01-0.04%).
-const REGULAR_MATCH = 0.005
+// A quote value names the same session as a bar close when within this share of it AND closer to it
+// than to the neighbouring session's bar close: the closing auction differs from the last trade
+// before 16:00 by cents (verified 2026-11-01: 0.01-0.04%); quiet days move less than 0.5%.
+const REGULAR_MATCH = 0.001
+const SAME = 1e-9
 const MAX_BAR_S = 3600 // regularCloses: intraday bars up to an hour (15 / 60 min); longer steps are not judged
 const NO_CLOSES = new Map()
 
@@ -88,21 +90,25 @@ export const tradePhase = (q, mc) => {
  * last bar that ends by the regular close (bar start + bar length <= mc.regular) and ends after
  * the open (a pre-market-only day has none). Any timeframe (15 or 60 minutes). Only complete
  * sessions: some bar of the date ends at or after the regular close (a running session has no
- * close yet). Weekdays only; the bar length must be known (two bars at least, an hour at most). Empty without a
+ * close yet) and, with `asOf` (ms: when the bars were fetched), had ended by then (a 15:45 bar
+ * fetched at 15:50 was still forming). Weekdays only; the bar length must be known (two bars at least, an hour at most). Empty without a
  * regular close (markets other than US). Map date -> close. Half days (13:00 close) are not
  * known: their close is the last trade before 16:00.
  */
-export const regularCloses = (rows, mc) => {
+export const regularCloses = (rows, mc, asOf = null) => {
   const out = new Map()
   if (!rows || !rows.length || !mc || !Number.isFinite(mc.offset) || mc.open == null || mc.regular == null) return out
   const bar = barSeconds(rows)
   if (!bar || bar > MAX_BAR_S) return out
+  // Axis seconds of the fetch time (axis + offset = wall = UTC + offset - dt); not judged without dt.
+  const cut = Number.isFinite(asOf) && Number.isFinite(mc.dt) ? asOf / 1000 - mc.dt * 60 : Infinity
   const best = new Map()
   const done = new Set()
   for (const r of rows) {
     const c = posNum(r && r.close)
     if (c === null || !Number.isFinite(r.ts) || !r.date || !isSessionDay(r.date)) continue
     const end = r.ts + bar
+    if (end > cut) continue
     const close = axisAt(mc.offset, r.date, mc.regular)
     if (end >= close) done.add(r.date)
     if (end > close || end <= axisAt(mc.offset, r.date, mc.open)) continue
@@ -124,10 +130,14 @@ export const regularCloses = (rows, mc) => {
  * (tradePhase), with `closes` (regularCloses of the ticker's intraday bars) naming the sessions:
  *   post  the close of the trade's day; pre  the last close before the trade's day;
  *   prev  the close of the session before; an official quote value replaces a bar close of the
- *         same session when within REGULAR_MATCH (ClosePrice for the close, ltp - chg / pp for prev).
+ *         same session when within REGULAR_MATCH of it and closer to it than to the neighbouring
+ *         session's (ClosePrice for the close, ltp - chg / pp for prev; a prev equal to ClosePrice
+ *         names the same session and is never the previous close).
  * Without bars: after the close, ClosePrice against quotePrevClose (verified on a day off,
- * 2026-11-01: ClosePrice = that day's regular close, ltp - chg = the one before); before the
- * open the broker's own change (which session ClosePrice / pp name then is not verified).
+ * 2026-11-01: ClosePrice = that day's regular close, ltp - chg = the one before; equal: no
+ * previous close); before the open the broker's own change (which session ClosePrice / pp name
+ * then is not verified). A trade at the regular price (a closing print stamped 16:00:0x) is no
+ * after-hours trade: no `ext`.
  */
 export const regularQuote = (q, mc, closes = null) => {
   const ltp = quotePrice(q)
@@ -138,24 +148,28 @@ export const regularQuote = (q, mc, closes = null) => {
   const cl = closes || NO_CLOSES
   const dates = [...cl.keys()].sort()
   const before = (d) => dates.filter((x) => x < d).pop() ?? null
-  const near = (v, b) => v !== null && b != null && Math.abs(v - b) <= REGULAR_MATCH * b
+  // v is the close `b` names: within REGULAR_MATCH and nearer to b than to the other session's `o`.
+  const names = (v, b, o) => v !== null && b != null && Math.abs(v - b) <= REGULAR_MATCH * b
+    && (o == null || Math.abs(v - b) < Math.abs(v - o))
   const day = ph.phase === 'post' ? ph.day : before(ph.day)
   const bar = day ? cl.get(day) ?? null : null
   const cp = posNum(q.ClosePrice)
-  const pq = plain.prev
+  let pq = plain.prev
+  if (pq !== null && cp !== null && Math.abs(pq - cp) < SAME) pq = null // both name one session
   let price
   let prev
   if (bar !== null) {
     const pbar = cl.get(before(day)) ?? null
-    price = near(cp, bar) ? cp : bar
-    prev = near(pq, pbar) ? pq : pbar ?? (ph.phase === 'post' && pq !== null && !near(pq, price) ? pq : null)
+    price = names(cp, bar, pbar) ? cp : bar
+    prev = pbar !== null ? (names(pq, pbar, bar) ? pq : pbar) : ph.phase === 'post' ? pq : null
   } else if (ph.phase === 'post' && cp !== null) {
     price = cp
     prev = pq
   } else {
     return plain
   }
-  return { price, prev, pct: null, day, ext: { kind: ph.phase, price: ltp, change: ltp - price, pct: (ltp / price - 1) * 100, ltt: q.ltt } }
+  const ext = Math.abs(ltp - price) < SAME ? null : { kind: ph.phase, price: ltp, change: ltp - price, pct: (ltp / price - 1) * 100, ltt: q.ltt }
+  return { price, prev, pct: null, day, ext }
 }
 
 /** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object.
@@ -224,7 +238,7 @@ export const holdingsRows = (ps, quotes, resolve = plainQuote) => {
     const valueUsd = price === null ? (mv ?? 0) : q * price * k * fx;
     const dayChangeUsd = prevClose === null || price === null ? null : q * (price - prevClose) * k * fx;
     return {
-      ticker: p.i, name: p.name, qty: q, price, prevClose, dayChangePct: dayChangePct({ last: price, prev: prevClose }),
+      ticker: p.i, name: p.name, qty: q, price, prevClose, priceDay: reg.day ?? null, dayChangePct: dayChangePct({ last: price, prev: prevClose }),
       dayChangeUsd, valueUsd, weight: 0, currency: p.curr,
     };
   });
