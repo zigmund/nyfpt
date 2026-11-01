@@ -211,8 +211,6 @@ const en = {
   'settings.themeSystem': 'System',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
-  'settings.hide': 'Hide amounts',
-  'settings.hideHint': 'Shows $*** instead of dollar amounts. Percentages and prices stay visible.',
   'settings.strip': 'Markets strip',
   'settings.stripHint': 'Cards at the top of the main screen, up to {max}.',
   'settings.stripEmpty': 'No cards: the strip is hidden.',

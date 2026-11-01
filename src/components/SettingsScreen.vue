@@ -33,14 +33,6 @@
           >{{ t(o.label) }}</button>
         </div>
       </div>
-      <label class="toggle">
-        <span class="toggle__text">
-          <span class="toggle__title">{{ t('settings.hide') }}</span>
-          <span class="toggle__hint">{{ t('settings.hideHint') }}</span>
-        </span>
-        <input v-model="prefs.hide" class="toggle__input" type="checkbox" role="switch">
-        <span class="toggle__track" aria-hidden="true" />
-      </label>
     </section>
 
     <MarketStripEditor />
