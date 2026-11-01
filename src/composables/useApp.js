@@ -11,6 +11,7 @@ import { loadSession, saveSession, clearSession, loadPrefs, savePrefs } from '..
 import { createRepo } from '../data/repo.js'
 import { localDay } from '../calc/marketTime.js'
 import { createLive } from '../data/live.js'
+import { createNews } from '../data/news.js'
 
 export const THEMES = ['system', 'light', 'dark']
 // Page background per resolved theme, mirrored into <meta name="theme-color"> (keep in sync with app.css --c-bg).
@@ -23,6 +24,7 @@ const defaultDeps = () => ({
   createBroker,
   createRepo,
   createLive,
+  createNews,
   openAccountDb,
   socketFactory: (cabinet, sid) => () => new LiveSocket({ wsUrl: cabinet.ws, sid }),
   sessionStore: { load: loadSession, save: saveSession, clear: clearSession },
@@ -62,21 +64,29 @@ export function isUsdAccount(answer) {
 /** Selected period from prefs; unknown values fall back to YTD. */
 export const periodOf = (prefs) => (PERIODS.includes(prefs.period) ? prefs.period : 'YTD')
 
-// Position card: '/position/<URL-encoded ticker>[/<tab>]'.
-const POSITION_RE = /^\/position\/([^/]+)(?:\/([a-z]+))?$/
+// Position card: '/position/<URL-encoded ticker>[/<tab>[/<item>]]' (item: a news article id).
+const POSITION_RE = /^\/position\/([^/]+)(?:\/([a-z]+)(?:\/([^/]+))?)?$/
 
-/** {ticker, tab} of a position card path, or null. Tab defaults to 'summary'. */
+/** {ticker, tab[, item]} of a position card path, or null. Tab defaults to 'summary'. */
 export function positionRoute(path) {
   const m = POSITION_RE.exec(String(path || ''))
   if (!m) return null
   let ticker
-  try { ticker = decodeURIComponent(m[1]).trim() } catch { return null }
-  return ticker ? { ticker, tab: m[2] || 'summary' } : null
+  let item
+  try {
+    ticker = decodeURIComponent(m[1]).trim()
+    item = m[3] ? decodeURIComponent(m[3]).trim() : ''
+  } catch { return null }
+  if (!ticker) return null
+  return item ? { ticker, tab: m[2], item } : { ticker, tab: m[2] || 'summary' }
 }
 
-/** Path of a position card tab; Summary is the bare card path. */
-export const positionPath = (ticker, tab = 'summary') =>
-  `/position/${encodeURIComponent(ticker)}${tab && tab !== 'summary' ? `/${tab}` : ''}`
+/** Path of a position card tab (and item); Summary is the bare card path. */
+export const positionPath = (ticker, tab = 'summary', item = null) => {
+  const base = `/position/${encodeURIComponent(ticker)}`
+  if (item !== null && item !== undefined && item !== '') return `${base}/${tab}/${encodeURIComponent(item)}`
+  return `${base}${tab && tab !== 'summary' ? `/${tab}` : ''}`
+}
 
 export const parseHash = (h) => {
   const p = String(h || '').replace(/^#/, '') || '/'
@@ -99,6 +109,7 @@ export const parseHash = (h) => {
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
+ *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
  *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
  */
@@ -121,6 +132,7 @@ export function createAppState(overrides = {}) {
   let accountKey = null
   let repo = null
   let liveObj = null
+  let news = null
   let unsubs = []
   let gen = 0
   let started = false
@@ -223,6 +235,7 @@ export function createAppState(overrides = {}) {
     liveObj?.stop()
     liveObj = null
     repo = null
+    news = null
     syncTimer()
   }
 
@@ -264,6 +277,7 @@ export function createAppState(overrides = {}) {
     broker ||= deps.createBroker({ cabinet, sid: s.sid })
     repo = deps.createRepo({ broker, db })
     liveObj = deps.createLive({ repo, broker, socketFactory: deps.socketFactory(cabinet, s.sid) })
+    news = deps.createNews({ broker, db, onExpired: () => { if (my === gen && !expired.value) onExpired() } })
     expired.value = false
     unsubs.push(
       repo.subscribe((st) => { state.value = st; bump() }),
@@ -399,6 +413,7 @@ export function createAppState(overrides = {}) {
     today: (ms = Date.now()) => (repo?.today ? repo.today(ms) : localDay(ms)),
     security: (ticker) => (repo ? repo.security(ticker) : null),
     loadSecurity: (ticker, parts, opts) => (repo ? repo.loadSecurity(ticker, parts, opts) : Promise.resolve()),
+    news: () => news,
   }
 }
 

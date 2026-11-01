@@ -12,7 +12,7 @@
       </section>
       <SettingsScreen v-else-if="route === '/settings'" />
       <CompareScreen v-else-if="route === '/compare'" />
-      <PositionScreen v-else-if="card" :key="card.ticker" :ticker="card.ticker" :tab="card.tab" />
+      <PositionScreen v-else-if="card" :key="card.ticker" :ticker="card.ticker" :tab="card.tab" :item="card.item || null" />
       <MainScreen v-else />
     </div>
     <LoginScreen v-if="expired" overlay />

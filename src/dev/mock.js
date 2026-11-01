@@ -2,6 +2,7 @@
 // Positions, trades and cashflows come from tests/fixtures/synthetic-api.json; daily and
 // intraday candles (with volumes) are generated deterministically so that each ticker's latest
 // close equals its last close in the fixture; getSecurityInfo is synthesized from them. The socket reports market FIX as OPEN and streams quote deltas.
+// News: synthetic per ticker (see newsList below).
 // main.js imports this module dynamically under `import.meta.env.DEV`: never in production builds.
 import fixture from '../../tests/fixtures/synthetic-api.json'
 
@@ -160,6 +161,74 @@ function securityInfo(tk) {
   }
 }
 
+// --- news (getNewsList / getNewsDetail): server wall clock = UTC here, like the candles.
+// CCC_KZ.KZ / *.KZ: Russian only; BBB.US: no news at all; any other ticker: 45 English items
+// (pages of 20, the third page repeats the last row of the second). The first article mixes
+// allowed and disallowed HTML; Russian articles are plain text.
+const NEWS_EN_TOTAL = 45
+const NEWS_EMPTY = new Set(['BBB.US'])
+const newsById = new Map()
+const wall = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+const MIXED_HTML = [
+  '<h2>What the mock article shows</h2>',
+  '<p>Allowed: <b>bold</b>, <i>italic</i>, <strong>strong</strong> and a <a href="https://example.com/safe" onclick="alert(1)" target="_self">safe https link</a>.</p>',
+  '<script>alert("mock script")</script><style>p { color: red }</style>',
+  '<p><img src="x" onerror="alert(1)">The image before this sentence was dropped.</p>',
+  '<p><a href="javascript:alert(1)">A javascript: link shown as text</a>, <a href="/relative">a relative one</a>, <a href="http://example.com/">plain http</a>.</p>',
+  '<div><span style="color:red" class="x">Text of an unwrapped div and span.</span></div>',
+  '<svg onload="alert(1)"><a href="https://example.com/svg">svg link (dropped)</a></svg>',
+  '<iframe src="https://example.com/frame"></iframe>',
+  '<h1>An h1 becomes a paragraph</h1>',
+  '<ul><li>First point</li><li>Second <em>point</em></li></ul>',
+  '<blockquote>A quoted line.</blockquote>',
+].join('')
+
+function mockNews(tk, lang) {
+  if (NEWS_EMPTY.has(tk)) return []
+  const kz = tk.endsWith('.KZ')
+  if (kz !== (lang === 'ru')) return []
+  const base = Math.floor(rand(`news|${tk}`) * 1e6) * 100
+  const n = kz ? 3 : NEWS_EN_TOTAL
+  const now = Date.now()
+  const sentiments = ['positive', 'negative', 'neutral', '']
+  return Array.from({ length: n }, (_, i) => {
+    const id = base + i
+    const at = kz ? now - (400 + i * 40) * DAY : now - (i * 2 * 3600 + 17 * 60) * 1000
+    const item = {
+      id,
+      title: kz ? `Новость по ${tk} номер ${i + 1}` : `${tk}: mock headline number ${i + 1} about the company and its market`,
+      provider: i % 3 ? 'Oninvest' : 'OninvestCompanyNews',
+      providerAlias: 'oninvest',
+      lang,
+      date: wall(at),
+      url: i % 3 === 0 ? `https://example.com/news/${id}` : i % 3 === 1 ? `/news/${id}` : '',
+      sentiment: sentiments[i % 4],
+      tickers: [tk, 'SPY.US', 'QQQ.US', 'AAA.US'],
+      images: [],
+    }
+    newsById.set(String(id), {
+      ...item,
+      dateTime: item.date,
+      timeZone: '+0000',
+      text: kz ? `Первый абзац новости ${i + 1}.\nВторая строка того же абзаца.\n\nВторой абзац.`
+        : i === 0 ? MIXED_HTML : `<p>Mock article ${i + 1} for ${tk}.</p><p>Second <b>paragraph</b>.</p>`,
+    })
+    return item
+  })
+}
+
+function newsList({ ticker, lang, take = 20, skip = 0 }) {
+  const all = mockNews(ticker, lang)
+  const from = skip >= 40 ? skip - 1 : skip // a repeated row: the app drops duplicates
+  return { list: all.slice(from, skip + take), total: all.length, take, skip }
+}
+
+function newsDetail(id) {
+  const d = newsById.get(String(id))
+  if (d) return d
+  return { id, title: 'Mock article', provider: 'Oninvest', lang: 'en', dateTime: wall(Date.now() - 3600e3), timeZone: '+0000', url: '', text: '<p>Opened by link before its list was loaded.</p>' }
+}
+
 const MARKETS = () => ({
   t: new Date().toISOString().slice(0, 19).replace('T', ' '),
   m: [
@@ -194,6 +263,8 @@ export function createMockBroker() {
     async securityInfo(tk) { await wait(200); return securityInfo(tk) },
     async marketStatus() { await wait(150); return { result: { markets: MARKETS() } } },
     async checkSession() { return { SID: 'mock-sid', user_id: 'mock' } },
+    async newsList(q) { await wait(600); return newsList(q) },
+    async newsDetail(id) { await wait(250); return newsDetail(id) },
   }
 }
 

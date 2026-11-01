@@ -142,19 +142,19 @@ describe('position route', () => {
 })
 
 describe('tabs', () => {
-  it('filters tabs by security kind; Summary only for now', () => {
+  it('filters tabs by security kind; Summary and News (session) for now', () => {
     const list = [{ id: 'summary' }, { id: 'news' }, { id: 'analysis', kinds: [1, 2] }]
     expect(tabsFor(1, list).map((x) => x.id)).toEqual(['summary', 'news', 'analysis'])
     expect(tabsFor(7, list).map((x) => x.id)).toEqual(['summary', 'news'])
     expect(tabsFor(null, list).map((x) => x.id)).toEqual(['summary', 'news'])
-    expect(CARD_TABS.map((x) => x.id)).toEqual(['summary'])
+    expect(CARD_TABS.map((x) => x.id)).toEqual(['summary', 'news'])
   })
 
   it('renders the tab list; an unknown tab falls back to Summary; switching replaces history', async () => {
     const app = setup()
     const w = mountCard({ tab: 'financials' })
     const tabs = w.findAll('[role="tab"]')
-    expect(tabs.map((x) => x.text())).toEqual([t('pos.tab.summary')])
+    expect(tabs.map((x) => x.text())).toEqual([t('pos.tab.summary'), t('pos.tab.news')])
     expect(tabs[0].attributes('aria-selected')).toBe('true')
     expect(w.find('[data-test="p-price"]').exists()).toBe(true)
     await tabs[0].trigger('click')

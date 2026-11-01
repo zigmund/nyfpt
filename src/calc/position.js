@@ -14,13 +14,14 @@ const posNum = (v) => {
   return x !== null && x > 0 ? x : null
 }
 
-/** Card tabs in display order. `kinds` limits a tab to security kinds (getSecurityInfo `kind`).
- *  News (Task 21) is added here once its data source is confirmed. */
-export const CARD_TABS = [{ id: 'summary' }]
+/** Card tabs in display order. `kinds` limits a tab to security kinds (getSecurityInfo `kind`);
+ *  `session`: needs a broker session (News: getNewsList answers only with a SID). */
+export const CARD_TABS = [{ id: 'summary' }, { id: 'news', session: true }]
 
-/** Tabs shown for a security kind; unknown kind shows only unrestricted tabs. */
-export const tabsFor = (kind, tabs = CARD_TABS) =>
-  tabs.filter((t) => !t.kinds || (num(kind) !== null && t.kinds.includes(num(kind))))
+/** Tabs shown for a security kind (unknown kind: only unrestricted tabs) and session state
+ *  (`session` omitted: session tabs are kept). */
+export const tabsFor = (kind, tabs = CARD_TABS, { session = true } = {}) =>
+  tabs.filter((t) => (!t.kinds || (num(kind) !== null && t.kinds.includes(num(kind)))) && (!t.session || session))
 
 /** App period code -> chart period code ('7d' is drawn as the 5-session chart). */
 export const CHART_PERIOD = { '1d': '1D', '7d': '5D', '1m': '1M', '6m': '6M', YTD: 'YTD', '1Y': '1Y', '5Y': '5Y', All: 'ALL' }

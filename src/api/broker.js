@@ -13,12 +13,13 @@ const CASHFLOW_MAX_PAGES = 200 // 100k rows: a hard stop for a broker that never
 export function createBroker({ cabinet, sid, fetchImpl }) {
   const rest = cabinet.rest
 
-  // Authenticated call; code 5 triggers a getSidInfo probe to tell expiry from other errors.
+  // Authenticated call; code 5 (and 12 "Invalid CSRF": no valid session, e.g. getNewsList) triggers
+  // a getSidInfo probe to tell expiry from other errors.
   async function authed(cmd, params = {}) {
     try {
       return await callLegacy({ rest, cmd, params, sid, fetchImpl })
     } catch (e) {
-      if (e instanceof BrokerError && e.code === 5) {
+      if (e instanceof BrokerError && [5, 12].includes(Number(e.code))) {
         try {
           await callLegacy({ rest, cmd: 'getSidInfo', sid, fetchImpl })
         } catch (probe) {
@@ -80,5 +81,9 @@ export function createBroker({ cabinet, sid, fetchImpl }) {
     securityInfo: (ticker) => callAnon({ rest, cmd: 'getSecurityInfo', params: { ticker, sup: false }, fetchImpl }),
     marketStatus: () => callAnon({ rest, cmd: 'getMarketStatus', params: { market: '*' }, fetchImpl }),
     checkSession: () => callLegacy({ rest, cmd: 'getSidInfo', sid, fetchImpl }),
+    /** News by ticker ('AAPL.US'), newest first: {list, total, take, skip}. SID only. */
+    newsList: ({ ticker, lang, take, skip }) => authed('getNewsList', { ticker, lang, take, skip }),
+    /** One article: list fields + text (HTML or plain), dateTime, timeZone ('+0300'). SID only. */
+    newsDetail: (id) => authed('getNewsDetail', { id }),
   }
 }
