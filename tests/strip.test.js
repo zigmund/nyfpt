@@ -15,7 +15,8 @@ import { pct } from '../src/format.js'
 const DEFAULT_TICKERS = MARKET_STRIP.map((m) => m.ticker)
 const row = (ticker, last, change_pct = 1) => ({ ticker, date: '2026-10-30', last, prev: last ? last - 1 : null, change_pct: last ? change_pct : null, spark: [] })
 
-function makeApp({ prefs = {}, markets = null, loading = [], findTickers, quotes = new Map() } = {}) {
+// open: tickers whose own market is open (live for them); none by default.
+function makeApp({ prefs = {}, markets = null, loading = [], findTickers, quotes = new Map(), open = [] } = {}) {
   const saved = []
   const created = []
   const state = {
@@ -37,7 +38,7 @@ function makeApp({ prefs = {}, markets = null, loading = [], findTickers, quotes
     openAccountDb: async () => ({ close() {}, clear: async () => {} }),
     createRepo: (opts) => { created.push(opts); return repo },
     createLive: () => ({
-      quotes, isLive: () => false, marketsOpen: () => ({ us: false }),
+      quotes, isLive: () => open.length > 0, isOpenFor: (t) => open.includes(t), marketsOpen: () => ({ us: open.length > 0 }),
       on: () => () => {}, start() {}, stop() {}, pause() {}, resume() {},
     }),
     socketFactory: () => () => ({}),
@@ -134,7 +135,7 @@ describe('MarketsStrip', () => {
 
   it('day change: a quote\'s price vs previous close wins over its pcp (the rule the card uses)', async () => {
     const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltp: 6060, pp: 6000, pcp: 0.5 }]])
-    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }, { ticker: 'GLD.US', label: 'Gold' }] }, markets: [row('SP500.IDX', 6000), row('GLD.US', 245, 1.5)], quotes })
+    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }, { ticker: 'GLD.US', label: 'Gold' }] }, markets: [row('SP500.IDX', 6000), row('GLD.US', 245, 1.5)], quotes, open: ['SP500.IDX'] })
     await flushPromises()
     const w = mount(MarketsStrip)
     // GLD without a quote: its daily last vs prev (245 vs 244 in this fake row), the same rule
@@ -144,11 +145,66 @@ describe('MarketsStrip', () => {
 
   it('day change of a quote with chg: ltp - chg is the previous close, a wrong pp is ignored (Task 42)', async () => {
     const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltp: 6060, chg: 120, pp: 5000, pcp: 2.02 }]])
-    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }] }, markets: [row('SP500.IDX', 6000)], quotes })
+    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }] }, markets: [row('SP500.IDX', 6000)], quotes, open: ['SP500.IDX'] })
     await flushPromises()
     const w = mount(MarketsStrip)
     expect(w.get('.mcard__chg').text()).toBe(pct((120 / 5940) * 100))
     w.unmount()
+  })
+
+  // Task 50: a quote is not the session close while its market is closed (a weekend print, an
+  // index quote of zeros); ltp 0 is never a price.
+  describe('quotes vs the session close (Task 50)', () => {
+    const SP = [{ ticker: 'SP500.IDX', label: 'S&P' }]
+    const session = { ticker: 'SP500.IDX', date: '2026-10-30', last: 6000, prev: 5940, change_pct: 1.01, spark: [] }
+    const mountStrip = async (opts) => {
+      makeApp({ prefs: { marketStrip: SP }, ...opts })
+      await flushPromises()
+      return mount(MarketsStrip)
+    }
+    const shown = (w) => [w.get('.mcard__last').text(), w.get('.mcard__chg').text()]
+
+    it('market closed: a weekend print in the quote does not replace the session close', async () => {
+      const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltr: 'FIX', ltp: 6100, chg: 100, pcp: 1.67, pp: 6000 }]])
+      const w = await mountStrip({ markets: [session], quotes })
+      expect(shown(w)).toEqual(['6,000.00', pct((60 / 5940) * 100)])
+      w.unmount()
+    })
+
+    it('market open: the quote overrides the daily closes (unchanged in session)', async () => {
+      const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltr: 'FIX', ltp: 6060, chg: 60, pcp: 1 }]])
+      const w = await mountStrip({ markets: [session], quotes, open: ['SP500.IDX'] })
+      expect(shown(w)).toEqual(['6,060.00', pct(1)])
+      w.unmount()
+    })
+
+    it('a quote with ltp 0 is no price: the session close, never 0.0000 / -100%', async () => {
+      const zero = new Map([['SP500.IDX', { c: 'SP500.IDX', ltr: 'FIX', ltp: 0, chg: -6000, pcp: -100, pp: 0 }]])
+      for (const open of [[], ['SP500.IDX']]) {
+        const w = await mountStrip({ markets: [session], quotes: zero, open })
+        expect(shown(w)).toEqual(['6,000.00', pct((60 / 5940) * 100)])
+        w.unmount()
+        installApp(null)
+      }
+    })
+
+    it('a quote with ltp 0 before the daily closes load: a skeleton, not 0', async () => {
+      const zero = new Map([['SP500.IDX', { c: 'SP500.IDX', ltr: 'FIX', ltp: 0, chg: 0, pcp: 0, pp: 0 }]])
+      for (const open of [[], ['SP500.IDX']]) {
+        const w = await mountStrip({ markets: null, quotes: zero, open })
+        expect(w.find('.mcard__last.skel').exists()).toBe(true)
+        expect(w.text()).not.toContain('0.00')
+        w.unmount()
+        installApp(null)
+      }
+    })
+
+    it('a fetched ticker without closes and a zero quote: dashes', async () => {
+      const zero = new Map([['SP500.IDX', { c: 'SP500.IDX', ltr: 'FIX', ltp: 0, chg: 0, pcp: 0 }]])
+      const w = await mountStrip({ markets: [{ ...session, last: null, prev: null, change_pct: null, date: null }], quotes: zero, open: ['SP500.IDX'] })
+      expect(shown(w)).toEqual(['—', '—'])
+      w.unmount()
+    })
   })
 
   it('an empty list hides the strip and its status line', () => {

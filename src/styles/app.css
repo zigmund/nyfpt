@@ -1600,6 +1600,8 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .phead__line { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--gap); }
 .phead__line .big.skel { display: inline-block; width: 8rem; }
 .phead__chg { font-size: var(--fs-body); }
+.phead__chgrp { display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--gap); min-width: 0; }
+.phead__per { font-family: var(--font-ui); font-size: var(--fs-caption); color: var(--c-fg); } /* as .vline__lab */
 
 /* Fixed height per breakpoint, read by the chart (charts/priceChart.js): no jump when it loads. */
 .pchart { position: relative; height: 240px; margin-top: var(--gap); }

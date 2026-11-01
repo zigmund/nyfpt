@@ -11,6 +11,7 @@ import PositionScreen from '../src/components/PositionScreen.vue'
 import { installApp, parseHash, positionRoute, positionPath, createAppState } from '../src/composables/useApp.js'
 import {
   parseCandles, keyStats, positionHolding, chartRows, chartStart, sessionBounds, tabsFor, rangePos, CARD_TABS,
+  withLastPrice, tradeDay,
 } from '../src/calc/position.js'
 import { lastTradeTime } from '../src/composables/usePosition.js'
 import { marketClock, marketClockFor } from '../src/calc/marketTime.js'
@@ -18,6 +19,7 @@ import { createBroker } from '../src/api/broker.js'
 import { createRepo } from '../src/data/repo.js'
 import { openAccountDb } from '../src/store/db.js'
 import { money, pct } from '../src/format.js'
+import { whenOf } from '../src/charts/priceChart.js'
 import { t } from '../src/i18n.js'
 
 const TS = (d, hh = 0, mm = 0) => Date.parse(`${d}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00Z`) / 1000
@@ -165,8 +167,8 @@ describe('tabs', () => {
 })
 
 describe('Summary', () => {
-  it('header: name, venue, price, day change, "At close" when not live', () => {
-    setup()
+  it('header (1D): name, venue, price, day change, "At close" when not live', () => {
+    setup({ prefs: { period: '1d' } })
     const w = mountCard()
     expect(w.get('[data-test="p-name"]').text()).toBe('Alpha Corp (AAA.US)')
     expect(w.get('[data-test="p-venue"]').text()).toBe('NASDAQ · USD')
@@ -177,15 +179,22 @@ describe('Summary', () => {
   })
 
   it('header on a day off: previous close = ltp - chg of the security info, not its pp (.EU, Task 42)', () => {
-    setup({ sec: { ...SEC, info: { ...INFO, ltp: 110, chg: 4, pcp: 3.77, pp: 97 } } })
+    setup({ sec: { ...SEC, info: { ...INFO, ltp: 110, chg: 4, pcp: 3.77, pp: 97 } }, prefs: { period: '1d' } })
     const w = mountCard()
     expect(w.get('[data-test="p-change"]').text()).toBe(`+4.00 (${pct((4 / 106) * 100)})`)
     // My holdings day gain from the same previous close: 10 x (110 - 106)
     expect(w.get('[data-test="ph-day"]').text()).toContain(money(40, { sign: true }))
   })
 
-  it('live: price and change follow the quote; "Live" label', async () => {
-    const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } } })
+  it('a quote with ltp 0 is no price: the security info price, not 0 (Task 50)', () => {
+    setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 0, chg: 0, pcp: 0, pp: 0 } }, prefs: { period: '1d' } })
+    const w = mountCard()
+    expect(w.get('[data-test="p-price"]').text()).toBe('110.00')
+    expect(w.get('[data-test="p-change"]').text()).toBe(`+10.00 (${pct(10)})`)
+  })
+
+  it('live (1D): price and change follow the quote; "Live" label', async () => {
+    const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } }, prefs: { period: '1d' } })
     const w = mountCard()
     expect(w.get('[data-test="p-price"]').text()).toBe('95.00')
     expect(w.get('[data-test="p-change"]').text()).toBe(`−5.00 (${pct(-5)})`)
@@ -645,5 +654,242 @@ describe('card opened before the account is attached', () => {
     app.state.value = st
     await flushPromises()
     expect(app.loadSecurity.mock.calls.length).toBe(n + 1)
+  })
+})
+
+describe('header follows the chart period and the pointer (Task 44)', () => {
+  // Five daily closes this year: the YTD / 1M charts draw them all, the first (100) is the period base.
+  const D5 = [100, 120, 90, 130, 125].map((close, i) => {
+    const d = `2026-10-${26 + i}`
+    return { ts: TS(d), date: d, high: close + 1, low: close - 1, open: close, close, vol: 10 }
+  })
+  const SEC5 = { ...SEC, daily: D5 }
+  // happy-dom: the chart is 280 wide (widthOf fallback), points from x = 4 to x = 272.
+  const X = (i, n) => 4 + (268 * i) / (n - 1)
+  const move = (w, x, pointerType = 'mouse') => w.get('.pchart .chart-hit').trigger('pointermove', { clientX: x, clientY: 50, pointerType })
+  const head = (w) => ({
+    price: w.get('[data-test="p-price"]').text(),
+    change: w.get('[data-test="p-change"]').text(),
+    label: w.find('[data-test="p-chg-label"]').exists() ? w.get('[data-test="p-chg-label"]').text() : null,
+    status: w.get('[data-test="p-asof"]').text(),
+  })
+  const AT_CLOSE = () => t('pos.atClose', { at: lastTradeTime(INFO.ltt, MC) })
+
+  it('YTD: last price vs the first point of the chart, with the period label; status unchanged', () => {
+    setup({ sec: SEC5 })
+    const w = mountCard()
+    expect(head(w)).toEqual({ price: '110.00', change: `+10.00 (${pct(10)})`, label: t('pos.per.YTD'), status: AT_CLOSE() })
+    expect(w.get('[data-test="p-change"]').classes()).toContain('pos')
+  })
+
+  it('every period but 1D has its own label', () => {
+    for (const p of ['5D', '1M', '6M', 'YTD', '1Y', '5Y', 'ALL']) expect(t(`pos.per.${p}`)).not.toBe(`pos.per.${p}`)
+    expect(t('pos.per.1M')).toBe('past month')
+    expect(t('pos.per.YTD')).toBe('YTD')
+  })
+
+  it('1M below the base: negative change and tone; held or not the same header', () => {
+    setup({ sec: { ...SEC5, info: { ...INFO, ltp: 90 } }, prefs: { period: '1m' } })
+    const w = mountCard()
+    expect(head(w)).toMatchObject({ price: '90.00', change: `−10.00 (${pct(-10)})`, label: t('pos.per.1M') })
+    expect(w.get('[data-test="p-change"]').classes()).toContain('neg')
+    installApp(null)
+    setup({ sec: { ...SEC5, info: { ...INFO, c: 'NOP.US', ltp: 90 } }, prefs: { period: '1m' }, ps: { acc: PS.acc, pos: [] } })
+    const w2 = mountCard({ ticker: 'NOP.US' })
+    expect(w2.find('[data-test="p-holdings"]').exists()).toBe(false)
+    expect(head(w2)).toMatchObject({ price: '90.00', change: `−10.00 (${pct(-10)})`, label: t('pos.per.1M') })
+  })
+
+  it('unknown base: a dash (never zero); a skeleton while the period data loads', () => {
+    setup({ sec: { ...SEC5, daily: [] } })
+    const w = mountCard()
+    expect(w.get('[data-test="p-change"]').text()).toBe('—')
+    expect(w.get('[data-test="p-change"]').classes()).not.toContain('pos')
+    installApp(null)
+    setup({ sec: { ...SEC5, daily: [{ ...D5[0], close: 0 }, ...D5.slice(1)] } }) // base 0: no percentage base
+    expect(mountCard().get('[data-test="p-change"]').text()).toBe('—')
+    installApp(null)
+    setup({ sec: { ...SEC5, daily: null, loading: ['daily'] } })
+    const w3 = mountCard()
+    expect(w3.find('[data-test="p-change"]').exists()).toBe(false)
+    expect(w3.find('.phead__chg.skel').exists()).toBe(true)
+  })
+
+  it('1D: unchanged — day change vs the previous close, no period label', () => {
+    setup({ sec: SEC5, prefs: { period: '1d' } })
+    const w = mountCard()
+    expect(head(w)).toEqual({ price: '110.00', change: `+10.00 (${pct(10)})`, label: null, status: AT_CLOSE() })
+  })
+
+  it('pointer on the chart: price and change from the period start to that point, its date in the status; leave restores', async () => {
+    setup({ sec: SEC5 })
+    const w = mountCard()
+    await move(w, X(2, 5))
+    expect(head(w)).toEqual({ price: '90.00', change: `−10.00 (${pct(-10)})`, label: t('pos.per.YTD'), status: 'Oct 28, 2026' })
+    expect(w.get('[data-test="p-change"]').classes()).toContain('neg')
+    await move(w, X(3, 5))
+    expect(head(w)).toMatchObject({ price: '130.00', change: `+30.00 (${pct(30)})`, status: 'Oct 29, 2026' })
+    await w.get('.pchart .chart-hit').trigger('pointerleave', { pointerType: 'mouse' })
+    expect(head(w)).toEqual({ price: '110.00', change: `+10.00 (${pct(10)})`, label: t('pos.per.YTD'), status: AT_CLOSE() })
+  })
+
+  it('touch: the point stays after lifting the finger, a tap outside the chart restores', async () => {
+    setup({ sec: SEC5 })
+    const w = mount(PositionScreen, { props: { ticker: 'AAA.US' }, attachTo: document.body })
+    await w.get('.pchart .chart-hit').trigger('pointerdown', { clientX: X(1, 5), clientY: 50, pointerType: 'touch' })
+    await w.get('.pchart .chart-hit').trigger('pointerleave', { pointerType: 'touch' })
+    expect(head(w)).toMatchObject({ price: '120.00', change: `+20.00 (${pct(20)})` })
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    await nextTick()
+    expect(head(w)).toMatchObject({ price: '110.00', change: `+10.00 (${pct(10)})`, label: t('pos.per.YTD') })
+    w.unmount()
+  })
+
+  it('1D pointer: change vs the previous close, the bar time in the status', async () => {
+    setup({ prefs: { period: '1d' } })
+    const w = mountCard()
+    const rows = chartRows('1D', SEC, { today: SEC.today, sessions: SEC.sessions, clock: SEC.clock })
+    const r = rows[0]
+    await move(w, X(0, rows.length))
+    expect(head(w)).toEqual({
+      price: r.close.toFixed(2), change: `${r.close >= 100 ? '+' : '−'}${Math.abs(r.close - 100).toFixed(2)} (${pct(r.close - 100)})`,
+      label: null, status: whenOf(r, true),
+    })
+  })
+
+  it('the hovered point survives live redraws; on the last bar it follows the quote', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse('2026-10-30T17:00:00Z'))
+    const sec = { ...SEC, today: '2026-10-30' }
+    const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 150, pp: 100 } }, openFor: ['AAA.US'], sec, prefs: { period: '1d' } })
+    const w = mountCard()
+    const rows = chartRows('1D', sec, { today: sec.today, sessions: sec.sessions, clock: sec.clock })
+    const n = rows.length
+    const mid = Math.floor(n / 2)
+    await move(w, X(mid, n))
+    const midPrice = rows[mid].close.toFixed(2)
+    expect(head(w).price).toBe(midPrice)
+    app.live.quotes.set('AAA.US', { c: 'AAA.US', ltp: 151, pp: 100 })
+    app.tick.value++
+    await nextTick()
+    await nextTick()
+    expect(w.get('.pchart .chart-pill').text()).toContain(midPrice) // redrawn with the same point shown
+    expect(head(w)).toMatchObject({ price: midPrice, status: whenOf(rows[mid], true) })
+    await move(w, X(n - 1, n))
+    expect(head(w)).toMatchObject({ price: '151.00', change: `+51.00 (${pct(51)})` })
+    app.live.quotes.set('AAA.US', { c: 'AAA.US', ltp: 152, pp: 100 })
+    app.tick.value++
+    await nextTick()
+    await nextTick()
+    expect(head(w)).toMatchObject({ price: '152.00', change: `+52.00 (${pct(52)})` })
+  })
+
+  // Fix round 1: the header and the chart end share the last price on every period.
+  const endDot = (w) => w.get('.pchart circle.chart-dot[r="4"]').classes()
+  const ltpDay = (ltp) => ({ ...SEC5, info: { ...INFO, ltp } }) // ltt 2026-10-30 = the last D5 row
+
+  it('not live (1M / YTD): the chart ends on the header price, so the end dot has the header sign', () => {
+    for (const period of ['1m', 'YTD']) {
+      setup({ sec: ltpDay(95), prefs: { period } }) // last cached close 125 (above the base), price 95 (below)
+      const w = mountCard()
+      expect(w.get('[data-test="p-change"]').text()).toBe(`−5.00 (${pct(-5)})`)
+      expect(w.get('[data-test="p-change"]').classes()).toContain('neg')
+      expect(endDot(w)).toContain('chart-seg--neg')
+      installApp(null)
+    }
+  })
+
+  it('live (1M / YTD): the last row of today follows the quote; hovering the last point keeps the header price', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse('2026-10-30T17:00:00Z'))
+    for (const period of ['1m', 'YTD']) {
+      const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } }, openFor: ['AAA.US'], sec: { ...SEC5, today: '2026-10-30' }, prefs: { period } })
+      const w = mountCard()
+      expect(w.get('[data-test="p-change"]').text()).toBe(`−5.00 (${pct(-5)})`)
+      expect(endDot(w)).toContain('chart-seg--neg')
+      await move(w, X(4, 5))
+      expect(head(w)).toMatchObject({ price: '95.00', change: `−5.00 (${pct(-5)})` })
+      await w.get('.pchart .chart-hit').trigger('pointerleave', { pointerType: 'mouse' })
+      app.live.quotes.set('AAA.US', { c: 'AAA.US', ltp: 104, pp: 100 })
+      app.tick.value++
+      await nextTick()
+      await nextTick()
+      expect(w.get('[data-test="p-change"]').text()).toBe(`+4.00 (${pct(4)})`)
+      expect(endDot(w)).toContain('chart-seg--pos')
+      installApp(null)
+    }
+  })
+
+  it('live with no row for today yet (daily periods): a point for today is added at the quote', async () => {
+    setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } }, openFor: ['AAA.US'], sec: { ...SEC5, today: '2026-10-31' } })
+    const w = mountCard()
+    expect(w.get('[data-test="p-change"]').text()).toBe(`−5.00 (${pct(-5)})`)
+    expect(endDot(w)).toContain('chart-seg--neg')
+    await move(w, X(5, 6)) // six points now
+    expect(head(w)).toMatchObject({ price: '95.00', status: 'Oct 31, 2026' })
+    await move(w, X(4, 6))
+    expect(head(w)).toMatchObject({ price: '125.00', status: 'Oct 30, 2026' }) // the cached close stays on its day
+  })
+
+  it('withLastPrice: patches the last row, appends a later day for daily rows only, unknown price = unchanged', () => {
+    const rows = D5.slice(0, 3)
+    expect(withLastPrice(rows, null, { day: '2026-10-28' })).toBe(rows)
+    expect(withLastPrice(rows, 99, { day: '2026-10-28' }).map((r) => r.close)).toEqual([100, 120, 99])
+    expect(withLastPrice(rows, 99, { day: null }).map((r) => r.close)).toEqual([100, 120, 99])
+    const out = withLastPrice(rows, 99, { day: '2026-10-29' })
+    expect(out.map((r) => [r.date, r.close])).toEqual([['2026-10-26', 100], ['2026-10-27', 120], ['2026-10-28', 90], ['2026-10-29', 99]])
+    expect(new Set(out.map((r) => r.ts)).size).toBe(4)
+    expect(withLastPrice(rows, 99, { day: '2026-10-29', intraday: true })).toBe(rows) // bars come with the next refresh
+    expect(rows.map((r) => r.close)).toEqual([100, 120, 90]) // input untouched
+    expect(tradeDay('2026-10-30T19:58:25')).toBe('2026-10-30')
+    expect(tradeDay('1970-01-01T00:00:00')).toBeNull()
+    expect(tradeDay(undefined)).toBeNull()
+  })
+
+  it('a zero price or close is no price: a dash, never −100%', async () => {
+    setup({ sec: { ...SEC5, daily: D5.map((r, i) => (i === 2 ? { ...r, close: 0 } : r)) } })
+    const w = mountCard()
+    await move(w, X(2, 5))
+    expect(w.get('[data-test="p-change"]').text()).toBe('—')
+  })
+
+  it('1D pointer with an unknown previous close: a dash', async () => {
+    const info = { ...INFO, pp: null, chg: null, pcp: null }
+    setup({ prefs: { period: '1d' }, sec: { ...SEC, info, daily: [] }, ps: { acc: PS.acc, pos: [{ ...PS.pos[0], close_price: null }] } })
+    const w = mountCard()
+    await move(w, X(0, 5))
+    expect(w.get('[data-test="p-change"]').text()).toBe('—')
+    expect(w.get('[data-test="p-change"]').classes()).not.toContain('pos')
+  })
+
+  it('a period switch while the pointer rests on the chart drops the hover (even if the point exists in the new period)', async () => {
+    const app = setup({ sec: SEC5 })
+    const w = mountCard()
+    await move(w, X(2, 5))
+    expect(head(w).price).toBe('90.00')
+    app.prefs.period = '1m' // D5 is the same rows for 1M: the point exists there too
+    await nextTick()
+    await nextTick()
+    expect(head(w)).toEqual({ price: '110.00', change: `+10.00 (${pct(10)})`, label: t('pos.per.1M'), status: AT_CLOSE() })
+    expect(w.get('.pchart .chart-pill').attributes('style') || '').toContain('opacity: 0')
+  })
+
+  it('screen reader: the change is announced (polite) on a period switch only, not on pointer moves or live ticks', async () => {
+    const app = setup({ sec: SEC5 })
+    const w = mountCard()
+    const live = () => w.get('[data-test="p-chg-live"]')
+    expect(live().attributes('aria-live')).toBe('polite')
+    expect(w.get('[data-test="p-change"]').attributes('aria-live')).toBeUndefined()
+    const before = live().text()
+    await move(w, X(2, 5))
+    expect(live().text()).toBe(before)
+    app.prefs.period = '1m'
+    await nextTick()
+    await nextTick()
+    expect(live().text()).toBe(`+10.00 (${pct(10)}) ${t('pos.per.1M')}`)
+    app.state.value = { ...app.state.value } // a live recompute
+    app.tick.value++
+    await nextTick()
+    expect(live().text()).toBe(`+10.00 (${pct(10)}) ${t('pos.per.1M')}`)
   })
 })

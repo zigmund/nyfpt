@@ -39,7 +39,7 @@ const SECS = {
   'AAA.US': secOf(info('AAA.US', { name: 'Alpha Corporation', kind: 1, codesub_nm: 'NASDAQ', ltp: 110, pp: 100 })),
 }
 
-function makeApp({ route = '/position/DIA.US', secs = SECS, open = [], liveQuotes = new Map(), isLive = false, findTickers, histState = null } = {}) {
+function makeApp({ route = '/position/DIA.US', secs = SECS, period = 'YTD', open = [], liveQuotes = new Map(), isLive = false, findTickers, histState = null } = {}) {
   window.location.hash = `#${route}`
   window.history.replaceState(histState, '') // the entry's state as a reload would find it
   const state = {
@@ -75,7 +75,7 @@ function makeApp({ route = '/position/DIA.US', secs = SECS, open = [], liveQuote
     createNews: () => null,
     socketFactory: () => () => ({}),
     sessionStore: { load: () => ({ cabinetId: 'global', sid: 's', userId: 1, loggedAt: 0 }), save() {}, clear() {} },
-    prefsStore: { load: () => ({ hide: false, sorts: {}, period: 'YTD' }), save() {} },
+    prefsStore: { load: () => ({ hide: false, sorts: {}, period }), save() {} },
     recentStore: { load: () => [], save() {} },
   }))
   app.start()
@@ -109,7 +109,9 @@ describe('card of a ticker without a position', () => {
     expect(w.get('[data-test="p-venue"]').text()).toBe('ARCA · USD')
     expect(w.get('[data-test="p-name"]').text()).toBe('Mock Dow ETF (DIA.US)')
     expect(w.get('[data-test="p-price"]').text()).toBe('41.50')
-    expect(w.get('[data-test="p-change"]').text()).toContain('+1.50')
+    // YTD (the default period): price vs the first close of the YTD chart (Dec 31: 171)
+    expect(w.get('[data-test="p-change"]').text()).toBe('−129.50 (−75.73%)')
+    expect(w.get('[data-test="p-chg-label"]').text()).toBe(t('pos.per.YTD'))
     expect(w.find('[data-test="p-chart"] .pchart__plot').exists()).toBe(true)
     expect(w.find('[data-test="p-stats"]').exists()).toBe(true)
     expect(w.find('[data-test="p-holdings"]').exists()).toBe(false)
@@ -164,8 +166,8 @@ describe('compact header', () => {
 })
 
 describe('index card (getSecurityInfo without prices)', () => {
-  it('price and day change from the daily closes; At close from the last candle date, never the epoch', async () => {
-    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) } })
+  it('price and day change (1D) from the daily closes; At close from the last candle date, never the epoch', async () => {
+    const { w } = await mountApp({ route: '/position/SP500.IDX', secs: { 'SP500.IDX': secOf(IDX_INFO) }, period: '1d' })
     expect(w.get('[data-test="p-name"]').text()).toBe('Index S&P 500 (SP500.IDX)')
     expect(w.get('[data-test="p-venue"]').text()).toBe('INDEX · USD')
     expect(w.get('[data-test="p-price"]').text()).toBe('349.00') // last daily close

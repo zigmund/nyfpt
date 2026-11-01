@@ -3,7 +3,7 @@ import fx from './fixtures/synthetic-api.json';
 import {
   parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js';
-import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows, dayChangePct, quotePrevClose } from '../src/calc/live.js';
+import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows, dayChangePct, quotePrevClose, quotePrice } from '../src/calc/live.js';
 
 // Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
 const SRV3 = { offset: 10800, markets: {} };
@@ -232,5 +232,44 @@ describe('computeCore with a live price', () => {
     const res = computeCore(positions, trades, cashflows, live);
     expect(res.summary.day_pnl).toBe(100);
     expect(res.summary.day_pct).toBe(2.1);
+  });
+});
+
+// Task 50: an index quote may carry ltp 0 (REST all zeros, a WS snapshot or delta); 0 is no price.
+describe('a quote with ltp 0 has no price (Task 50)', () => {
+  it('quotePrice: ltp > 0, else null', () => {
+    expect(quotePrice({ ltp: 101.5 })).toBe(101.5);
+    expect(quotePrice({ ltp: '101.5' })).toBe(101.5);
+    for (const q of [{ ltp: 0 }, { ltp: '0' }, { ltp: -1 }, { ltp: 'x' }, { ltp: '' }, {}, null, undefined]) expect(quotePrice(q)).toBeNull();
+  });
+
+  it('quotePrevClose does not take ltp - chg when ltp is 0', () => {
+    expect(quotePrevClose({ ltp: 0, chg: -6000, pp: 0, pcp: -100 })).toBeNull();
+    expect(quotePrevClose({ ltp: 0, chg: -6000, pp: 5990 })).toBe(5990);
+  });
+
+  it('mergeQuote: a delta with ltp 0 (or not a number) keeps the price, chg and pcp', () => {
+    const snap = { c: 'IDX', ltp: 6060, chg: 60, pcp: 1, pp: 6000 };
+    expect(mergeQuote(snap, { c: 'IDX', ltp: 0 })).toEqual(snap);
+    expect(mergeQuote(snap, { c: 'IDX', ltp: 0, chg: 0, pcp: 0 })).toEqual(snap);
+    expect(mergeQuote(snap, { c: 'IDX', ltp: 'x' })).toEqual(snap);
+    expect(mergeQuote(snap, { c: 'IDX', ltp: -1, vol: 5 })).toEqual({ ...snap, vol: 5 }); // other fields still merge
+    expect(quotePrevClose(mergeQuote(snap, { c: 'IDX', ltp: 0 }))).toBe(6000);
+    // the next real tick still derives from the kept previous close
+    expect(mergeQuote(mergeQuote(snap, { c: 'IDX', ltp: 0 }), { c: 'IDX', ltp: 6120 })).toMatchObject({ ltp: 6120, chg: 120, pcp: 2 });
+  });
+
+  it('a snapshot with ltp 0 is kept as is, and has no price', () => {
+    const m = mergeQuote(undefined, { c: 'IDX', ltp: 0, chg: 0, pcp: 0, pp: 0 });
+    expect(quotePrice(m)).toBeNull();
+    expect(quotePrevClose(m)).toBeNull();
+  });
+
+  it('holdingsRows and livePriceRows ignore a zero quote price', () => {
+    const rows = by(holdingsRows(ps, new Map([['AAA.US', { ltp: 0, chg: -100, pcp: -100 }]])));
+    expect(rows['AAA.US'].price).toBe(100);
+    expect(rows['AAA.US'].prevClose).toBe(98);
+    const prices = [{ ticker: 'AAA.US', date: '2026-10-13', close: 100, window_start: '2026-10-01' }];
+    expect(livePriceRows(prices, new Map([['AAA.US', { ltp: 0 }], ['BBB.US', { ltp: '0' }]]), '2026-10-13')).toEqual(prices);
   });
 });

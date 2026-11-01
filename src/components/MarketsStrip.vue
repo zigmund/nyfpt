@@ -1,6 +1,7 @@
 <!-- Markets strip: status line + the cards of prefs.marketStrip (default: S&P 500, Nasdaq 100, oil, gold,
-     silver) scrolling inside the strip; hidden when the list is empty. Live quotes (ltp, pcp) override
-     the daily data when present. A card whose ticker was fetched without data shows dashes. A card is a
+     silver) scrolling inside the strip; hidden when the list is empty. A quote with a price (ltp > 0)
+     overrides the daily data only while the card's own market is open; otherwise the card keeps the
+     last session close (a weekend print or an index quote of zeros is not it). A card whose ticker was fetched without data shows dashes. A card is a
      link to its security card (the name link covers the whole card). -->
 <template>
   <section v-if="items.length" class="mkts" :aria-label="t('mkts.label')" data-test="markets">
@@ -45,7 +46,7 @@ import { dateShort } from '../format.js'
 import { fPct, fPrice, tone, n } from '../display.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import MarketSpark from './MarketSpark.vue'
-import { dayChangePct, quotePrevClose } from '../calc/live.js'
+import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
 
 const app = useApp()
 const { state, tick, live } = app
@@ -66,8 +67,10 @@ const cards = computed(() => {
   return items.value.map((m) => {
     // No row: not fetched yet (skeleton); a row without a close: fetched, no data (dashes).
     const r = strip.value?.find((x) => x.ticker === m.ticker) || null
-    const q = quotes?.get?.(m.ticker) || null
-    const last = n(q?.ltp) ?? n(r?.last)
+    // The quote counts only in session and with a price: closed, the daily closes hold the session close.
+    const sq = quotes?.get?.(m.ticker) || null
+    const q = sq && quotePrice(sq) !== null && app.isLiveFor?.(m.ticker) ? sq : null
+    const last = quotePrice(q) ?? n(r?.last)
     // calc/live dayChangePct: price vs previous close (quote, else the strip's daily closes), else pcp
     const change = dayChangePct({ last, prev: quotePrevClose(q) ?? n(r?.prev), pct: n(q?.pcp) ?? n(r?.change_pct) })
     return {

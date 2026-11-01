@@ -93,7 +93,7 @@ import { useApp, positionPath } from '../composables/useApp.js'
 import { useNews } from '../composables/useNews.js'
 import { newsOffset, newsTime, sentimentOf, httpsUrl, relatedTickers } from '../calc/news.js'
 import NewsBody from './NewsBody.vue'
-import { dayChangePct, quotePrevClose } from '../calc/live.js'
+import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
 
 const props = defineProps({
   ticker: { type: String, required: true },
@@ -119,9 +119,10 @@ const timeOf = (x, date) => newsTime(date, newsOffset(x, { learned: learned.valu
  *  Holdings), else the broker position (calc/live dayChangePct). */
 function changeOf(tk) {
   void app.tick?.value
-  const q = app.live?.quotes?.get?.(tk) ?? app.state?.value?.quotes?.get?.(tk)
+  // the first quote with a price (ltp > 0): a quote of zeros is no price
+  const q = [app.live?.quotes?.get?.(tk), app.state?.value?.quotes?.get?.(tk)].find((x) => quotePrice(x) !== null) ?? null
   const p = (app.state?.value?.rawPs?.pos || []).find((x) => x.i === tk)
-  return dayChangePct({ last: n(q?.ltp) ?? n(p?.mkt_price), prev: quotePrevClose(q) ?? n(p?.close_price), pct: q?.pcp })
+  return dayChangePct({ last: quotePrice(q) ?? n(p?.mkt_price), prev: quotePrevClose(q) ?? n(p?.close_price), pct: q?.pcp })
 }
 
 const str = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '')

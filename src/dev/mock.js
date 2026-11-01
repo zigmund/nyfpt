@@ -223,14 +223,19 @@ function priceOf(tk) {
     const closes = dailyCloses(tk, lastSession(mkt) - 7 * DAY)
     const last = closes[closes.length - 1][1]
     const prev = closes.length > 1 ? closes[closes.length - 2][1] : last
-    const post = weekend(mkt) && mkt === MARKET ? 1 + (rand(`${tk}|post|${day}`) - 0.5) * 0.01 : 1
+    // NASDAQ.IDX: its weekend print (the Saturday daily bar) is the quote's ltp too (seen live 2026-11-01).
+    const post = !(weekend(mkt) && mkt === MARKET) ? 1 : tk === WEEKEND_PRINT ? 1.0012 : 1 + (rand(`${tk}|post|${day}`) - 0.5) * 0.01
     prices.set(tk, { day, ltp: last * post, pp: prev, close: last })
   }
   return prices.get(tk)
 }
 // The quote's pp field: a .EU quote on a weekend carries a wrong one (seen live 2026-11-01).
 const shownPp = (tk, pp) => (marketOf(tk) === 'EU' && weekend('EU') ? pp * 0.97 : pp)
+// Weekend: an index quote is all zeros, like the REST quote of SP500.IDX (seen live 2026-11-01);
+// NASDAQ.IDX carries its weekend print instead. The strip must keep the session close either way.
+const zeroQuote = (tk) => tk.endsWith('.IDX') && tk !== WEEKEND_PRINT && weekend(MARKET)
 function quote(tk) {
+  if (zeroQuote(tk)) return { c: tk, name: names[tk] || tk, ltr: MARKET, ltp: 0, pp: 0, chg: 0, pcp: 0 }
   const { ltp, pp } = priceOf(tk)
   return {
     c: tk, name: names[tk] || tk, ltr: marketOf(tk), ltp: r2(ltp), pp: r2(shownPp(tk, pp)), chg: r2(ltp - pp), pcp: r2(((ltp - pp) / pp) * 100),

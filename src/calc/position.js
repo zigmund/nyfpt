@@ -132,6 +132,31 @@ export function chartRows(period, { intraday, daily, max } = {}, { today, sessio
   return rows.slice(Math.max(0, cut - 1))
 }
 
+/** Trading day of a broker `ltt` ('YYYY-MM-DDTHH:mm…', exchange wall clock); null if absent or before 2000. */
+export function tradeDay(ltt) {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(ltt || ''))
+  return m && m[1] >= '2000' ? m[1] : null
+}
+
+/**
+ * The chart's last point is the current price (Task 44: the header change and the chart end
+ * always agree). The last row takes close = `price`; when the price is from a later day than the
+ * last row (`day`: today while live, else the last trade date), daily rows get a row for that day,
+ * intraday rows stay as they are (that day's bars come with the next refresh).
+ * Returns a new array (or `rows` itself when nothing changes); `price` null: unchanged.
+ */
+export function withLastPrice(rows, price, { day = null, intraday = false } = {}) {
+  const px = posNum(price)
+  if (px === null || !rows || !rows.length) return rows
+  const last = rows[rows.length - 1]
+  if (day && day > last.date) {
+    if (intraday) return rows
+    const ts = Math.max(Date.parse(`${day}T00:00:00Z`) / 1000, (num(last.ts) ?? 0) + 1)
+    return [...rows, { ts, date: day, open: px, high: px, low: px, close: px, vol: null }]
+  }
+  return last.close === px ? rows : [...rows.slice(0, -1), { ...last, close: px }]
+}
+
 const YEAR_CANDLES = 252
 const AVG_VOL_CANDLES = 63
 

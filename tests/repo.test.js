@@ -801,6 +801,12 @@ describe('repo', () => {
       expect(b.calls.quotes.at(-1)).toEqual(['AAA.US', 'BBB.US'])
     })
 
+    it('a quote with ltp 0 (an index on a day off) is no price and no change (Task 50)', async () => {
+      const b = withQuotes(fakeBroker(), (t) => ({ c: t, ltp: 0, chg: 0, pcp: 0, pp: 0 }))
+      const repo = mk(b)
+      expect(await repo.searchQuotes(['IDX.IDX'])).toEqual({ 'IDX.IDX': { last: null, change: null } })
+    })
+
     it('a ticker already being fetched is not requested twice', async () => {
       const b = withQuotes(fakeBroker())
       const repo = mk(b)

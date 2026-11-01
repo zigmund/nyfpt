@@ -5,7 +5,7 @@ import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
 import { keyStats, positionHolding } from '../calc/position.js'
-import { dayChangePct, quotePrevClose } from '../calc/live.js'
+import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
 import { formatLocal, wallToUtc } from '../calc/marketTime.js'
 
 const REFRESH_MS = 60e3
@@ -47,7 +47,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   const quote = computed(() => {
     void app.tick.value
     const q = app.liveQuotesForCalc()?.get(ticker)
-    return q && n(q.ltp) !== null ? q : null
+    return quotePrice(q) !== null ? q : null
   })
   const isLive = computed(() => {
     void app.tick.value
@@ -60,7 +60,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     return d && d.length > back ? posN(d[d.length - 1 - back].close) : null
   }
   const infoPrice = computed(() => posN(info.value?.ltp))
-  const price = computed(() => n(quote.value?.ltp) ?? infoPrice.value ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
+  const price = computed(() => quotePrice(quote.value) ?? infoPrice.value ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
   // calc/live quotePrevClose (ltp - chg, then pp, then pcp) of the quote, then of the security info.
   const prevClose = computed(() => quotePrevClose(quote.value) ?? quotePrevClose(info.value) ?? posN(raw.value?.close_price) ?? dailyClose(1))
   const change = computed(() => (price.value !== null && prevClose.value !== null ? price.value - prevClose.value : null))
