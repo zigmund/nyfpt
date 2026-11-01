@@ -6,6 +6,8 @@
 // positions roll close_price (.EU / KASE: = mkt_price; .US: the Friday regular close while
 // mkt_price = a post-market trade); quotes keep chg / pcp vs the previous session close but a .EU
 // quote's pp is wrong; .EU tickers get flat Saturday / Sunday bars with volume (15-min and daily).
+// US quotes (Task 51): ClosePrice = the regular close once the session is over (weekend: Friday's,
+// ltt = a Friday after-hours trade at 19:58), else the previous close; ltt = the exchange wall clock.
 // News: synthetic per ticker (see newsList below).
 // tickerFinder: a small synthetic universe (FINDER); UNKNOWN tickers make getHloc fail like the broker.
 // main.js imports this module dynamically under `import.meta.env.DEV`: never in production builds.
@@ -184,14 +186,16 @@ function hlocDaily(tickers, dateFrom, count = -6) {
   return hlocAnswer(series, 2e6)
 }
 
-// 15-minute bars over the market's hours [o, bars), encoded like the broker (axis + 3 h = exchange wall clock).
+// Bars over the market's hours [o, bars), encoded like the broker (axis + 3 h = exchange wall clock);
+// aligned to the timeframe like the broker's (hourly bars start on the hour: 09:00 ... 15:00).
 function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
   const from = midnight(dateFrom)
   const to = midnight(dateTo)
   const series = {}
   for (const tk of tickers) {
     const h = HOURS[marketOf(tk)]
-    const bars = Math.floor((h.bars - h.o) / timeframe)
+    const start = Math.floor(h.o / timeframe) * timeframe
+    const bars = Math.floor((h.bars - start) / timeframe)
     const all = dailyCloses(tk, from - 7 * DAY)
     series[tk] = []
     all.forEach(([ms, close], i) => {
@@ -202,7 +206,7 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
         const k = (b + 1) / bars
         const noise = (rand(`${tk}|${ms}|${b}`) - 0.5) * 0.004 * Math.sin(Math.PI * k)
         const c = prev + (close - prev) * k + close * noise
-        series[tk].push({ ts: axisMs(ms, h.o + b * timeframe), c: candle(last, c) })
+        series[tk].push({ ts: axisMs(ms, start + b * timeframe), c: candle(last, c) })
         last = c
       }
     })
@@ -234,20 +238,33 @@ const shownPp = (tk, pp) => (marketOf(tk) === 'EU' && weekend('EU') ? pp * 0.97 
 // Weekend: an index quote is all zeros, like the REST quote of SP500.IDX (seen live 2026-11-01);
 // NASDAQ.IDX carries its weekend print instead. The strip must keep the session close either way.
 const zeroQuote = (tk) => tk.endsWith('.IDX') && tk !== WEEKEND_PRINT && weekend(MARKET)
+/** ltt (exchange wall clock) and ClosePrice of a quote. US: on a weekend Friday 19:58 (an
+ *  after-hours trade) and Friday's regular close; on a weekday now, and the regular close from 16:00
+ *  (before: the previous close). Other markets: now and ltp (KASE's ClosePrice = ltp, seen live). */
+function tradeFields(tk) {
+  const mkt = marketOf(tk)
+  const { ltp, pp, close } = priceOf(tk)
+  const now = exchangeWall(mkt, Date.now())
+  if (mkt !== MARKET) return { ltt: new Date(now).toISOString().slice(0, 19), ClosePrice: r2(ltp) }
+  if (weekend(mkt)) return { ltt: `${iso(lastSession(mkt))}T19:58:25`, ClosePrice: r2(close) }
+  const min = Math.floor((now % DAY) / 60e3)
+  return { ltt: new Date(now).toISOString().slice(0, 19), ClosePrice: r2(min >= HOURS[mkt].post ? close : pp) }
+}
 function quote(tk) {
   if (zeroQuote(tk)) return { c: tk, name: names[tk] || tk, ltr: MARKET, ltp: 0, pp: 0, chg: 0, pcp: 0 }
   const { ltp, pp } = priceOf(tk)
   return {
     c: tk, name: names[tk] || tk, ltr: marketOf(tk), ltp: r2(ltp), pp: r2(shownPp(tk, pp)), chg: r2(ltp - pp), pcp: r2(((ltp - pp) / pp) * 100),
+    ...tradeFields(tk),
   }
 }
 function step(tk) {
   const p = priceOf(tk)
   p.ltp *= 1 + (Math.random() - 0.5) * 0.003
-  const { c, ltp, chg, pcp } = quote(tk)
+  const { c, ltp, chg, pcp, ltt } = quote(tk)
   // Every third delta carries ltp alone (WS deltas send only changed fields; whether chg always
   // comes with ltp is unverified): calc/live mergeQuote must keep the previous close.
-  return Math.random() < 1 / 3 ? { c, ltp } : { c, ltp, chg, pcp }
+  return Math.random() < 1 / 3 ? { c, ltp, ltt } : { c, ltp, chg, pcp, ltt }
 }
 
 const FUNDS = new Set(['SPY.US', 'QQQ.US', 'USO.US', 'GLD.US', 'SLV.US'])
@@ -303,7 +320,6 @@ function securityInfo(tk) {
     name: names[tk] || FINDER.find((f) => f[0] === tk)?.[1] || tk, // a ticker without a position: its finder name
     ltp: r2(ltp),
     pp: r2(shownPp(tk, pp)),
-    ClosePrice: r2(pp),
     chg: r2(ltp - pp),
     pcp: r2(((ltp - pp) / pp) * 100),
     mintp: r2(Math.min(ltp, pp) * 0.992),
@@ -313,7 +329,7 @@ function securityInfo(tk) {
     x_curr: kz ? 'KZT' : 'USD',
     codesub_nm: kz ? 'KASE' : marketOf(tk) === 'EU' ? 'LSE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
     ltr: marketOf(tk),
-    ltt: new Date(exchangeWall(marketOf(tk), now)).toISOString().slice(0, 19), // exchange wall clock
+    ...tradeFields(tk), // ltt: exchange wall clock
   }
 }
 

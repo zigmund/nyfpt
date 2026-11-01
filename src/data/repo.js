@@ -9,9 +9,14 @@
 //   markets      {tickers, daily, intraday}  parseHloc rows of the session index + strip tickers
 //                                    (no `tickers`: rows cached before Task 38, LEGACY_STRIP)
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
-//   quotes       {tickers, rows}      getStockQuotesJson snapshot of the positions ({c, ltp, chg, pcp,
-//                                    pp, ltr}): Holdings Day outside live mode (calc/live quotePrevClose)
+//   quotes       {tickers, rows, shape}  getStockQuotesJson snapshot of the positions ({c, ltp, chg, pcp,
+//                                    pp, ltr, ClosePrice, ltt}): Holdings Day outside live mode
+//                                    (calc/live regularQuote); another `shape` is refetched at once
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
+//   regular      {closes: {ticker: {date: close | null}}, markets: {ticker: market}}  US regular
+//                                    session closes (Task 51) from hourly bars, fetched only for the
+//                                    dates a period or card chart needs (its base and end); past
+//                                    sessions never change: no TTL. null = no bars that day.
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
 // Rows of another CACHE_VERSION read as missing (store/db.js) and are purged on the first load.
 // Candle history has no TTL: a top-up re-requests the last 2 stored days (the newest may have been
@@ -21,9 +26,11 @@ import {
   parsePositions, parseTrades, parseCashflows, parseHloc, computeCore, computeMarkets,
 } from '../calc/portfolio.js'
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
-import { livePriceRows, quotePrice } from '../calc/live.js'
+import { livePriceRows, quotePrice, regularCloses, regularQuote, dayChangePct } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
-import { dailyOffset, dailyThroughSession, hlocMarkets, isSessionDay, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
+import {
+  DAY_S, dailyOffset, dailyThroughSession, hlocMarkets, isSessionDay, marketClock, marketClockFor, marketDay,
+} from '../calc/marketTime.js'
 import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { BrokerError, SessionExpiredError } from '../api/transport.js'
@@ -39,7 +46,14 @@ const TTL_OF = {
   quotes: TTL.positionQuotes,
 }
 const AUTHED = new Set(['positions', 'cashflows', 'trades', 'quotes'])
-const QUOTE_FIELDS = ['c', 'ltp', 'chg', 'pcp', 'pp', 'ltr'] // kept from a position quote
+const QUOTE_FIELDS = ['c', 'ltp', 'chg', 'pcp', 'pp', 'ltr', 'ClosePrice', 'ltt'] // kept from a position quote
+const QUOTES_SHAPE = 2 // quotes rows with ClosePrice / ltt (Task 51): older rows are refetched at once
+// Regular closes (Task 51): hourly bars, the 15:00 bar ends at 16:00 New York (verified 2026-11-01:
+// the same close as the 15:45 15-min bar, about 4x fewer bars per day). Today's close is taken once
+// the regular session has been closed this long.
+const REGULAR_TF = 60
+const REGULAR_SETTLE_MIN = 30
+const REGULAR_CLUSTER_DAYS = 7 // needed dates this close together share one request
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
 const REFETCH_DAYS = 2 // last stored days re-requested on every top-up
@@ -175,7 +189,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   /** Rows of the cached strip tickers (computeMarkets), null before the first fetch. */
   function marketsStrip() {
     return cache.markets
-      ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today(), cachedMarketTickers())
+      ? computeMarkets(cache.markets.daily, cache.markets.intraday, clock(), today(), cachedMarketTickers(), fetchedAt.markets)
       : null
   }
 
@@ -243,7 +257,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     .filter((r) => r.kind === 'position').map((r) => r.ticker))].filter((t) => !String(t).includes('/')).sort()
   // Cached sparks / quotes were fetched for a different set of positions.
   const outdated = (name) => !!cache.positions && !!cache[name]
-    && cache[name].tickers.join(',') !== positionTickers().join(',')
+    && (cache[name].tickers.join(',') !== positionTickers().join(',') || (name === 'quotes' && cache.quotes.shape !== QUOTES_SHAPE))
 
   // Position quote snapshot as a Map ticker -> quote, the same Map until the next fetch.
   let quotesMemo = { src: undefined, value: null }
@@ -252,6 +266,195 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       quotesMemo = { src: cache.quotes, value: cache.quotes ? new Map(cache.quotes.rows.map((q) => [q.c, q])) : null }
     }
     return quotesMemo.value
+  }
+
+  // --- regular session closes (Task 51): US prices on the 16:00 close, like Yahoo.
+  // Sources, later ones winning: the `regular` kv (hourly bars of the dates periods / cards need),
+  // the 15-min bars already loaded (sparks: positions, markets: strip; contiguous last sessions),
+  // the quotes (live, else the position snapshot) through calc/live regularQuote.
+  let regularStore = { closes: {}, markets: {} }
+  let barMemo = { sp: undefined, mk: undefined, clk: undefined, closes: new Map(), markets: new Map() }
+  function barCloses() {
+    const sp = cache.sparks
+    const mk = cache.markets
+    const clk = clock()
+    if (barMemo.sp !== sp || barMemo.mk !== mk || barMemo.clk !== clk) {
+      const closes = new Map()
+      const markets = new Map()
+      // Per source: a bar still forming when that source was fetched is no close (asOf).
+      for (const [src, asOf] of [[mk, fetchedAt.markets], [sp, fetchedAt.sparks]]) {
+        const by = new Map()
+        for (const r of src?.intraday || []) {
+          if (!by.has(r.ticker)) by.set(r.ticker, [])
+          by.get(r.ticker).push(r)
+        }
+        for (const [t, rows] of by) {
+          const mkt = (rows.find((r) => r.mkt) || {}).mkt
+          if (mkt) markets.set(t, mkt)
+          const m = regularCloses(rows, marketClockFor(clk, mkt), asOf)
+          if (m.size) closes.set(t, new Map([...(closes.get(t) || []), ...m]))
+        }
+      }
+      barMemo = { sp, mk, clk, closes, markets }
+    }
+    return barMemo
+  }
+  /** Market of a ticker as the broker named it (bars, card, regular kv); null when unknown. */
+  const marketOfTicker = (t) => barCloses().markets.get(t) || sec.get(t)?.zone?.mkt || regularStore.markets[t] || null
+
+  /** calc/live regularQuote of `q` for `ticker`: its market's clock and its bars' regular closes
+   *  (`bars`: the caller's own intraday rows, e.g. the card's; default: sparks / markets rows). */
+  function regularOf(ticker, q, bars = null) {
+    const mc = marketClockFor(clock(), (q && q.ltr) || marketOfTicker(ticker))
+    return regularQuote(q, mc, bars ? regularCloses(bars, mc) : barCloses().closes.get(ticker) || null)
+  }
+
+  /** Regular closes of `tickers` for computeCore: Map ticker -> Map date -> close (US only).
+   *  A quote outside the regular session gives its day's close and, for the session before (the
+   *  ticker's previous daily candle date), its previous close: Holdings Day and Performance 1D
+   *  then share both prices. `quotes`: live quotes (else the position snapshot). */
+  function regularMap(tickers, quotes) {
+    const out = new Map()
+    const bc = barCloses().closes
+    const snap = quotesState()
+    for (const t of tickers) {
+      const m = new Map()
+      for (const [d, c] of Object.entries(regularStore.closes[t] || {})) if (c != null) m.set(d, c)
+      for (const [d, c] of bc.get(t) || []) m.set(d, c)
+      const lq = quotes?.get?.(t)
+      const q = quotePrice(lq) !== null ? lq : snap?.get(t)
+      const r = q ? regularOf(t, q) : null
+      if (r && r.day && r.price != null) {
+        m.set(r.day, r.price)
+        const before = (candles.get(t) || []).filter((c) => c.date < r.day).pop()
+        if (before && r.prev != null) m.set(before.date, r.prev)
+      }
+      if (m.size) out.set(t, m)
+    }
+    return out
+  }
+
+  // Exchange wall minute of the US market now (null without its clock).
+  function usWallMinute(ms = now()) {
+    const mc = marketClockFor(clock(), indexMarket())
+    if (!mc || mc.regular == null || mc.dt === null || mc.dt === undefined) return null
+    const sec0 = Math.floor(ms / 1000) + mc.offset - mc.dt * 60
+    return { day: marketDay(mc, ms), min: (((sec0 % DAY_S) + DAY_S) % DAY_S) / 60, regular: mc.regular }
+  }
+  /** A session date whose regular close is final: before today, or today once the regular
+   *  session has been closed REGULAR_SETTLE_MIN. */
+  function closedSession(d) {
+    const w = usWallMinute()
+    if (!w) return d < today()
+    return d < w.day || (d === w.day && w.min >= w.regular + REGULAR_SETTLE_MIN)
+  }
+  // A ticker whose market is known to have no regular close (KASE, EU): never asked.
+  const noRegular = (t) => {
+    const mkt = marketOfTicker(t)
+    if (!mkt) return false
+    const mc = marketClockFor(clock(), mkt)
+    return !!mc && mc.dt != null && mc.regular == null
+  }
+
+  /** Fetch the regular closes of `want` (Map ticker -> [dates]) that are final and not stored yet:
+   *  one hourly getHloc per cluster of nearby dates, all tickers together (hlocTolerant). Never
+   *  rejects: a failure only leaves the daily closes in place (retried on the next call). */
+  async function fetchRegular(want) {
+    const miss = new Map() // date -> Set(tickers)
+    const bc = barCloses().closes
+    for (const [t, dates] of want) {
+      if (String(t).includes('/') || noRegular(t)) continue
+      const have = regularStore.closes[t] || {}
+      for (const d of dates) {
+        // known already, or in the 15-min bars loaded anyway (positions, strip)
+        if (!d || d in have || bc.get(t)?.has(d) || !isSessionDay(d) || !closedSession(d)) continue
+        if (!miss.has(d)) miss.set(d, new Set())
+        miss.get(d).add(t)
+      }
+    }
+    if (!miss.size) return
+    const dates = [...miss.keys()].sort()
+    const clusters = []
+    for (const d of dates) {
+      const c = clusters[clusters.length - 1]
+      if (c && d <= addDays(c[0], REGULAR_CLUSTER_DAYS)) c.push(d)
+      else clusters.push([d])
+    }
+    for (const ds of clusters) {
+      const tickers = [...new Set(ds.flatMap((d) => [...miss.get(d)]))].sort()
+      const key = `regular:${ds.join(',')}:${tickers.join(',')}`
+      if (inflight.has(key)) { await inflight.get(key); continue }
+      const p = (async () => {
+        try {
+          const a = await hlocTolerant((ts) => broker.hlocIntraday(ts, ds[0], addDays(ds[ds.length - 1], 1), REGULAR_TF), tickers)
+          await learn(a, false)
+          const rows = parseHloc({ answer: a }, await intradayClock()).rows
+          const at = now()
+          const closes = { ...regularStore.closes }
+          const markets = { ...regularStore.markets }
+          const got = new Map() // ticker -> {mkt, mc, closes}
+          const sessions = new Set() // dates some ticker of this answer has a regular close for
+          for (const t of tickers) {
+            const own = rows.filter((r) => r.ticker === t)
+            const mkt = (own.find((r) => r.mkt) || {}).mkt
+            if (mkt) markets[t] = mkt
+            const mc = marketClockFor(clock(), mkt)
+            const m = regularCloses(own, mc, at)
+            for (const d of m.keys()) sessions.add(d)
+            // Judged only when asked and readable: with bars, the market's hours must be known;
+            // without bars, the ticker must have been in the request (hlocTolerant skips a ticker
+            // rejected alone for a while; a ticker the broker named unknown counts as asked).
+            const judged = own.length ? !!mc && mc.dt != null : !(skipUntil.get(t) > now())
+            got.set(t, { mc, m, judged })
+          }
+          for (const t of tickers) {
+            const { mc, m, judged } = got.get(t)
+            if (!judged) continue // asked again later
+            // A market without a regular close (KASE, EU): nothing to wait for. Otherwise a date
+            // without this ticker's close is remembered as null (not asked again: not listed yet,
+            // halted) only when other tickers of the same answer had that session; else (the
+            // ticker or the whole answer came back empty) it is asked again later.
+            const none = !!mc && mc.dt != null && mc.regular == null
+            const next = { ...(closes[t] || {}) }
+            for (const d of ds) {
+              if (!miss.get(d).has(t)) continue
+              if (m.has(d)) next[d] = m.get(d)
+              else if (none || sessions.has(d)) next[d] = null
+            }
+            closes[t] = next
+          }
+          regularStore = { closes, markets }
+          await db.putKv('regular', regularStore, now())
+        } catch (e) {
+          if (isExpired(e)) sessionExpired()
+        } finally {
+          inflight.delete(key)
+          emit()
+        }
+      })()
+      inflight.set(key, p)
+      await p
+    }
+  }
+
+  /** Dates of a period whose regular closes it needs: base close, end and the session before
+   *  the end (Performance "on <date>"), as computeCore picks them from the SPY.US candles. */
+  function periodDates(start) {
+    const spy = (candles.get('SPY.US') || []).map((c) => c.date).filter((d) => isSessionDay(d) && (!indexAnchor() || d <= indexAnchor()))
+    if (!spy.length) return []
+    const end = spy[spy.length - 1]
+    const prevEnd = spy.length > 1 ? spy[spy.length - 2] : null
+    let base = spy.filter((d) => d <= start).pop() || null
+    if (base === end) base = prevEnd
+    return [...new Set([base, prevEnd, end].filter(Boolean))]
+  }
+
+  // Last US session date: the latest SP500.IDX intraday date (an index trades only in the
+  // regular session), null before the markets dataset is loaded.
+  function indexAnchor() {
+    let a = null
+    for (const r of cache.markets?.intraday || []) if (r.ticker === SESSION_INDEX && r.date && (a === null || r.date > a)) a = r.date
+    return a
   }
 
   // --- position card: per ticker {info, intraday, daily, max} + fetch times, errors, in-flight
@@ -317,13 +520,29 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   // Daily / max candles of a card ticker: on the index's market up to the last index session
   // (dailyThroughSession), elsewhere session days only (isSessionDay: the broker's flat weekend
   // .EU bars dropped); memoized per source array and markets cache (no new array per read).
-  function sessionCandles(e, part, idx) {
+  // US closes are the regular session's where known (cardRegular; Task 51): the chart's base and
+  // end are regular closes, like Performance.
+  function sessionCandles(e, part, idx, reg) {
     const src = e?.[part] ?? null
     if (!src) return null
     const m = e.cut?.[part]
-    if (m && m.src === src && m.mkts === cache.markets && m.idx === !!idx) return m.value
-    const value = idx ? dailyThroughSession(src, idx) : src.filter((r) => isSessionDay(r.date))
-    e.cut = { ...e.cut, [part]: { src, mkts: cache.markets, idx: !!idx, value } }
+    if (m && m.src === src && m.mkts === cache.markets && m.idx === !!idx && m.reg === reg) return m.value
+    const cut = idx ? dailyThroughSession(src, idx) : src.filter((r) => isSessionDay(r.date))
+    const value = reg.size ? cut.map((r) => (reg.has(r.date) && reg.get(r.date) !== r.close ? { ...r, close: reg.get(r.date) } : r)) : cut
+    e.cut = { ...e.cut, [part]: { src, mkts: cache.markets, idx: !!idx, reg, value } }
+    return value
+  }
+  // Regular closes of a card ticker: the regular kv, the sparks / markets bars and the card's own
+  // intraday bars (`mc`: its market clock); memoized per source.
+  function cardRegular(ticker, e, mc) {
+    const bc = barCloses().closes
+    const k = e?.reg
+    const clk = clock()
+    if (k && k.store === regularStore && k.bc === bc && k.intra === e.intraday && k.clk === clk && k.mkt === e.zone?.mkt) return k.value
+    const value = new Map(Object.entries(regularStore.closes[ticker] || {}).filter(([, c]) => c != null))
+    for (const [d, c] of bc.get(ticker) || []) value.set(d, c)
+    for (const [d, c] of regularCloses(e?.intraday, mc, e?.at?.intraday)) value.set(d, c)
+    if (e) e.reg = { store: regularStore, bc, intra: e.intraday, clk, mkt: e.zone?.mkt, value }
     return value
   }
 
@@ -331,7 +550,8 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
    *  date (sessionBounds over SP500.IDX) for tickers of the index's market; `clock`: the ticker
    *  market's clock (marketClockFor); `today`: that market's trading date. `daily` / `max` of
    *  such tickers end at the last index session (no weekend single-print bar); of other tickers
-   *  they keep session days only (no flat weekend .EU bars). */
+   *  they keep session days only (no flat weekend .EU bars). US closes: the regular session's
+   *  where known (Task 51). */
   function security(ticker) {
     const e = sec.get(ticker)
     const im = indexMarket()
@@ -339,11 +559,13 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     const anchored = mkt && im ? String(mkt).toUpperCase() === String(im).toUpperCase() : String(ticker).endsWith('.US')
     const idx = anchored ? (cache.markets?.intraday || []).filter((r) => r.ticker === SESSION_INDEX) : []
     const mc = marketClockFor(clock(), mkt || (anchored ? im : null), { tz: e?.zone?.tz })
+    const reg = cardRegular(ticker, e, mc)
     return {
       info: e?.info ?? null,
       intraday: e?.intraday ?? null,
-      daily: sessionCandles(e, 'daily', anchored ? idx : null),
-      max: sessionCandles(e, 'max', anchored ? idx : null),
+      intradayAt: e?.at?.intraday ?? null, // fetch time of `intraday` (regularCloses asOf)
+      daily: sessionCandles(e, 'daily', anchored ? idx : null, reg),
+      max: sessionCandles(e, 'max', anchored ? idx : null, reg),
       sessions: anchored ? sessionBounds(idx) : null,
       clock: mc,
       today: marketDay(mc, now()),
@@ -379,9 +601,12 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
         for (const [t, m] of quoteMemo) if (at >= m.until) quoteMemo.delete(t)
         for (const t of want) {
           const q = got.get(t)
-          const last = quotePrice(q) // ltp 0 (an index on a day off) is no price, and then no change
+          // ltp 0 (an index on a day off) is no price, and then no change; US: the regular price
+          // and its day change (calc/live regularQuote), the after-hours trade left out.
+          const r = quotePrice(q) === null ? null : regularOf(t, q)
+          const last = r ? r.price : null
           const until = at + (last === null ? QUOTE_MISS_MS : TTL.quotes)
-          quoteMemo.set(t, { until, last, change: last === null ? null : numOrNull(q?.pcp) })
+          quoteMemo.set(t, { until, last, change: last === null ? null : r.pct ?? dayChangePct({ last, prev: r.prev }) })
           quotePending.delete(t)
         }
       })()
@@ -521,7 +746,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       const rows = ((a && a.result && Array.isArray(a.result.q)) ? a.result.q : [])
         .filter((q) => q && q.c)
         .map((q) => Object.fromEntries(QUOTE_FIELDS.filter((f) => q[f] !== undefined).map((f) => [f, q[f]])))
-      await save('quotes', { tickers, rows })
+      await save('quotes', { tickers, rows, shape: QUOTES_SHAPE })
     },
   }
 
@@ -544,7 +769,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   function loadCache() {
     cacheLoaded ||= (async () => {
       try {
-        await db.purgeStale([...DATASETS, 'candleCover', 'marketInfo'])
+        await db.purgeStale([...DATASETS, 'candleCover', 'marketInfo', 'regular'])
       } catch {
         // housekeeping only: rows of another version read as missing anyway
       }
@@ -554,6 +779,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       }
       cover = (await db.getKv('candleCover'))?.data || {}
       learned = (await db.getKv('marketInfo'))?.data || learned
+      regularStore = (await db.getKv('regular'))?.data || regularStore
       for (const t of Object.keys(cover)) candles.set(t, await db.getCandles(t))
       loaded = true
     })()
@@ -653,6 +879,9 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       groups.get(from).push(t)
     }
     await Promise.all([...groups].map(([from, ts]) => fetchCandles(ts, from)))
+    // US regular closes of the period's base and end (Task 51); the daily closes stand meanwhile.
+    const dates = periodDates(start)
+    if (dates.length) await fetchRegular(new Map(tickers.map((t) => [t, dates])))
   }
 
   /** Price rows for computeCore: per ticker the last 6 closes <= start and all after it.
@@ -665,9 +894,13 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     const tf = tradesFrom(period, start)
     if (!cache.trades || cache.trades.from > tf) return null
     const out = []
+    // Up to the last US session (SP500.IDX bars): a daily candle of a day whose regular session has
+    // not started (US pre-market) is not a session yet; Holdings Day shows the session before it.
+    const anchor = indexAnchor()
     for (const t of tickersFor(tf)) {
       if (!cover[t] || cover[t] > start) return null
-      const cs = candles.get(t) || []
+      const all = candles.get(t) || []
+      const cs = anchor ? all.filter((c) => c.date <= anchor) : all
       let cut = cs.findIndex((c) => c.date > start)
       if (cut < 0) cut = cs.length
       for (const c of cs.slice(Math.max(0, cut - CLOSES_BEFORE))) {
@@ -717,15 +950,16 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
 
     /**
      * computeCore over the cache, synchronous; with `quotes` the `day` close is replaced by
-     * live prices. Returns null when the cache does not cover the period (not loaded yet,
+     * live prices. US closes are the regular session's where known (regularMap; Task 51). Returns null when the cache does not cover the period (not loaded yet,
      * trades or closes not fetched back far enough, e.g. an offline switch to a longer
      * period or ensurePrices still running): the UI shows a skeleton / "unavailable".
      */
     coreFor(period, day = today(), quotes) {
       let prices = priceRows(period, day)
       if (!prices) return null
-      if (quotes) prices = livePriceRows(prices, quotes, day)
-      return computeCore(cache.positions.rows, cache.trades.rows, cache.cashflows, prices)
+      if (quotes) prices = livePriceRows(prices, quotes, day, regularOf)
+      const tickers = [...new Set(prices.map((r) => r.ticker))]
+      return computeCore(cache.positions.rows, cache.trades.rows, cache.cashflows, prices, regularMap(tickers, quotes))
     },
 
     marketsStrip,
@@ -763,6 +997,15 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     },
 
     searchQuotes,
+
+    /** calc/live regularQuote of a quote for `ticker` (Task 51: US on the regular close, the
+     *  after-hours / pre-market trade in `ext`); `bars`: the caller's intraday rows of the ticker. */
+    regular: regularOf,
+
+    /** Fetch the regular closes of `ticker` on `dates` (a card chart's base), cached for good. */
+    ensureRegular(ticker, dates) {
+      return fetchRegular(new Map([[ticker, dates]]))
+    },
 
     /** Trading date of the session index's market at `ms` (default now). */
     today,

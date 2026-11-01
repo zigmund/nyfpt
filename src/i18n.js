@@ -137,6 +137,9 @@ const en = {
   'hold.status.reduced': 'reduced',
   'hold.closed': 'Closed positions',
   'hold.closedN': 'Closed positions ({n})',
+  'hold.closedNoneDay': 'No positions closed on {date}',
+  'hold.closedNoneToday': 'No positions closed today',
+  'hold.closedNonePeriod': 'No positions closed in {period}',
 
   'compare.lede': 'From {start} to {end}: portfolio {twr}, S&P 500 {spy}, Nasdaq 100 {qqq}.',
   'compare.tileTwr': 'Portfolio return',
@@ -180,6 +183,8 @@ const en = {
   'pos.live': 'Live',
   'pos.atClose': 'At close: {at}',
   'pos.asOf': 'As of {at}',
+  'pos.afterHours': 'After hours:',
+  'pos.preMarket': 'Pre-market:',
   'pos.chartLabel': 'Price chart, {period}',
   // header change label per chart period (1D: none, it is the day change)
   'pos.per.5D': 'past week',

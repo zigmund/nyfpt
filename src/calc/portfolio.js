@@ -3,7 +3,7 @@
 // Не зависят от браузера и от среды дашборда (dash.*).
 
 import { axisDate, barSeconds, dailyThroughSession, isSessionDay, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
-import { positionFactor } from './live.js';
+import { positionFactor, regularCloses } from './live.js';
 
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
@@ -83,18 +83,25 @@ const rowFactor = (p) => {
 };
 
 /** Главный расчёт. Вход — rows из parsePositions, parseTrades, parseCashflows, parsePricesForPeriod.
+ *  `regular` (Task 51): Map ticker -> Map date -> закрытие основной сессии (US); заменяет дневное
+ *  закрытие той же даты (дневная свеча US закрывается последней сделкой расширенной сессии).
+ *  Дата без регулярного закрытия берёт дневное.
  *  Выход: { series, positions, summary } — см. docs/CALCULATIONS.md.
  *  Стоимость в USD: q × close × f, f = k × fx текущей позиции (rowFactor); у бумаги без позиции
  *  (закрыта) f = positionFactor без снимка = 1. Сделки — по той же f. Дневные закрытия — только
  *  дни сессии (isSessionDay): выходной бар .EU не бывает ни базой, ни forward fill. */
-export const computeCore = (positions, trades, cashflows, prices) => {
+export const computeCore = (positions, trades, cashflows, prices, regular = null) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     if (!prices.length) return { series: [], positions: [], summary: null };
     let base = prices[0].window_start;
     const EXT = /intercompany|card|deposit|withdraw|transfer|cash_?in|cash_?out|payout/i;
     const px = {};
     for (const r of prices) if (isSessionDay(r.date)) (px[r.ticker] = px[r.ticker] || []).push([r.date, r.close]);
-    for (const k in px) px[k].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    for (const k in px) {
+      px[k].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      const reg = regular && regular.get(k);
+      if (reg) px[k] = px[k].map(([d, c]) => [d, reg.get(d) ?? c]);
+    }
     const at = (t, d) => { let v = null; for (const [dd, c] of px[t] || []) { if (dd <= d) v = c; else break; } return v; };
     const spyDates = (px['SPY.US'] || []).map((x) => x[0]);
     let days = spyDates.filter((d) => d > base);
@@ -153,12 +160,14 @@ export const computeCore = (positions, trades, cashflows, prices) => {
     };
   };
 
-/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей.
+/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей. Последнее и
+ *  предыдущее закрытие US — закрытия основной сессии по 15-минутным свечам (Task 51).
  *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
  *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
  *  по барам SP500.IDX за этот день.
- *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row. */
-export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => {
+ *  `order` (required): tickers of the rows, in order; a ticker without bars gets an empty row.
+ *  `asOf` (ms): when the intraday bars were fetched (a bar still forming then is no regular close). */
+export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order, asOf = null) => {
     const r2 = (v) => (v == null || !isFinite(v) ? null : Math.round(v * 100) / 100);
     const by = (rows, t) => rows.filter((r) => r.ticker === t).sort((a, b) => a.ts - b.ts);
     const idx = by(mkt_intraday, 'SP500.IDX');
@@ -178,6 +187,9 @@ export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => 
         if (sess.length) { lo = sess[0].ts; hi = sess[sess.length - 1].ts; }
       }
       const spark = bars.filter((r) => r.date === last.date && r.ts >= lo && r.ts <= hi).map((r) => r.close);
-      return { ticker: t, date: last.date, last: last.close, prev: prev.close, change_pct: r2((last.close / prev.close - 1) * 100), spark };
+      // US: the regular closes of the two sessions (Task 51), else the daily closes.
+      const reg = clock ? regularCloses(bars, marketClockFor(clock, mkt), asOf) : null;
+      const lc = (reg && reg.get(last.date)) ?? last.close, pc = (reg && reg.get(prev.date)) ?? prev.close;
+      return { ticker: t, date: last.date, last: lc, prev: pc, change_pct: r2((lc / pc - 1) * 100), spark };
     });
   };

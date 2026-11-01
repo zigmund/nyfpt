@@ -79,7 +79,7 @@ import { t } from '../i18n.js'
 import { MARKET_STRIP_MAX } from '../config.js'
 import { fPct, fPrice, n, tone } from '../display.js'
 import { tickerCode } from '../store/session.js'
-import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
+import { dayChangePct, quotePrice, regularQuote } from '../calc/live.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import { filterRecent, splitMatch, useTickerSearch } from '../composables/useTickerSearch.js'
 
@@ -131,9 +131,11 @@ function priceOf(ticker) {
   const lq = app.live.quotes?.get?.(ticker)
   const q = quotePrice(lq) !== null ? lq : null // a quote with ltp 0 is no price: the REST snapshot
   const f = fetched.value[ticker]
-  const last = quotePrice(q) ?? f?.last ?? null
+  // US: the regular price (app.regularQuote, Task 51), the after-hours trade left out
+  const r = q ? (app.regularQuote ? app.regularQuote(ticker, q) : regularQuote(q, null)) : null
+  const last = r?.price ?? f?.last ?? null
   // calc/live dayChangePct: the quote's price vs its previous close, else pcp (live, then cached)
-  return { last, change: dayChangePct({ last: quotePrice(q), prev: quotePrevClose(q), pct: n(q?.pcp) ?? f?.change }) }
+  return { last, change: dayChangePct({ last: r?.price ?? null, prev: r?.prev ?? null, pct: r?.pct ?? f?.change }) }
 }
 
 // --- star: the security is a card of the markets strip

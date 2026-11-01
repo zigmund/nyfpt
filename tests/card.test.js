@@ -5,9 +5,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import App from '../src/App.vue'
+import PriceChart from '../src/components/PriceChart.vue'
 import MarketsStrip from '../src/components/MarketsStrip.vue'
 import { createAppState, installApp, positionRoute, parseHash } from '../src/composables/useApp.js'
-import { marketClock, marketClockFor } from '../src/calc/marketTime.js'
+import { axisAt, marketClock, marketClockFor } from '../src/calc/marketTime.js'
 import { lastTradeTime } from '../src/composables/usePosition.js'
 import { keyStats } from '../src/calc/position.js'
 import { t } from '../src/i18n.js'
@@ -396,5 +397,64 @@ describe('markets strip', () => {
     ])
     expect(links[2].attributes('aria-label')).toBe('Crude Oil USO') // label and note apart
     expect(links[0].attributes('aria-label')).toBe('S&P 500')
+  })
+})
+
+// Task 51: US on the regular close; the after-hours / pre-market trade on its own line.
+describe('card price on the US regular close (Task 51)', () => {
+  it('after the close: the header is the regular close vs the previous one, after hours apart', async () => {
+    const after = info('DIA.US', { name: 'Mock Dow ETF', ltp: 41.9, chg: 1.9, pcp: 4.75, pp: 40, ClosePrice: 41.5, ltt: '2026-10-30T19:58:00' })
+    const { w, repo } = await mountApp({ period: '1d', secs: { 'DIA.US': secOf(after) } })
+    expect(w.get('[data-test="p-price"]').text()).toBe('41.50')
+    expect(w.get('[data-test="p-change"]').text()).toBe('+1.50 (+3.75%)')
+    expect(w.get('[data-test="p-ext"]').text()).toContain(t('pos.afterHours'))
+    expect(w.get('[data-test="p-ext-price"]').text()).toBe('41.90')
+    expect(w.get('[data-test="p-ext-change"]').text()).toBe('+0.4000 (+0.96%)') // fPrice: 4 decimals under 1
+    expect(w.get('[data-test="p-ext-at"]').text()).toBe(lastTradeTime('2026-10-30T19:58:00', MC))
+    // "At close" names the regular close (16:00 New York), not the after-hours trade
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: lastTradeTime('2026-10-30T16:00:00', MC) }))
+    expect(repo.security).toHaveBeenCalled()
+  })
+
+  it('during the session or on other markets: no extra line', async () => {
+    const { w } = await mountApp()
+    expect(w.find('[data-test="p-ext"]').exists()).toBe(false)
+  })
+
+  it('a daily chart asks the repo for the regular close of its first date', async () => {
+    const ensure = vi.fn(async () => {})
+    const ctx = makeApp({ period: 'YTD' })
+    ctx.repo.ensureRegular = ensure
+    await flushPromises()
+    mount(App, { attachTo: document.body })
+    await flushPromises()
+    expect(ensure).toHaveBeenCalledWith('DIA.US', ['2025-12-31'])
+  })
+})
+
+// Fix round 1: the broker pre-open (07:10-09:30 New York) on the 1D chart.
+describe('1D in the US pre-open (Task 51 fix round 1)', () => {
+  // Market clock with the broker pre-open (p 14:10 server = 07:10 New York) and the regular close.
+  const PMC = marketClockFor(marketClock(STATUS, { offset: null, markets: { FIX: { post: 23 * 60, p: 14 * 60 + 10 } } }), 'FIX')
+  const bar = (d, min, close) => ({ ts: axisAt(10800, d, min), date: d, open: close, high: close, low: close, close, vol: 1 })
+  const session = (d, close) => Array.from({ length: 26 }, (_, i) => bar(d, 570 + i * 15, i === 25 ? close : close - 1))
+  const INTRA = [...session('2026-10-29', 40.02), ...session('2026-10-30', 41.52),
+    bar('2026-11-02', 435, 41.6), bar('2026-11-02', 450, 41.8), bar('2026-11-02', 465, 41.9)]
+  // Monday 07:45: pp / chg already rolled to Friday (pp = ClosePrice = Friday's close).
+  const PRE = { c: 'DIA.US', ltr: 'FIX', ltp: 41.9, chg: 0.4, pcp: 0.96, pp: 41.5, ClosePrice: 41.5, ltt: '2026-11-02T07:45:00' }
+  const sec = () => ({ 'DIA.US': secOf(info('DIA.US', { ...PRE, name: 'Mock Dow ETF' }), { intraday: INTRA, clock: PMC, today: '2026-11-02' }) })
+
+  it('header: Friday vs Thursday; chart: today\'s pre-open bars against Friday\'s close, no spike to it', async () => {
+    const { w } = await mountApp({
+      period: '1d', secs: sec(), liveQuotes: new Map([['DIA.US', PRE]]), isLive: true, open: ['FIX'],
+    })
+    expect(w.get('[data-test="p-price"]').text()).toBe('41.50')
+    expect(w.get('[data-test="p-change"]').text()).toBe('+1.48 (+3.70%)')
+    expect(w.get('[data-test="p-ext"]').text()).toContain(t('pos.preMarket'))
+    const chart = w.getComponent(PriceChart).props()
+    expect(chart.rows.map((r) => r.date)).toEqual(['2026-11-02', '2026-11-02', '2026-11-02'])
+    expect(chart.rows.at(-1).close).toBe(41.9) // the bar's own close, not overwritten by 41.50
+    expect(chart.base).toBe(41.5) // the last regular close, not Thursday's
+    expect(w.get('[data-test="pk-prevClose"]').text()).toContain('40.02') // Key statistics = the header's prev
   })
 })

@@ -2,7 +2,9 @@
      price chart with periods, My holdings (held or closed positions only, else no block), Key
      statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation.
      Header change (Task 44): 1D — the day change; other periods — the price vs the first point of
-     the chart, with the period label; pointer on the chart — that point's price, change and time. -->
+     the chart, with the period label; pointer on the chart — that point's price, change and time.
+     US (Task 51): the price is the regular close; a trade after the close / before the open is shown
+     on its own line (After hours / Pre-market, against the regular close), as on Yahoo. -->
 <template>
   <div class="psum">
     <p v-if="loadError" class="banner" role="status" data-test="p-error">
@@ -36,6 +38,12 @@
         </template>
         <span v-else-if="pos.closedAt && pos.marketOpen">{{ t('pos.asOf', { at: pos.closedAt }) }}</span>
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
+      </p>
+      <p v-if="pos.ext" class="status phead__ext" data-test="p-ext">
+        <span>{{ t(pos.ext.kind === 'pre' ? 'pos.preMarket' : 'pos.afterHours') }}</span>
+        <span class="num" data-test="p-ext-price">{{ fPrice(pos.ext.price) }}</span>
+        <span class="num" :class="tone(pos.ext.change)" data-test="p-ext-change">{{ fChange(pos.ext.change) }} ({{ fPct(pos.ext.pct) }})</span>
+        <span v-if="pos.extAt" data-test="p-ext-at">{{ pos.extAt }}</span>
       </p>
 
       <!-- One fixed-height area in every state: chart, old chart while a new period loads, skeleton, message. -->
@@ -188,6 +196,12 @@ const loadError = computed(() => !!props.pos.sec.errors?.info && !props.pos.sec.
 
 // --- chart
 const intraday = computed(() => chartSource(props.period) === 'intraday')
+/** The chart's last bar is of a later day than the price's session (calc/live regularQuote day). */
+const laterThanPrice = (list) => {
+  const d = props.pos.priceDay
+  const last = list && list.length ? list[list.length - 1].date : null
+  return !!d && !!last && last > d
+}
 const rows = computed(() => {
   const s = props.pos.sec
   const today = s.today || localDay(Date.now())
@@ -196,11 +210,24 @@ const rows = computed(() => {
   // 1D: only while live, today's last bar follows the quote (outside the session the 1D chart
   // keeps the session's bars). Other periods: the chart always ends on the header price
   // (calc/position.withLastPrice), so the header change and the chart end share one sign.
-  if (props.period === '1D') return live ? withLastPrice(list, props.pos.price, { day: today, intraday: true }) : list
-  const day = live ? today : tradeDay(props.pos.quote?.ltt || props.pos.info?.ltt)
+  // US broker pre-open (07:10-09:30 New York): the bars are today's while the price is the last
+  // regular close (an earlier day): the bars stay as they are (no spike to that close).
+  if (props.period === '1D') return live && !laterThanPrice(list) ? withLastPrice(list, props.pos.price, { day: today, intraday: true }) : list
+  // The price's session date (US regular close: its day, not a later pre-market trade's).
+  const day = props.pos.priceDay || (live ? today : tradeDay(props.pos.quote?.ltt || props.pos.info?.ltt))
   return withLastPrice(list, props.pos.price, { day, intraday: intraday.value })
 })
-const base = computed(() => (props.period === '1D' ? props.pos.prevClose : null))
+// Daily charts start on a regular close too (Task 51): the repo fetches it for the first date once.
+const chartBase = computed(() => {
+  if (intraday.value) return null
+  const s = props.pos.sec
+  const list = chartRows(props.period, s, { today: s.today || localDay(Date.now()) })
+  return list.length > 1 ? list[0].date : null
+})
+watch(chartBase, (d) => { if (d) Promise.resolve(app.ensureRegular?.(ticker.value, [d])).catch(() => {}) }, { immediate: true })
+// 1D baseline: the previous close; when the bars are of a day after the price's session (US
+// pre-open), the price itself — the last regular close, which the pre-market moves against (Yahoo).
+const base = computed(() => (props.period !== '1D' ? null : laterThanPrice(rows.value) ? props.pos.price : props.pos.prevClose))
 const chartLoading = computed(() => {
   const src = chartSource(props.period)
   return props.pos.sec[src] == null && !props.pos.sec.errors?.[src]

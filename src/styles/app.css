@@ -1350,6 +1350,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 /* A table followed by the closed-positions block does not bleed into the card bottom. */
 .tablebox:not(:last-child) { margin-bottom: 0; }
 .hold__closed-body { padding-top: var(--gap); }
+.hold__closed-empty { margin: 0; color: var(--c-muted); font-size: .875rem; }
 /* Stuck-header sentinel (Holdings.vue): at the table top, takes no space. */
 .hold__sentinel { height: 1px; margin-bottom: -1px; }
 
@@ -1618,6 +1619,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .phead__name.skel { min-height: 1.4em; width: 12rem; }
 .phead__chg.skel { display: inline-block; width: 6rem; }
 .phead .status { min-height: 1.2em; }
+.phead__ext { flex-wrap: wrap; column-gap: var(--gap); row-gap: 0; }
 .pchart svg { touch-action: pan-y; }
 .pchart__none { height: 100%; display: grid; place-items: center; }
 .pchart__lab { fill: var(--c-muted); font-size: .6875rem; }

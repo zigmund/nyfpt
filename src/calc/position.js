@@ -162,7 +162,8 @@ const AVG_VOL_CANDLES = 63
 
 /**
  * Key statistics (Task 22 set). Missing values are null and hidden by the UI.
- *   prevClose  live.quotePrevClose of the info: ltp - chg, then `pp` (a .EU `pp` can be wrong on a day off)
+ *   prevClose  `prevClose` (the card's regular previous close, US: live.regularQuote), else
+ *              live.quotePrevClose of the info: ltp - chg, then `pp` (a .EU `pp` can be wrong on a day off)
  *   open       open of the first bar of the last intraday session window (from the broker's
  *              pre-open, as on the 1D chart; owner's choice), else of the last daily
  *              candle (`op` is unreliable); `sessions`: sessionBounds (index-anchored market
@@ -174,7 +175,7 @@ const AVG_VOL_CANDLES = 63
  *   kind       'index' | 'stock' | 'preferred' | 'fund' | null; index: `codesub_nm` INDEX, or without a
  *              codesub the .IDX suffix (`ticker`, else `c`): the broker sends kind 1 for indices
  */
-export function keyStats({ info, daily, intraday, sessions, clock, today, ticker = null } = {}) {
+export function keyStats({ info, daily, intraday, sessions, clock, today, ticker = null, prevClose = null } = {}) {
   const i = info || {}
   const sub = i.codesub_nm ? String(i.codesub_nm).toUpperCase() : ''
   const index = sub ? sub === 'INDEX' : String(ticker || i.c || '').toUpperCase().endsWith('.IDX')
@@ -188,7 +189,7 @@ export function keyStats({ info, daily, intraday, sessions, clock, today, ticker
   const vols = d.slice(-AVG_VOL_CANDLES).map((r) => num(r.vol)).filter((v) => v !== null && v >= 0)
   const vol = num(i.vol)
   return {
-    prevClose: quotePrevClose(i),
+    prevClose: posNum(prevClose) ?? quotePrevClose(i),
     open: first ? posNum(first.open) : posNum(last && last.open),
     dayLow: posNum(i.mintp),
     dayHigh: posNum(i.maxtp),

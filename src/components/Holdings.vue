@@ -1,7 +1,8 @@
 <!-- Holdings with a Day / selected-period switch (prefs.holdingsMode).
      Day: day change total + table; price cells flash for 600 ms on a tick, live mode only. Quotes:
      live ones first, then the repo's REST snapshot (state.quotes), so on a day off the change is the
-     last session's (calc/live quotePrevClose), not the rolled position close_price. Label: "Today"
+     last session's (calc/live quotePrevClose), not the rolled position close_price; US on the
+     regular close (app.regularQuote, Task 51): after-hours trades are not in the day. Label: "Today"
      while live, else the last session date (SP500.IDX, as Performance "on Oct 30").
      Period: period P&L total (same numbers as the value card) + positions open at the period end;
      before the period is computed: current positions without period columns.
@@ -186,7 +187,8 @@
         :aria-busy="closedStale ? 'true' : 'false'"
         data-test="hc-body"
       >
-        <div class="tablebox">
+        <p v-if="!closedStale && !closed.length" class="hold__closed-empty" data-test="hc-empty">{{ closedNone }}</p>
+        <div v-else class="tablebox">
           <table class="ptable ptable--fixed num" data-test="hc-table">
             <colgroup><col v-for="c in CLOSED_COLS" :key="c.key" :class="colClass(c)"></colgroup>
             <thead>
@@ -296,16 +298,26 @@ const rows = computed(() => {
   if (!ps) return null
   const live = app.liveQuotesForCalc()
   const snap = app.state.value?.quotes
-  return holdingsRows(ps, { get: (tk) => live?.get(tk) ?? snap?.get?.(tk) })
+  return holdingsRows(ps, { get: (tk) => live?.get(tk) ?? snap?.get?.(tk) }, app.regularQuote && ((tk, q) => app.regularQuote(tk, q)))
 })
 // "Today" only while live; otherwise the date of the last US session (the markets strip's
 // SP500.IDX row, the date Performance uses), else the last spark date; "Day" when none is known.
-const dayLabel = computed(() => {
-  if (live.isLive.value) return t('hold.today')
+const sessionDate = computed(() => {
   const st = app.state.value
   const sparkDates = Object.values(st?.sparks || {}).map((s) => s?.date).filter(Boolean).sort()
-  const date = (st?.markets || []).find((r) => r.ticker === 'SP500.IDX')?.date || sparkDates.at(-1)
-  return date ? t('hold.onDate', { date: dateShort(date) }) : t('hold.mode.day')
+  return (st?.markets || []).find((r) => r.ticker === 'SP500.IDX')?.date || sparkDates.at(-1) || null
+})
+const dayLabel = computed(() => {
+  if (live.isLive.value) return t('hold.today')
+  return sessionDate.value ? t('hold.onDate', { date: dateShort(sessionDate.value) }) : t('hold.mode.day')
+})
+// Empty closed block text: Day -> today / the last session date, Period -> the period label.
+const closedNone = computed(() => {
+  if (mode.value !== 'day') return t('hold.closedNonePeriod', { period: periodLabel.value })
+  if (live.isLive.value) return t('hold.closedNoneToday')
+  return sessionDate.value
+    ? t('hold.closedNoneDay', { date: dateShort(sessionDate.value) })
+    : t('hold.closedNonePeriod', { period: PERIOD_LABELS['1d'] })
 })
 const total = computed(() => holdingsTotal(rows.value || []))
 // Cash per currency: kind 'cash' rows of the positions (USD value) — the same source as the value
@@ -331,6 +343,9 @@ const daySorted = computed(() => daySort.apply(rows.value || []))
 function daySpark(r) {
   const s = app.state.value?.sparks?.[r.ticker]
   const spark = s?.spark || EMPTY
+  // US broker pre-open: the spark is today's while the price is the last regular close (an earlier
+  // day): its level is that close, which the pre-market moves against (as the card's 1D chart).
+  if (r.priceDay && s?.date && s.date > r.priceDay) return { spark, prev: n(r.price) }
   return { spark, prev: s?.prior ? null : n(r.prevClose) }
 }
 
@@ -364,7 +379,7 @@ const day = usePeriodCore({ period: '1d', fetch: false })
 const closedCore = computed(() => (mode.value === 'day' ? day.core.value : props.core))
 const closedStale = computed(() => (mode.value === 'day' ? day.stale.value : props.stale))
 const closed = computed(() => (closedCore.value?.positions || []).filter((r) => !r.qty_end))
-const closedShown = computed(() => !!closedCore.value && (closedStale.value || closed.value.length > 0))
+const closedShown = computed(() => !!closedCore.value)
 const closedOpen = computed(() => prefs.holdingsClosedOpen === true)
 const closedSort = tableSort('holdingsClosed', CLOSED_COLS, { key: 'pnl', dir: -1 })
 const closedSorted = computed(() => closedSort.apply(closed.value))

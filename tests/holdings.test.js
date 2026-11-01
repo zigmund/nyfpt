@@ -7,7 +7,7 @@ import MarketSpark from '../src/components/MarketSpark.vue'
 import { daySparks, periodSpark } from '../src/calc/sparks.js'
 import { marketClock } from '../src/calc/marketTime.js'
 import { installApp } from '../src/composables/useApp.js'
-import { money, pct } from '../src/format.js'
+import { dateShort, money, pct } from '../src/format.js'
 import { computeCore } from '../src/calc/portfolio.js'
 import { t } from '../src/i18n.js'
 import { readFileSync } from 'node:fs'
@@ -53,6 +53,7 @@ const CORE_YTD = computeCore(POSITIONS, TRADES, [], pricesFrom('2025-12-31'))
 const CORE_1D = computeCore(POSITIONS, TRADES, [], pricesFrom('2026-10-29'))
 // No position closed over the period.
 const CORE_OPEN = { ...CORE_YTD, positions: CORE_YTD.positions.filter((r) => r.qty_end) }
+const CORE_1D_OPEN = { ...CORE_1D, positions: CORE_1D.positions.filter((r) => r.qty_end) }
 // Day sparks (last session, 15-min closes) as repo.state().sparks; CCC has none.
 const SPARKS = {
   'AAA.US': { date: '2026-10-30', spark: [98, 99.5, 99, 100] },
@@ -338,12 +339,35 @@ describe('Holdings: Day / period switch', () => {
     expect(w.find('[data-test="hc-body"]').exists()).toBe(false)
   })
 
-  it('closed positions: no button when none were closed, or without a core', () => {
-    setup({ prefs: { holdingsMode: 'period' } })
-    expect(mountH({ core: CORE_OPEN }).find('[data-test="hc-toggle"]').exists()).toBe(false)
+  it('closed positions: no button without a core', () => {
     installApp(null)
     setup({ cores: {} }) // Day mode, no 1D core
     expect(mountH().find('[data-test="hc-toggle"]').exists()).toBe(false)
+  })
+
+  it('zero closed in Period: the block stays, "(0)", expanded shows text instead of a table', async () => {
+    const { app } = setup({ prefs: { holdingsMode: 'period' } })
+    const w = mountH({ core: CORE_OPEN, period: 'YTD' })
+    const btn = () => w.get('[data-test="hc-toggle"]')
+    expect(btn().text()).toBe(t('hold.closedN', { n: 0 }))
+    expect(w.find('[data-test="hc-body"]').exists()).toBe(false)
+    await btn().trigger('click')
+    expect(app.prefs.holdingsClosedOpen).toBe(true)
+    expect(w.find('[data-test="hc-table"]').exists()).toBe(false)
+    expect(w.get('[data-test="hc-empty"]').text()).toBe(t('hold.closedNonePeriod', { period: 'YTD' }))
+  })
+
+  it('zero closed in Day: the block stays, text names the last session date', async () => {
+    setup({ cores: { '1d': CORE_1D_OPEN }, prefs: { holdingsClosedOpen: true } })
+    const w = mountH()
+    expect(w.get('[data-test="hc-toggle"]').text()).toBe(t('hold.closedN', { n: 0 }))
+    expect(w.find('[data-test="hc-table"]').exists()).toBe(false)
+    expect(w.get('[data-test="hc-empty"]').text()).toBe(t('hold.closedNoneDay', { date: dateShort('2026-10-30') }))
+  })
+
+  it('zero closed in Day while live: "today"', () => {
+    setup({ cores: { '1d': CORE_1D_OPEN }, prefs: { holdingsClosedOpen: true }, isLive: true })
+    expect(mountH().get('[data-test="hc-empty"]').text()).toBe(t('hold.closedNoneToday'))
   })
 
   it('Day mode: closed positions of the last trading day (1D core); Period: of the selected period', async () => {

@@ -13,6 +13,7 @@ import {
 } from '../store/session.js'
 import { createRepo } from '../data/repo.js'
 import { localDay } from '../calc/marketTime.js'
+import { regularQuote } from '../calc/live.js'
 import { createLive } from '../data/live.js'
 import { createNews } from '../data/news.js'
 
@@ -124,6 +125,9 @@ export const parseHash = (h) => {
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   security(ticker), loadSecurity(ticker, parts, opts)  position card data (data/repo.js)
+ *   regularQuote(ticker, quote, bars?)  calc/live regularQuote with the ticker's market and bars
+ *                (repo.regular): US on the regular close, the after-hours / pre-market trade apart
+ *   ensureRegular(ticker, dates)  fetch the regular closes of a card chart's base (repo)
  *   news()       the account's news cache (data/news.js), null without an attached account
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
  *   logout() (erases the account cache and Recent; returns a promise), clearCache(), retry(), go(path, {replace}), start(), stop()
@@ -526,6 +530,8 @@ export function createAppState(overrides = {}) {
     today: (ms = Date.now()) => (repo?.today ? repo.today(ms) : localDay(ms)),
     security: (ticker) => (repo ? repo.security(ticker) : null),
     loadSecurity: (ticker, parts, opts) => (repo ? repo.loadSecurity(ticker, parts, opts) : Promise.resolve()),
+    regularQuote: (ticker, q, bars) => (repo?.regular ? repo.regular(ticker, q, bars) : regularQuote(q, null)),
+    ensureRegular: (ticker, dates) => (repo?.ensureRegular ? repo.ensureRegular(ticker, dates) : Promise.resolve()),
     news: () => news,
   }
 }
