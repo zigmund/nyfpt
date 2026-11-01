@@ -1350,6 +1350,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 /* A table followed by the closed-positions block does not bleed into the card bottom. */
 .tablebox:not(:last-child) { margin-bottom: 0; }
 .hold__closed-body { padding-top: var(--gap); }
+.hold__closed-empty { margin: 0; color: var(--c-muted); font-size: .875rem; }
 /* Stuck-header sentinel (Holdings.vue): at the table top, takes no space. */
 .hold__sentinel { height: 1px; margin-bottom: -1px; }
 

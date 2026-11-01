@@ -137,6 +137,9 @@ const en = {
   'hold.status.reduced': 'reduced',
   'hold.closed': 'Closed positions',
   'hold.closedN': 'Closed positions ({n})',
+  'hold.closedNoneDay': 'No positions closed on {date}',
+  'hold.closedNoneToday': 'No positions closed today',
+  'hold.closedNonePeriod': 'No positions closed in {period}',
 
   'compare.lede': 'From {start} to {end}: portfolio {twr}, S&P 500 {spy}, Nasdaq 100 {qqq}.',
   'compare.tileTwr': 'Portfolio return',
