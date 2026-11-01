@@ -93,7 +93,7 @@ import { useApp, positionPath } from '../composables/useApp.js'
 import { useNews } from '../composables/useNews.js'
 import { newsOffset, newsTime, sentimentOf, httpsUrl, relatedTickers } from '../calc/news.js'
 import NewsBody from './NewsBody.vue'
-import { dayChangePct } from '../calc/live.js'
+import { dayChangePct, quotePrevClose } from '../calc/live.js'
 
 const props = defineProps({
   ticker: { type: String, required: true },
@@ -120,7 +120,7 @@ function changeOf(tk) {
   void app.tick?.value
   const q = app.live?.quotes?.get?.(tk)
   const p = (app.state?.value?.rawPs?.pos || []).find((x) => x.i === tk)
-  return dayChangePct({ last: n(q?.ltp) ?? n(p?.mkt_price), prev: n(q?.pp) ?? n(p?.close_price), pct: q?.pcp })
+  return dayChangePct({ last: n(q?.ltp) ?? n(p?.mkt_price), prev: quotePrevClose(q) ?? n(p?.close_price), pct: q?.pcp })
 }
 
 const str = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '')

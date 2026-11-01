@@ -142,6 +142,15 @@ describe('MarketsStrip', () => {
     w.unmount()
   })
 
+  it('day change of a quote with chg: ltp - chg is the previous close, a wrong pp is ignored (Task 42)', async () => {
+    const quotes = new Map([['SP500.IDX', { c: 'SP500.IDX', ltp: 6060, chg: 120, pp: 5000, pcp: 2.02 }]])
+    makeApp({ prefs: { marketStrip: [{ ticker: 'SP500.IDX', label: 'S&P' }] }, markets: [row('SP500.IDX', 6000)], quotes })
+    await flushPromises()
+    const w = mount(MarketsStrip)
+    expect(w.get('.mcard__chg').text()).toBe(pct((120 / 5940) * 100))
+    w.unmount()
+  })
+
   it('an empty list hides the strip and its status line', () => {
     makeApp({ prefs: { marketStrip: [] }, markets: [row('SP500.IDX', 6000)] })
     const w = mount(MarketsStrip)

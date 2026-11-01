@@ -136,6 +136,14 @@ describe('news list', () => {
     w.unmount()
   })
 
+  it('ticker change from a quote with chg: ltp - chg, not a wrong pp (Task 42)', async () => {
+    setup({ store: fakeStore({ 'en:0': { list: [item(1, { tickers: ['EEE.EU'] })], total: 1 } }), quotes: { 'EEE.EU': { ltp: 102, chg: 2, pp: 90 } } })
+    const w = mountNews()
+    await flushPromises()
+    expect(w.get('[data-test="news-tk"]').text().replace(/\s+/g, ' ')).toBe('EEE.EU +2.00%')
+    w.unmount()
+  })
+
   it('a ticker without a cached quote shows no change', async () => {
     setup({ store: fakeStore({ 'en:0': { list: [item(1, { tickers: ['ZZZ.US'] })], total: 1 } }) })
     const w = mountNews()

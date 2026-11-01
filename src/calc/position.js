@@ -1,6 +1,6 @@
 // Position card: candles, chart windows, key statistics and My holdings. Pure functions over
 // broker answers (getSecurityInfo, getHloc, getPositionJson `ps`); numbers may come as strings.
-import { positionFactor } from './live.js'
+import { positionFactor, quotePrevClose } from './live.js'
 import { axisDate, axisToUtc, barSeconds, localParts, sessionWindow } from './marketTime.js'
 
 const num = (v) => {
@@ -136,7 +136,7 @@ const AVG_VOL_CANDLES = 63
 
 /**
  * Key statistics (Task 22 set). Missing values are null and hidden by the UI.
- *   prevClose  `pp`: the broker's own day change (chg = ltp - pp) is measured from it
+ *   prevClose  live.quotePrevClose of the info: ltp - chg, then `pp` (a .EU `pp` can be wrong on a day off)
  *   open       open of the first bar of the last intraday session window (from the broker's
  *              pre-open, as on the 1D chart; owner's choice), else of the last daily
  *              candle (`op` is unreliable); `sessions`: sessionBounds (index-anchored market
@@ -162,7 +162,7 @@ export function keyStats({ info, daily, intraday, sessions, clock, today, ticker
   const vols = d.slice(-AVG_VOL_CANDLES).map((r) => num(r.vol)).filter((v) => v !== null && v >= 0)
   const vol = num(i.vol)
   return {
-    prevClose: posNum(i.pp),
+    prevClose: quotePrevClose(i),
     open: first ? posNum(first.open) : posNum(last && last.open),
     dayLow: posNum(i.mintp),
     dayHigh: posNum(i.maxtp),

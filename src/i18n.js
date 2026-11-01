@@ -48,6 +48,7 @@ const en = {
   'main.err.markets': 'markets',
   'main.err.candles': 'prices',
   'main.err.sparks': 'charts',
+  'main.err.quotes': 'quotes',
   'main.err.other': 'other data',
 
   'mkts.label': 'Markets',
@@ -108,6 +109,7 @@ const en = {
 
   'hold.title': 'Holdings',
   'hold.today': 'Today',
+  'hold.onDate': 'On {date}',
   'hold.cash': 'Cash',
   'hold.col.ticker': 'Symbol',
   'hold.col.chart': 'Chart',

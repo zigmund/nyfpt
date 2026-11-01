@@ -162,6 +162,55 @@ describe('Holdings', () => {
   })
 })
 
+describe('Holdings Day on a market day off (Task 42)', () => {
+  // Sunday: close_price rolled (AAA: = mkt_price -> 0 %); the REST quote snapshot (state.quotes)
+  // carries the last session change: AAA ltp 100, chg -4 -> prev 104 (its pp 97 is wrong).
+  const QUOTES = new Map([
+    ['AAA.US', { c: 'AAA.US', ltp: 100, chg: -4, pcp: -3.85, pp: 97 }],
+    ['BBB.US', { c: 'BBB.US', ltp: 50, chg: -2, pcp: -3.85, pp: 52 }],
+  ])
+  const MARKETS = [{ ticker: 'SP500.IDX', date: '2026-10-30', last: 1, prev: 1, change_pct: 0, spark: [] }]
+  const rolled = { ...PS, pos: PS.pos.map((p) => (p.i === 'AAA.US' ? { ...p, close_price: p.mkt_price } : p)) }
+  const sunday = (app) => {
+    app.state.value = { ...app.state.value, rawPs: rolled, quotes: QUOTES, markets: MARKETS }
+    app.tick.value++
+  }
+
+  it('outside live: Day from the quote snapshot (ltp - chg), not the rolled close_price', async () => {
+    const { app } = setup()
+    sunday(app)
+    const w = mountH()
+    const row = w.get('[data-ticker="AAA.US"]')
+    expect(row.get('[data-test="h-daypct"]').text()).toBe(pct((-4 / 104) * 100))
+    expect(row.get('[data-test="h-dayusd"]').text()).toBe(money(-40, { sign: true }))
+    // AAA -40, BBB -40 (50 vs 52), CCC no quote: close_price 400 -> 0
+    expect(w.get('[data-test="h-total"]').text()).toContain(money(-80, { sign: true }))
+    expect(sparkOf(row).prev).toBe(104) // the waterline is the same previous close
+  })
+
+  it('label: the last session date outside live, Today while live', async () => {
+    const { app } = setup()
+    sunday(app)
+    const w = mountH()
+    const label = () => w.get('.hold__total-label').text()
+    expect(label()).toBe(t('hold.onDate', { date: 'Oct 30' }))
+    expect(label()).not.toBe(t('hold.today'))
+    app.live.isLive.value = true
+    await nextTick()
+    expect(label()).toBe(t('hold.today'))
+  })
+
+  it('live: the live quote first, the snapshot for tickers the stream has not sent', async () => {
+    const { app, push } = setup({ isLive: true })
+    sunday(app)
+    const w = mountH()
+    push('BBB.US', 49) // live quote {ltp 49, pp 52}
+    await nextTick()
+    expect(w.get('[data-ticker="BBB.US"] [data-test="h-daypct"]').text()).toBe(pct((-3 / 52) * 100))
+    expect(w.get('[data-ticker="AAA.US"] [data-test="h-daypct"]').text()).toBe(pct((-4 / 104) * 100))
+  })
+})
+
 describe('Holdings: Day / period switch', () => {
   it('synthetic cores: YTD closes DDD and EEE, 1D closes only DDD', () => {
     const closed = (c) => c.positions.filter((r) => r.qty_end === 0).map((r) => r.ticker).sort()
@@ -501,10 +550,18 @@ describe('sparks calc', () => {
 
   it('other markets (KZ): their own last session', () => {
     const rows = [
-      bar('CCC_KZ.KZ', '2026-10-30', '11:30', 3),
-      bar('CCC_KZ.KZ', '2026-10-31', '11:30', 4), bar('CCC_KZ.KZ', '2026-10-31', '12:00', 5),
+      bar('CCC_KZ.KZ', '2026-10-29', '11:30', 3),
+      bar('CCC_KZ.KZ', '2026-10-30', '11:30', 4), bar('CCC_KZ.KZ', '2026-10-30', '12:00', 5),
     ]
-    expect(daySparks(rows, IDX, CLK, '2026-10-31')['CCC_KZ.KZ']).toEqual({ date: '2026-10-31', spark: [4, 5] })
+    expect(daySparks(rows, IDX, CLK, '2026-10-30')['CCC_KZ.KZ']).toEqual({ date: '2026-10-30', spark: [4, 5] })
+  })
+
+  it('other markets without known hours: weekend bars are not a session either (Task 42)', () => {
+    const rows = [
+      bar('EEE.EU', '2026-10-30', '10:00', 4), bar('EEE.EU', '2026-10-30', '10:15', 5),
+      bar('EEE.EU', '2026-10-31', '13:00', 5), bar('EEE.EU', '2026-11-01', '03:00', 5),
+    ]
+    expect(daySparks(rows, [], null)['EEE.EU']).toEqual({ date: '2026-10-30', spark: [4, 5] })
   })
 
   it('US tickers without index candles: their own last date', () => {
@@ -670,6 +727,82 @@ describe('dev mock (?mock)', () => {
       expect(r.dayChangeUsd, r.ticker).not.toBe(null)
     }
     expect(holdingsTotal(rows).dayChangePct).not.toBe(null)
+  })
+})
+
+// Task 42: the mock on a weekend behaves like the broker on 2026-11-01 (synthetic tickers only).
+describe('dev mock (?mock) on a weekend', () => {
+  const SUNDAY = Date.parse('2026-11-01T09:00:00Z')
+  const run = async (p) => { await vi.advanceTimersByTimeAsync(1000); return p }
+
+  it('markets closed; positions: .EU / KASE close_price rolled to mkt_price, .US mkt_price = post-market', async () => {
+    vi.setSystemTime(SUNDAY)
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const b = createMockBroker()
+    const st = await run(b.marketStatus())
+    expect(st.result.markets.m.map((m) => m.s)).toEqual(st.result.markets.m.map(() => 'CLOSE'))
+    const ps = (await run(b.positions())).result.ps
+    const pos = (tk) => ps.pos.find((p) => p.i === tk)
+    expect(pos('EUX.EU').close_price).toBe(pos('EUX.EU').mkt_price)
+    expect(pos('CCC_KZ.KZ').close_price).toBe(pos('CCC_KZ.KZ').mkt_price)
+    expect(pos('AAA.US').close_price).not.toBe(pos('AAA.US').mkt_price)
+  })
+
+  it('quotes: chg / pcp from the previous session close, .EU pp wrong; Holdings Day = the last session change', async () => {
+    vi.setSystemTime(SUNDAY)
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { holdingsRows } = await import('../src/calc/live.js')
+    const { parseHloc } = await import('../src/calc/portfolio.js')
+    const b = createMockBroker()
+    const ps = (await run(b.positions())).result.ps
+    const tickers = ps.pos.map((p) => p.i)
+    const q = new Map((await run(b.quotes(tickers))).result.q.map((x) => [x.c, x]))
+    const daily = parseHloc({ answer: await run(b.hlocDaily(['EUX.EU', 'AAA.US'], '2026-10-20', -1)) }, { offset: 10800, markets: {} }).rows
+    const closes = (tk) => daily.filter((r) => r.ticker === tk && ['2026-10-29', '2026-10-30'].includes(r.date)).map((r) => r.close)
+    const eu = q.get('EUX.EU')
+    expect(eu.ltp - eu.chg).toBeCloseTo(closes('EUX.EU')[0], 1) // Thursday close
+    expect(eu.ltp).toBeCloseTo(closes('EUX.EU')[1], 1) // Friday close
+    expect(Math.abs(eu.pp - (eu.ltp - eu.chg))).toBeGreaterThan(0.5) // pp wrong
+    const aaa = q.get('AAA.US')
+    expect(aaa.ltp - aaa.chg).toBeCloseTo(closes('AAA.US')[0], 1) // Thursday close; ltp incl. post-market
+    const rows = Object.fromEntries(holdingsRows(ps, q).map((r) => [r.ticker, r]))
+    for (const tk of tickers) expect(rows[tk].dayChangePct, tk).not.toBeCloseTo(0, 6)
+  })
+
+  it('.EU: flat Saturday bars with volume and a Sunday 03:00 bar, daily too; the spark stays on Friday', async () => {
+    vi.setSystemTime(SUNDAY)
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const { parseHloc } = await import('../src/calc/portfolio.js')
+    const { marketClock } = await import('../src/calc/marketTime.js')
+    const b = createMockBroker()
+    const a = await run(b.hlocIntraday(['EUX.EU', 'SP500.IDX'], '2026-10-26', '2026-11-02', 15))
+    const st = await run(b.marketStatus())
+    const clock = marketClock({ ...st.result.markets, at: Date.now() }, { offset: 10800, markets: {} })
+    const rows = parseHloc({ answer: a }, clock).rows
+    const eu = rows.filter((r) => r.ticker === 'EUX.EU')
+    const sat = eu.filter((r) => r.date === '2026-10-31')
+    expect(sat.length).toBeGreaterThan(10)
+    expect(new Set(sat.map((r) => r.close)).size).toBe(1)
+    expect(eu.filter((r) => r.date === '2026-11-01')).toHaveLength(1)
+    const vl = a.vl['EUX.EU']
+    expect(vl.slice(-3).every((v) => v > 0)).toBe(true)
+    const sp = daySparks(rows, rows, clock, '2026-11-01')['EUX.EU']
+    expect(sp.date).toBe('2026-10-30')
+    expect(sp.spark.length).toBeGreaterThan(10)
+    const d = parseHloc({ answer: await run(b.hlocDaily(['EUX.EU', 'AAA.US'], '2026-10-26', -1)) }, { offset: 10800, markets: {} }).rows
+    expect(d.filter((r) => r.ticker === 'EUX.EU').map((r) => r.date).slice(-3)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01'])
+    expect(d.filter((r) => r.ticker === 'AAA.US').at(-1).date).toBe('2026-10-30')
+  })
+
+  it('weekday: FIX still open (live mock), no weekend bars', async () => {
+    vi.setSystemTime(Date.parse('2026-10-28T15:00:00Z')) // Wednesday
+    const { createMockBroker } = await import('../src/dev/mock.js')
+    const b = createMockBroker()
+    const st = await run(b.marketStatus())
+    expect(st.result.markets.m.find((m) => m.n === 'FIX').s).toBe('OPEN')
+    const ps = (await run(b.positions())).result.ps
+    const eu = ps.pos.find((p) => p.i === 'EUX.EU')
+    expect(eu.close_price).not.toBe(eu.mkt_price)
   })
 })
 

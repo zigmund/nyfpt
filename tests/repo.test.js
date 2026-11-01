@@ -40,9 +40,10 @@ const MRKT = {
 }
 const srvTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
 function fakeBroker() {
-  const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [], marketStatus: 0 }
+  const calls = { positions: 0, cashflows: 0, trades: [], hlocDaily: [], hlocIntraday: [], marketStatus: 0, quotes: [] }
   const b = {
     calls, fail: {}, series: fixtureSeries(), intraday: {}, gate: null, now: () => T0,
+    quoteRows: {}, // getStockQuotesJson rows by ticker (none by default: no quote)
     unknown: new Set(), // tickers the broker does not know: a request naming one fails as a whole
     hlocError: null, // (tickers) => Error | null: thrown by both getHloc calls
     finder: [],
@@ -53,6 +54,11 @@ function fakeBroker() {
         { i: '1', n: 'FIX', n2: 'FIX', s: 'CLOSE', o: '13:30:00', c: '00:00:00', dt: '240' },
         { i: '2', n: 'KASE', n2: 'KASE', s: 'CLOSE', o: '06:30:00', c: '17:00:00', dt: '-300' },
       ] } } }
+    },
+    async quotes(tickers) {
+      calls.quotes.push([...tickers]); await b.gate
+      if (b.fail.quotes) throw b.fail.quotes
+      return { result: { q: tickers.filter((t) => b.quoteRows[t]).map((t) => ({ c: t, ...b.quoteRows[t] })) } }
     },
     async positions() {
       calls.positions++; await b.gate
@@ -531,10 +537,11 @@ describe('repo', () => {
     expect(s.daily.map((r) => r.date)).toEqual(['2026-10-08', '2026-10-09'])
     expect(s.max.at(-1).date).toBe('2026-10-09')
     expect(repo.security('NASDAQ.IDX').daily).toBe(s.daily) // memoized: no new array per read
-    // A market without the index (KASE) keeps its own bars.
+    // A market without the index (KASE) is not cut at the index session; only weekend bars are
+    // dropped (Task 42: no session on Saturday / Sunday in any market).
     b.series['KKK.KZ'] = [['2026-10-09', 50], ['2026-10-10', 51]]
     await repo.loadSecurity('KKK.KZ', ['daily'])
-    expect(repo.security('KKK.KZ').daily.map((r) => r.date)).toEqual(['2026-10-09', '2026-10-10'])
+    expect(repo.security('KKK.KZ').daily.map((r) => r.date)).toEqual(['2026-10-09'])
   })
 
   describe('custom markets strip', () => {
@@ -916,6 +923,53 @@ describe('repo', () => {
     expect(st.errors.sparks).toBeUndefined()
     expect(st.sparks['AAA.US']).toEqual({ date: '2026-10-12', spark: [8, 9] })
     expect(sparkCalls(b).at(-1).tickers).toEqual(['AAA.US', 'CCC_KZ.KZ'])
+  })
+
+  // Task 42: Holdings Day outside live mode takes the previous close from a REST quote snapshot.
+  it('position quotes: one getStockQuotesJson for the positions, a Map in state, cached in kv', async () => {
+    const b = fakeBroker()
+    b.quoteRows = { 'AAA.US': { ltp: 110, chg: -2, pcp: -1.79, pp: 105, ltr: 'FIX', name: 'x', bbp: 1 } }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    expect(b.calls.quotes).toEqual([['AAA.US', 'BBB.US', 'CCC_KZ.KZ']]) // positions only, sorted
+    expect(st.quotes.get('AAA.US')).toEqual({ c: 'AAA.US', ltp: 110, chg: -2, pcp: -1.79, pp: 105, ltr: 'FIX' })
+    expect(st.quotes.has('BBB.US')).toBe(false)
+    expect((await db.getKv('quotes')).data.tickers).toEqual(['AAA.US', 'BBB.US', 'CCC_KZ.KZ'])
+    // a fresh repo over the same cache: the snapshot is there before any request
+    const again = mk(fakeBroker())
+    await again.refresh({ only: [] }) // cache only
+    let st2
+    again.subscribe((s) => { st2 = s })
+    expect(st2.quotes.get('AAA.US').chg).toBe(-2)
+    let st3
+    repo.subscribe((s) => { st3 = s })
+    expect(st3.quotes).toBe(st.quotes) // the same Map between emits (no new object per read)
+  })
+
+  it('position quotes: TTL.quotes, refetched when the positions change; a failure keeps the snapshot', async () => {
+    const b = fakeBroker()
+    b.quoteRows = { 'AAA.US': { ltp: 110, chg: -2 } }
+    const repo = mk(b)
+    let st
+    repo.subscribe((s) => { st = s })
+    await repo.load()
+    clock += TTL.quotes - 1
+    await repo.refresh()
+    expect(b.calls.quotes).toHaveLength(1)
+    clock += 1
+    await repo.refresh()
+    expect(b.calls.quotes).toHaveLength(2)
+    const ps = clone(fx.getPositionJson.result.ps)
+    ps.pos.push({ i: 'DDD.US', name: 'Delta', q: 2, mkt_price: 22, market_value: 44 })
+    await repo.applyPortfolio(ps)
+    await repo.refresh()
+    expect(b.calls.quotes.at(-1)).toEqual(['AAA.US', 'BBB.US', 'CCC_KZ.KZ', 'DDD.US'])
+    b.fail.quotes = new BrokerError('Bad request')
+    await repo.refresh({ force: true, only: ['quotes'] })
+    expect(st.errors.quotes).toBe('Bad request')
+    expect(st.quotes.get('AAA.US').ltp).toBe(110)
   })
 
   it('state.closes: cached daily closes per ticker (period sparks)', async () => {

@@ -3,7 +3,7 @@ import fx from './fixtures/synthetic-api.json';
 import {
   parsePositions, parseTrades, parseCashflows, parsePricesForPeriod, computeCore,
 } from '../src/calc/portfolio.js';
-import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows, dayChangePct } from '../src/calc/live.js';
+import { mergeQuote, holdingsRows, holdingsTotal, livePriceRows, dayChangePct, quotePrevClose } from '../src/calc/live.js';
 
 // Synthetic market clock: broker server at UTC+3 (axis + 3 h = exchange wall clock, daily bar = server midnight).
 const SRV3 = { offset: 10800, markets: {} };
@@ -78,6 +78,79 @@ describe('holdingsRows', () => {
     expect(r.dayChangePct).toBeNull();
     expect(r.dayChangeUsd).toBeNull();
     expect(r.valueUsd).toBeCloseTo(50, 6);
+  });
+});
+
+// Task 42: the broker's previous close of a quote (getStockQuotesJson / WS / getSecurityInfo).
+// Verified 2026-11-01 (Sunday): chg / pcp are right for every market, `pp` of a .EU quote is not.
+describe('quotePrevClose (one rule for every caller)', () => {
+  it('ltp - chg first: a .EU quote with a wrong pp', () => {
+    expect(quotePrevClose({ ltp: 100.5, chg: -2.5, pcp: -2.43, pp: 97.1 })).toBeCloseTo(103, 9);
+    expect(quotePrevClose({ ltp: '100.5', chg: '-2.5', pp: '97.1' })).toBeCloseTo(103, 9);
+    expect(quotePrevClose({ ltp: 50, chg: 0, pp: 49 })).toBe(50); // no trade yet: unchanged
+  });
+
+  it('then pp (> 0), then from pcp: ltp / (1 + pcp / 100)', () => {
+    expect(quotePrevClose({ ltp: 110, pp: 100 })).toBe(100);
+    expect(quotePrevClose({ ltp: 110, pp: 0, pcp: 10 })).toBeCloseTo(100, 9);
+    expect(quotePrevClose({ ltp: 110, pcp: '10' })).toBeCloseTo(100, 9);
+    expect(quotePrevClose({ pp: 100 })).toBe(100); // no ltp: pp still
+  });
+
+  it('unknown is null: an index quote of zeros, empty or broken quotes', () => {
+    expect(quotePrevClose({ c: 'IDX.IDX', ltp: 0, pp: 0, chg: 0, pcp: 0 })).toBeNull();
+    expect(quotePrevClose({ ltp: 'abc', chg: 1 })).toBeNull();
+    expect(quotePrevClose({ ltp: 1, chg: 1 })).toBeNull(); // prev 0 is not a close
+    expect(quotePrevClose({ ltp: 10, pcp: -100 })).toBeNull();
+    expect(quotePrevClose({})).toBeNull();
+    expect(quotePrevClose(null)).toBeNull();
+    expect(quotePrevClose(undefined)).toBeNull();
+  });
+});
+
+describe('holdingsRows on a market day off (Task 42)', () => {
+  // Like getPositionJson on a Sunday: .EU / KASE close_price rolled to mkt_price; .US close_price =
+  // the Friday regular close and mkt_price = the last post-market trade.
+  const sunday = {
+    acc: [{ curr: 'USD', currval: 1, s: 0 }],
+    pos: [
+      { i: 'EEE.EU', q: 10, mkt_price: 100.5, close_price: 100.5, market_value: 1005, curr: 'USD', currval: 1 },
+      { i: 'KKK_KZ.KZ', q: 4, mkt_price: 20, close_price: 20, market_value: 80, curr: 'USD', currval: 1 },
+      { i: 'UUU.US', q: 2, mkt_price: 51, close_price: 50, market_value: 102, curr: 'USD', currval: 1 },
+    ],
+  };
+  // getStockQuotesJson the same day: chg vs the previous session close; .EU pp wrong.
+  const quotes = new Map([
+    ['EEE.EU', { c: 'EEE.EU', ltp: 100.5, chg: -2.5, pcp: -2.43, pp: 97.1 }],
+    ['KKK_KZ.KZ', { c: 'KKK_KZ.KZ', ltp: 20, chg: 0.5, pcp: 2.56, pp: 19.5 }],
+    ['UUU.US', { c: 'UUU.US', ltp: 51, chg: -1, pcp: -1.92, pp: 52 }],
+  ]);
+
+  it('Day = the last session change from the quote, not 0 (rolled close) and not the post-market move', () => {
+    const r = by(holdingsRows(sunday, quotes));
+    expect(r['EEE.EU'].prevClose).toBeCloseTo(103, 9);
+    expect(r['EEE.EU'].dayChangeUsd).toBeCloseTo(-25, 6);
+    expect(r['EEE.EU'].dayChangePct).toBeCloseTo((-2.5 / 103) * 100, 6);
+    expect(r['KKK_KZ.KZ'].dayChangeUsd).toBeCloseTo(2, 6);
+    expect(r['UUU.US'].prevClose).toBe(52);
+    expect(r['UUU.US'].dayChangeUsd).toBeCloseTo(-2, 6);
+    expect(holdingsTotal(Object.values(r)).dayChangeUsd).toBeCloseTo(-25, 6);
+    // without quotes: the old snapshot rule (close_price) is the last fallback
+    expect(by(holdingsRows(sunday, new Map()))['EEE.EU'].dayChangeUsd).toBe(0);
+  });
+
+  it('a quote price of 0 (no trades, e.g. a bond) keeps the position price', () => {
+    const r = holdingsRows(sunday, new Map([['EEE.EU', { c: 'EEE.EU', ltp: 0, chg: 0, pp: 0, pcp: 0 }]]))[0];
+    expect(r.price).toBe(100.5);
+    expect(r.valueUsd).toBeCloseTo(1005, 6);
+    expect(r.prevClose).toBe(100.5); // close_price fallback
+  });
+
+  it('quotes may be any {get}: the live quote first, then the snapshot', () => {
+    const live = new Map([['UUU.US', { c: 'UUU.US', ltp: 53, chg: 1, pp: 52 }]]);
+    const r = by(holdingsRows(sunday, { get: (t) => live.get(t) ?? quotes.get(t) }));
+    expect(r['UUU.US'].price).toBe(53);
+    expect(r['EEE.EU'].prevClose).toBeCloseTo(103, 9);
   });
 });
 

@@ -79,7 +79,7 @@ import { t } from '../i18n.js'
 import { MARKET_STRIP_MAX } from '../config.js'
 import { fPct, fPrice, n, tone } from '../display.js'
 import { tickerCode } from '../store/session.js'
-import { dayChangePct } from '../calc/live.js'
+import { dayChangePct, quotePrevClose } from '../calc/live.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import { filterRecent, splitMatch, useTickerSearch } from '../composables/useTickerSearch.js'
 
@@ -132,7 +132,7 @@ function priceOf(ticker) {
   const f = fetched.value[ticker]
   const last = n(q?.ltp) ?? f?.last ?? null
   // calc/live dayChangePct: the quote's price vs its previous close, else pcp (live, then cached)
-  return { last, change: dayChangePct({ last: n(q?.ltp), prev: q?.pp, pct: n(q?.pcp) ?? f?.change }) }
+  return { last, change: dayChangePct({ last: n(q?.ltp), prev: quotePrevClose(q), pct: n(q?.pcp) ?? f?.change }) }
 }
 
 // --- star: the security is a card of the markets strip

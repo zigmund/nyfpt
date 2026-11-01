@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   serverOffset, marketClock, marketClockFor, axisDate, axisAt, wallToUtc, axisToUtc, marketDay,
-  localDay, localParts, formatLocal, sessionWindow, hmsMinutes, dailyOffset, hlocMarkets, dailyThroughSession,
+  localDay, localParts, formatLocal, sessionWindow, hmsMinutes, dailyOffset, hlocMarkets, dailyThroughSession, isSessionDay,
 } from '../src/calc/marketTime.js'
 import { candleZone, chartRows, keyStats, parseCandles, sessionBounds } from '../src/calc/position.js'
 import { daySparks } from '../src/calc/sparks.js'
@@ -239,6 +239,34 @@ describe('holdings day sparks per market session', () => {
     const s = daySparks(rows, IDX, clock)['EEE.EU']
     expect(s.date).toBe('2026-10-30')
     expect(s.spark).toEqual(bars(OFF, 'EEE.EU', '2026-10-30', '08:00', '16:30', 'EU', 70).map((r) => r.close))
+  })
+
+  it('.EU on a weekend: flat Saturday bars with volume and a Sunday 03:00 bar are not a session (Task 42)', () => {
+    // Like the broker on 2026-11-01: Saturday 12:45-22:00 London at the unchanged Friday close,
+    // non-zero volume, and one Sunday 03:00 bar. The spark stays on Friday.
+    const fri = bars(OFF, 'EEE.EU', '2026-10-30', '08:00', '16:30', 'EU', 70)
+    const flat = (d, from, to) => bars(OFF, 'EEE.EU', d, from, to, 'EU').map((r) => ({ ...r, close: 104, vol: 3 }))
+    const rows = [
+      ...bars(OFF, 'EEE.EU', '2026-10-29', '08:00', '16:30', 'EU', 60),
+      ...fri, ...flat('2026-10-31', '12:45', '22:00'), ...flat('2026-11-01', '03:00', '03:00'),
+    ]
+    expect(daySparks(rows, IDX, clock, '2026-11-01')['EEE.EU']).toEqual({ date: '2026-10-30', spark: fri.map((r) => r.close) })
+    // the card's 1D chart follows the same rule
+    const d1 = chartRows('1D', { intraday: rows }, { today: '2026-11-01', clock: marketClockFor(clock, 'EU') })
+    expect(new Set(d1.map((r) => r.date))).toEqual(new Set(['2026-10-30']))
+  })
+
+  it('weekend dates have no session window in any market; weekdays keep theirs', () => {
+    const win = sessionWindow(null, marketClockFor(marketClock(summer()), 'EU'))
+    expect(win('2026-10-30')).toEqual([axis(OFF, '2026-10-30', '08:00'), axis(OFF, '2026-10-30', '18:30') - 1])
+    for (const d of ['2026-10-31', '2026-11-01']) {
+      const [lo, hi] = win(d)
+      expect(lo > hi, d).toBe(true) // empty: no bar fits
+    }
+    expect(isSessionDay('2026-10-30')).toBe(true)
+    expect(isSessionDay('2026-11-02')).toBe(true)
+    expect(isSessionDay('2026-10-31')).toBe(false)
+    expect(isSessionDay('2026-11-01')).toBe(false)
   })
 
   it('KASE without the broker pre-open (status only): bars from o; in-session prints stay', () => {
