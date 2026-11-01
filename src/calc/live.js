@@ -41,9 +41,11 @@ export const holdingsRows = (ps, quotes) => {
   return rows;
 };
 
-/** Portfolio-level day change: pct = sum(change) / (sum(value) - sum(change)) * 100. */
+/** Portfolio-level day change: pct = sum(change) / (sum(value) - sum(change)) * 100.
+ *  null change and pct when no row has a known day change (unknown, not zero). */
 export const holdingsTotal = (rows) => {
   const valueUsd = rows.reduce((s, r) => s + r.valueUsd, 0);
+  if (!rows.some((r) => r.dayChangeUsd != null)) return { valueUsd, dayChangeUsd: null, dayChangePct: null };
   const dayChangeUsd = rows.reduce((s, r) => s + (r.dayChangeUsd || 0), 0);
   const base = valueUsd - dayChangeUsd;
   return { valueUsd, dayChangeUsd, dayChangePct: base ? (dayChangeUsd / base) * 100 : null };

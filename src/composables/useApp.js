@@ -1,6 +1,7 @@
 // App state singleton: session, account partition, repo + live wiring, prefs and hash routing.
 import { ref, shallowRef, reactive, watch } from 'vue'
-import { CABINETS, DEFAULT_CABINET } from '../config.js'
+import { CABINETS, DEFAULT_CABINET, POLL_MS } from '../config.js'
+import { PERIODS } from '../calc/periods.js'
 import { t } from '../i18n.js'
 import { loginByPassword, requestPhoneCode, loginByPhoneCode } from '../api/auth.js'
 import { createBroker } from '../api/broker.js'
@@ -9,6 +10,10 @@ import { openAccountDb } from '../store/db.js'
 import { loadSession, saveSession, clearSession, loadPrefs, savePrefs } from '../store/session.js'
 import { createRepo } from '../data/repo.js'
 import { createLive } from '../data/live.js'
+
+export const THEMES = ['system', 'light', 'dark']
+// Page background per resolved theme, mirrored into <meta name="theme-color"> (keep in sync with app.css --c-bg).
+const THEME_BG = { light: '#F1F3F2', dark: '#0D0F0E' }
 
 export const ROUTES = ['/', '/login', '/compare', '/settings']
 
@@ -22,6 +27,8 @@ const defaultDeps = () => ({
   sessionStore: { load: loadSession, save: saveSession, clear: clearSession },
   prefsStore: { load: loadPrefs, save: savePrefs },
   now: () => Date.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (id) => clearTimeout(id),
   mock: false,
 })
 
@@ -51,6 +58,9 @@ export function isUsdAccount(answer) {
   return !acc.some((c) => Number(c.s) !== 0)
 }
 
+/** Selected period from prefs; unknown values fall back to YTD. */
+export const periodOf = (prefs) => (PERIODS.includes(prefs.period) ? prefs.period : 'YTD')
+
 export const parseHash = (h) => {
   const p = String(h || '').replace(/^#/, '') || '/'
   return ROUTES.includes(p) ? p : '/'
@@ -65,13 +75,13 @@ export const parseHash = (h) => {
  *   state        ShallowRef     latest repo state (see data/repo.js), null before an account is open
  *   tick         Ref<number>    bumped on every repo emit and live 'update'
  *   live         { isLive: Ref<boolean>, usOpen: Ref<boolean>, quotes: Map }
- *   prefs        reactive prefs (persisted)
+ *   prefs        reactive prefs (persisted); prefs.theme 'system'|'light'|'dark' is applied to <html data-theme>
  *   route        Ref<'/' | '/login' | '/compare' | '/settings'>
  *   liveQuotesForCalc()  quotes Map while live, else undefined (pass to repo.coreFor)
  *   coreFor(period, day) repo.coreFor with live quotes applied; null when not covered
  *   ensurePrices(period, day), refresh(opts), marketsStrip(), getRepo()
  *   login(cabinetId, {login, password} | {authCodeId, code}), requestCode(cabinetId, phone)
- *   logout(), clearCache(), retry(), go(path), start(), stop()
+ *   logout() (erases the account cache; returns a promise), clearCache(), retry(), go(path), start(), stop()
  */
 export function createAppState(overrides = {}) {
   const deps = { ...defaultDeps(), ...overrides }
@@ -95,14 +105,63 @@ export function createAppState(overrides = {}) {
   let unsubs = []
   let gen = 0
   let started = false
+  let visible = !doc?.hidden
+  let refreshTimer = null
 
   watch(prefs, (p) => deps.prefsStore.save({ ...p }), { deep: true })
 
+  // --- theme: prefs.theme -> <html data-theme>, meta tags; 'system' follows prefers-color-scheme
+  if (!THEMES.includes(prefs.theme)) prefs.theme = 'light'
+  const media = win?.matchMedia ? win.matchMedia('(prefers-color-scheme: dark)') : null
+  function applyTheme() {
+    if (!doc) return
+    const resolved = prefs.theme === 'system' ? (media?.matches ? 'dark' : 'light') : prefs.theme
+    doc.documentElement.setAttribute('data-theme', resolved)
+    doc.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_BG[resolved])
+    doc.querySelector('meta[name="color-scheme"]')?.setAttribute('content', resolved)
+  }
+  watch(() => prefs.theme, applyTheme, { flush: 'sync' })
+  applyTheme()
+
   function bump() {
     const on = !!liveObj && !expired.value
+    const wasLive = live.isLive.value
     live.isLive.value = on && !!liveObj.isLive()
     live.usOpen.value = on && !!liveObj.marketsOpen()?.us
+    // Session over: today's close replaces the partial candle cached during it (spec §9).
+    if (on && wasLive && !live.isLive.value) ensureCurrent()
     tick.value++
+  }
+
+  // --- scheduled refresh (spec §10): one timer, only while visible with a live account.
+  /** Closes for the selected period (incremental from the last cached date). */
+  function ensureCurrent() {
+    const r = repo
+    if (!r || expired.value) return Promise.resolve()
+    return Promise.resolve().then(() => r.ensurePrices(periodOf(prefs))).catch(() => {})
+  }
+
+  // TTL-gated REST datasets, then closes; while live, quotes stand in for today's close.
+  async function scheduledRefresh() {
+    const r = repo
+    if (!r || expired.value) return
+    try { await r.refresh() } catch { /* repo records its own errors */ }
+    if (r !== repo || expired.value || liveQuotesForCalc()) return
+    await ensureCurrent()
+  }
+
+  function syncTimer() {
+    const want = !!repo && !expired.value && visible
+    if (want && refreshTimer == null) {
+      refreshTimer = deps.setTimer(() => {
+        refreshTimer = null
+        syncTimer()
+        scheduledRefresh()
+      }, POLL_MS)
+    } else if (!want && refreshTimer != null) {
+      deps.clearTimer(refreshTimer)
+      refreshTimer = null
+    }
   }
 
   // --- routing
@@ -128,9 +187,15 @@ export function createAppState(overrides = {}) {
   }
 
   function onVisibility() {
+    const was = visible
+    visible = !doc.hidden
+    syncTimer()
     if (!liveObj || expired.value) return
-    if (doc.hidden) liveObj.pause()
-    else liveObj.resume()
+    if (!visible) liveObj.pause()
+    else {
+      liveObj.resume() // also refreshes the REST datasets
+      if (!was) ensureCurrent()
+    }
   }
 
   // --- account wiring
@@ -139,10 +204,11 @@ export function createAppState(overrides = {}) {
     liveObj?.stop()
     liveObj = null
     repo = null
+    syncTimer()
   }
 
   function closeDb() {
-    db?.close()
+    try { db?.close() } catch { /* already closed */ }
     db = null
     accountKey = null
   }
@@ -152,6 +218,7 @@ export function createAppState(overrides = {}) {
     // The SID is dead: no sockets or polling, and no live state until the next login.
     liveObj?.stop()
     liveObj = null
+    syncTimer()
     bump()
   }
 
@@ -186,6 +253,7 @@ export function createAppState(overrides = {}) {
     )
     liveObj.start()
     if (doc?.hidden) liveObj.pause()
+    syncTimer()
     repo.load().catch(() => {}) // repo records its own errors in state.errors
   }
 
@@ -195,7 +263,13 @@ export function createAppState(overrides = {}) {
     started = true
     win?.addEventListener('hashchange', onHash)
     doc?.addEventListener('visibilitychange', onVisibility)
-    const s = deps.sessionStore.load()
+    media?.addEventListener('change', applyTheme)
+    let s = deps.sessionStore.load()
+    // A session from a removed cabinet (older builds) is unusable.
+    if (s && !CABINETS.some((c) => c.id === s.cabinetId)) {
+      deps.sessionStore.clear()
+      s = null
+    }
     if (!s) {
       setRoute('/login', true)
       return
@@ -223,6 +297,7 @@ export function createAppState(overrides = {}) {
     started = false
     win?.removeEventListener('hashchange', onHash)
     doc?.removeEventListener('visibilitychange', onVisibility)
+    media?.removeEventListener('change', applyTheme)
     detach()
   }
 
@@ -250,9 +325,18 @@ export function createAppState(overrides = {}) {
     setRoute('/')
   }
 
+  /** Forget the SID and erase this account's cache (spec §8). Resolves when the erase is done;
+   *  storage errors are swallowed. Expiry never gets here: it keeps the cache. */
   function logout() {
     gen++
     detach()
+    const d = db
+    let erased = Promise.resolve()
+    if (d) {
+      // clear() opens its transaction synchronously, so it is queued before close().
+      try { erased = Promise.resolve(d.clear()) } catch (e) { erased = Promise.reject(e) }
+      erased = erased.catch(() => {})
+    }
     closeDb()
     deps.sessionStore.clear()
     session.value = null
@@ -261,6 +345,7 @@ export function createAppState(overrides = {}) {
     state.value = null
     bump()
     setRoute('/login')
+    return erased.then(() => {})
   }
 
   async function clearCache() {

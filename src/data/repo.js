@@ -120,7 +120,13 @@ export function createRepo({ broker, db, now = () => Date.now() }) {
       await save('positions', { rows: parsePositions({ answer: a }).rows, rawPs: psOf(a) })
     },
     async cashflows() {
-      await save('cashflows', parseCashflows({ answer: await broker.cashflows() }).rows)
+      const a = await broker.cashflows()
+      const rows = parseCashflows({ answer: a }).rows
+      await save('cashflows', rows)
+      // Keep what arrived but say so: inception and older periods may be off.
+      if (a && a.complete === false) {
+        throw new Error(`Cash flows incomplete: ${rows.length}${a.total != null ? ` of ${a.total}` : ''} rows`)
+      }
     },
     async markets() {
       const t = today()

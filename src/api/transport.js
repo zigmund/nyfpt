@@ -20,9 +20,16 @@ export class NetworkError extends Error {
   }
 }
 
-const doFetch = (fetchImpl, url, init) => {
+// A hung request would pin in-flight work (repo datasets, polling) until the browser gives up.
+export const TIMEOUT_MS = 20000
+// A signal is not a header: the request stays CORS-simple. Older browsers: no timeout.
+const timeoutSignal = () => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+  ? AbortSignal.timeout(TIMEOUT_MS)
+  : undefined)
+
+const doFetch = (fetchImpl, url, init = {}) => {
   const f = fetchImpl || globalThis.fetch
-  return f(url, init)
+  return f(url, { ...init, signal: timeoutSignal() })
 }
 
 async function parse(promise) {

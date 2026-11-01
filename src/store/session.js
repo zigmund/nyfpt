@@ -3,7 +3,7 @@ const SESSION_KEY = 'nyfpt.session'
 const PREFS_KEY = 'nyfpt.prefs'
 
 function defaultPrefs() {
-  return { hide: false, period: 'YTD', vmode: 'perf', sorts: {} }
+  return { hide: false, period: 'YTD', vmode: 'perf', sorts: {}, theme: 'light' }
 }
 
 function read(key) {

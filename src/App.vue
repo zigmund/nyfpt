@@ -11,7 +11,8 @@
         </div>
       </section>
       <SettingsScreen v-else-if="route === '/settings'" />
-      <MainPlaceholder v-else :view="route === '/compare' ? 'compare' : 'main'" />
+      <CompareScreen v-else-if="route === '/compare'" />
+      <MainScreen v-else />
     </div>
     <LoginScreen v-if="expired" overlay />
   </template>
@@ -21,7 +22,8 @@
 import { ref } from 'vue'
 import LoginScreen from './components/LoginScreen.vue'
 import SettingsScreen from './components/SettingsScreen.vue'
-import MainPlaceholder from './components/MainPlaceholder.vue'
+import MainScreen from './components/MainScreen.vue'
+import CompareScreen from './components/CompareScreen.vue'
 import { t } from './i18n.js'
 import { useApp } from './composables/useApp.js'
 

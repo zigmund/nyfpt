@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import LoginScreen from '../src/components/LoginScreen.vue'
 import App from '../src/App.vue'
+import SettingsScreen from '../src/components/SettingsScreen.vue'
 import { createAppState, installApp, isUsdAccount } from '../src/composables/useApp.js'
 import { BrokerError, NetworkError } from '../src/api/transport.js'
 import { t } from '../src/i18n.js'
+import { POLL_MS } from '../src/config.js'
 
 const USD_PS = { result: { ps: { acc: [{ curr: 'USD', currval: 1, s: 100 }], pos: [] } } }
 const KZT_PS = { result: { ps: { acc: [{ curr: 'KZT', currval: 0.002, s: 5000 }], pos: [] } } }
@@ -32,6 +34,11 @@ function makeDeps({ positions = USD_PS, userId = 7 } = {}) {
         subscribe: vi.fn((fn) => { fn({ positions: [], errors: {}, loading: [] }); return () => {} }),
         onSessionExpired: vi.fn((fn) => { expiredFns.add(fn); return () => expiredFns.delete(fn) }),
         load: vi.fn(async () => {}),
+        refresh: vi.fn(async () => {}),
+        // Rendered by the main screen once logged in.
+        coreFor: vi.fn(() => null),
+        ensurePrices: vi.fn(async () => {}),
+        marketsStrip: vi.fn(() => null),
       }
       repos.push(repo)
       return repo
@@ -76,7 +83,7 @@ describe('LoginScreen', () => {
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
   })
 
-  it('"Send code" calls requestPhoneCode and shows a code field of the given length', async () => {
+  it('"Send code" calls requestPhoneCode and shows a 6-cell code field and auto-submits', async () => {
     const { wrapper, deps } = setup()
     await wrapper.get('[data-test="tab-phone"]').trigger('click')
     expect(wrapper.find('[data-test="code"]').exists()).toBe(false)
@@ -90,14 +97,30 @@ describe('LoginScreen', () => {
     expect(arg.phone).toBe('+77001234567')
     expect(arg.cabinet.id).toBe('global')
     const code = wrapper.get('[data-test="code"]')
-    expect(code.attributes('maxlength')).toBe('5')
+    expect(code.attributes('maxlength')).toBeUndefined()
+    expect(code.attributes('aria-describedby')).toBe('login-code-hint')
+    expect(wrapper.find('#login-code-hint').exists()).toBe(true)
     expect(code.attributes('autocomplete')).toBe('one-time-code')
     expect(wrapper.text()).toContain('The code may arrive as a push notification in the broker app')
 
-    await code.setValue('12345')
-    await wrapper.get('form').trigger('submit')
+    await code.setValue('123456')
     await flushPromises()
-    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledWith(expect.objectContaining({ authCodeId: 'ac-1', code: '12345' }))
+    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledTimes(1)
+    expect(deps.auth.loginByPhoneCode).toHaveBeenCalledWith(expect.objectContaining({ authCodeId: 'ac-1', code: '123456' }))
+  })
+
+  it('clears the code and flags the cells when the broker rejects it', async () => {
+    const { wrapper, deps } = setup()
+    deps.auth.loginByPhoneCode.mockRejectedValueOnce(new BrokerError('Wrong code', { code: 2 }))
+    await wrapper.get('[data-test="tab-phone"]').trigger('click')
+    await wrapper.get('input[type="tel"]').setValue('+77001234567')
+    await wrapper.get('[data-test="send-code"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="code"]').setValue('111111')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('Wrong code')
+    expect(wrapper.get('[data-test="code"]').element.value).toBe('')
+    expect(wrapper.get('.code').classes()).toContain('code--invalid')
   })
 
   it('shows the broker error text as is', async () => {
@@ -149,6 +172,25 @@ describe('LoginScreen', () => {
   })
 })
 
+describe('single cabinet', () => {
+  it('renders no cabinet select and shows the broker host', () => {
+    const { wrapper } = setup()
+    expect(wrapper.find('select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('tradernet.global')
+  })
+
+  it('treats a stored session of an unknown cabinet as logged out', () => {
+    const f = makeDeps()
+    f.deps.sessionStore.load.mockReturnValue({ cabinetId: 'kz', sid: 's', userId: 7, loggedAt: 1 })
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    expect(f.deps.sessionStore.clear).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.route.value).toBe('/login')
+    expect(f.deps.openAccountDb).not.toHaveBeenCalled()
+  })
+})
+
 describe('useApp login flow', () => {
   it('rejects non-USD accounts, keeps no session and stays on login', async () => {
     const { wrapper, deps, app } = setup({ positions: KZT_PS })
@@ -165,10 +207,10 @@ describe('useApp login flow', () => {
 
   it('saves the session and opens the account partition on success', async () => {
     const { deps, app } = setup()
-    await app.login('kz', { login: 'me', password: 'pw' })
-    expect(deps.sessionStore.save).toHaveBeenCalledWith(expect.objectContaining({ cabinetId: 'kz', sid: 'sid-1', userId: 7 }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(deps.sessionStore.save).toHaveBeenCalledWith(expect.objectContaining({ cabinetId: 'global', sid: 'sid-1', userId: 7 }))
     expect(deps.sessionStore.save.mock.calls[0][0]).not.toHaveProperty('password')
-    expect(deps.openAccountDb).toHaveBeenCalledWith('kz:7')
+    expect(deps.openAccountDb).toHaveBeenCalledWith('global:7')
     expect(app.route.value).toBe('/')
   })
 
@@ -200,6 +242,33 @@ describe('useApp login flow', () => {
     expect(deps.openAccountDb).toHaveBeenCalledTimes(1)
     expect(repos.at(-1).db).toBe(db)
     expect(db.close).not.toHaveBeenCalled()
+  })
+
+  it('logout erases the account cache, then closes it; the session is gone', async () => {
+    const { deps, app } = setup()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const db = await deps.openAccountDb.mock.results[0].value
+    await app.logout()
+    expect(db.clear).toHaveBeenCalledTimes(1)
+    expect(db.close).toHaveBeenCalled()
+    // The clear is queued before the connection closes.
+    expect(db.clear.mock.invocationCallOrder[0]).toBeLessThan(db.close.mock.invocationCallOrder[0])
+    expect(deps.sessionStore.clear).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
+    expect(app.route.value).toBe('/login')
+  })
+
+  it('logout swallows storage errors while erasing the cache', async () => {
+    const { deps, app } = setup()
+    deps.openAccountDb.mockImplementationOnce(async (key) => ({
+      key, clear: vi.fn(async () => { throw new Error('QuotaExceededError') }), close: vi.fn(),
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const db = await deps.openAccountDb.mock.results[0].value
+    await expect(app.logout()).resolves.toBeUndefined()
+    expect(db.clear).toHaveBeenCalled()
+    expect(db.close).toHaveBeenCalled()
+    expect(app.session.value).toBe(null)
   })
 
   it('uses a different partition for a different user', async () => {
@@ -237,6 +306,123 @@ describe('useApp login flow', () => {
     expect(app.liveQuotesForCalc()).toBeUndefined()
     live = true
     expect(app.liveQuotesForCalc()).toBe(quotes)
+  })
+})
+
+describe('scheduled refresh', () => {
+  // Manual timers: setTimer/clearTimer deps.
+  function timed(opts) {
+    const f = makeDeps(opts)
+    const timers = new Map()
+    let id = 0
+    f.deps.setTimer = vi.fn((fn, ms) => { timers.set(++id, { fn, ms }); return id })
+    f.deps.clearTimer = vi.fn((i) => { timers.delete(i) })
+    const app = installApp(createAppState(f.deps))
+    app.start()
+    const fire = async () => {
+      const [k, x] = [...timers][0]
+      timers.delete(k)
+      x.fn()
+      await flushPromises()
+    }
+    return { ...f, app, timers, fire }
+  }
+
+  it('runs every POLL_MS while visible: TTL-gated refresh, then closes for the current period', async () => {
+    const { app, timers, fire, repos } = timed()
+    expect(timers.size).toBe(0) // nothing attached yet
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    expect([...timers.values()].map((x) => x.ms)).toEqual([POLL_MS])
+    repo.ensurePrices.mockClear()
+    await fire()
+    expect(repo.refresh).toHaveBeenCalledTimes(1)
+    expect(repo.refresh).toHaveBeenCalledWith()
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+    expect(repo.refresh.mock.invocationCallOrder[0]).toBeLessThan(repo.ensurePrices.mock.invocationCallOrder[0])
+    expect(timers.size).toBe(1) // re-armed
+  })
+
+  it('skips the closes while live (live quotes cover today)', async () => {
+    const { app, deps, fire, repos } = timed()
+    deps.createLive.mockImplementationOnce(() => ({
+      quotes: new Map(), isLive: () => true, marketsOpen: () => ({ us: true }),
+      on: () => () => {}, start() {}, stop() {}, pause() {}, resume() {},
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    repo.ensurePrices.mockClear()
+    await fire()
+    expect(repo.refresh).toHaveBeenCalledTimes(1)
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
+  })
+
+  it('does not run while hidden; resume re-ensures closes and re-arms', async () => {
+    const { app, timers, repos } = timed()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(timers.size).toBe(0)
+    repo.ensurePrices.mockClear()
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(timers.size).toBe(1)
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+    hidden.mockRestore()
+  })
+
+  it('stops on expiry, logout and stop(); a late callback does no work', async () => {
+    const { app, timers, repos, expire } = timed()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const late = [...timers.values()][0].fn
+    expire()
+    expect(timers.size).toBe(0)
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(timers.size).toBe(1)
+    await app.logout()
+    expect(timers.size).toBe(0)
+    await app.login('global', { login: 'me', password: 'pw' })
+    expect(timers.size).toBe(1)
+    app.stop()
+    expect(timers.size).toBe(0)
+    for (const r of repos) { r.refresh.mockClear(); r.ensurePrices.mockClear() }
+    late()
+    await flushPromises()
+    expect(timers.size).toBe(0)
+    for (const r of repos) {
+      expect(r.refresh).not.toHaveBeenCalled()
+      expect(r.ensurePrices).not.toHaveBeenCalled()
+    }
+  })
+
+  it('live -> not live re-ensures closes; expiry does not', async () => {
+    const { app, deps, repos, expire } = timed()
+    let live = true
+    let onUpdate = null
+    deps.createLive.mockImplementation(() => ({
+      quotes: new Map(), isLive: () => live, marketsOpen: () => ({ us: live }),
+      on: (e, fn) => { if (e === 'update') onUpdate = fn; return () => {} },
+      start() {}, stop() {}, pause() {}, resume() {},
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const repo = repos.at(-1)
+    repo.ensurePrices.mockClear()
+    onUpdate()
+    await flushPromises()
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
+    live = false
+    onUpdate()
+    await flushPromises()
+    expect(repo.ensurePrices).toHaveBeenCalledWith('YTD')
+
+    live = true
+    onUpdate()
+    repo.ensurePrices.mockClear()
+    expire()
+    await flushPromises()
+    expect(repo.ensurePrices).not.toHaveBeenCalled()
   })
 })
 
@@ -310,6 +496,35 @@ describe('session expiry and storage failures', () => {
     expect(app.session.value).toBe(null)
     expect(app.route.value).toBe('/login')
     expect(wrapper.get('input[type="password"]').element.value).toBe('')
+  })
+})
+
+describe('Settings: clear cache', () => {
+  const clearButton = (w) => w.findAll('button').find((b) => b.text() === t('settings.clearCache'))
+
+  it('shows "Cache cleared" on success', async () => {
+    const { app } = setup()
+    await app.login('global', { login: 'me', password: 'pw' })
+    const w = mount(SettingsScreen)
+    await clearButton(w).trigger('click')
+    await flushPromises()
+    expect(w.get('.row__status').text()).toBe(t('settings.cleared'))
+    w.unmount()
+  })
+
+  it('a storage error shows feedback instead of an unhandled rejection', async () => {
+    const { app, deps } = setup()
+    deps.openAccountDb.mockImplementationOnce(async (key) => ({
+      key, clear: vi.fn(async () => { throw new Error('QuotaExceededError') }), close: vi.fn(),
+    }))
+    await app.login('global', { login: 'me', password: 'pw' })
+    const w = mount(SettingsScreen)
+    const btn = clearButton(w)
+    await btn.trigger('click')
+    await flushPromises()
+    expect(w.get('.row__status').text()).toBe(t('settings.clearFailed'))
+    expect(btn.attributes('disabled')).toBeUndefined()
+    w.unmount()
   })
 })
 

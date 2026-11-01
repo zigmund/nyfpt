@@ -31,3 +31,6 @@ docs/superpowers/
 # Node (runs only in containers)
 node_modules/
 dist/
+
+# Agent workspace (SDD ledger, spike page)
+.superpowers/

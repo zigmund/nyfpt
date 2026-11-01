@@ -54,6 +54,23 @@ describe('transport', () => {
     expect(f.mock.calls[0][1]?.headers).toBeUndefined()
   })
 
+  it('every request carries a 20 s timeout signal and no headers; a timeout is a NetworkError', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const f = fake({}, {})
+      await callLegacy({ rest: 'r', cmd: 'c', fetchImpl: f })
+      await callAnon({ rest: 'r', cmd: 'c', fetchImpl: f })
+      expect(spy.mock.calls).toEqual([[20000], [20000]])
+      for (const [, init] of f.mock.calls) {
+        expect(init.signal).toBeInstanceOf(AbortSignal)
+        expect(init.headers).toBeUndefined()
+      }
+    } finally { spy.mockRestore() }
+    const timedOut = vi.fn().mockRejectedValue(new DOMException('The operation timed out.', 'TimeoutError'))
+    await expect(callLegacy({ rest: 'r', cmd: 'c', fetchImpl: timedOut })).rejects.toBeInstanceOf(NetworkError)
+    await expect(callAnon({ rest: 'r', cmd: 'c', fetchImpl: timedOut })).rejects.toBeInstanceOf(NetworkError)
+  })
+
   it('uses globalThis.fetch resolved at call time', async () => {
     const orig = globalThis.fetch
     globalThis.fetch = vi.fn().mockResolvedValue(ok({ a: 1 }))
@@ -103,8 +120,60 @@ describe('broker', () => {
     await b.positions(); await b.trades('2024-01-01'); await b.cashflows(); await b.quotes(['A.US', 'B.US'])
     expect(sentQ(f, 0)).toEqual({ cmd: 'getPositionJson', SID: 'S', params: {} })
     expect(sentQ(f, 1).params).toEqual({ beginDate: '2024-01-01' })
-    expect(sentQ(f, 2).params).toEqual({ groupByType: 1, take: 500, sort: { field: 'date', dir: 'DESC' } })
+    expect(sentQ(f, 2).params).toEqual({ groupByType: 1, take: 500, skip: 0, sort: { field: 'date', dir: 'DESC' } })
     expect(sentQ(f, 3).params).toEqual({ tickers: 'A.US,B.US' })
+  })
+
+  // Synthetic cash-flow rows, newest first.
+  const flows = (from, n) => Array.from({ length: n }, (_, i) => ({ id: `cf${from + i}`, type_code: 'card', date: '2026-01-01', currency: 'USD', sum: '1' }))
+  // Answers getUserCashFlows by skip/take from `rows`; `total` as given (undefined: omitted).
+  const pager = (rows, total, { ignoreSkip = false } = {}) => vi.fn(async (url, init) => {
+    const { params } = JSON.parse(new URLSearchParams(init.body).get('q'))
+    const skip = ignoreSkip ? 0 : params.skip
+    const body = { cashflow: rows.slice(skip, skip + params.take) }
+    if (total !== undefined) body.total = total
+    return ok(body)
+  })
+
+  it('cashflows pages with skip/take until total', async () => {
+    const f = pager(flows(0, 1200), 1200)
+    const a = await createBroker({ cabinet, sid: 'S', fetchImpl: f }).cashflows()
+    expect(f.mock.calls.map((_, i) => [sentQ(f, i).params.skip, sentQ(f, i).params.take])).toEqual([[0, 500], [500, 500], [1000, 500]])
+    expect(a.cashflow).toHaveLength(1200)
+    expect(a.cashflow.at(-1).id).toBe('cf1199')
+    expect(a.total).toBe(1200)
+    expect(a.complete).toBe(true)
+  })
+
+  it('cashflows: an exact multiple of the page needs no extra call', async () => {
+    const f = pager(flows(0, 1000), '1000')
+    const a = await createBroker({ cabinet, sid: 'S', fetchImpl: f }).cashflows()
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(a.complete).toBe(true)
+  })
+
+  it('cashflows: an empty page before total stops and reports incomplete', async () => {
+    const f = pager(flows(0, 600), 900)
+    const a = await createBroker({ cabinet, sid: 'S', fetchImpl: f }).cashflows()
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(a.cashflow).toHaveLength(600)
+    expect(a.complete).toBe(false)
+  })
+
+  it('cashflows: without total a short page ends the history', async () => {
+    const f = pager(flows(0, 700))
+    const a = await createBroker({ cabinet, sid: 'S', fetchImpl: f }).cashflows()
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(a.cashflow).toHaveLength(700)
+    expect(a.complete).toBe(true)
+  })
+
+  it('cashflows: a broker ignoring skip cannot loop; reported incomplete', async () => {
+    const f = pager(flows(0, 5000), undefined, { ignoreSkip: true })
+    const a = await createBroker({ cabinet, sid: 'S', fetchImpl: f }).cashflows()
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(a.cashflow).toHaveLength(500)
+    expect(a.complete).toBe(false)
   })
 
   it('session expiry: code 5 and getSidInfo fails -> SessionExpiredError', async () => {

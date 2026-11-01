@@ -76,6 +76,16 @@ describe('holdingsTotal', () => {
   });
 });
 
+describe('holdingsTotal without any known day change', () => {
+  it('reports null day change and pct (UI: dash), not zero', () => {
+    const t = holdingsTotal([{ valueUsd: 1000, dayChangeUsd: null }, { valueUsd: 500, dayChangeUsd: null }]);
+    expect(t.valueUsd).toBe(1500);
+    expect(t.dayChangeUsd).toBe(null);
+    expect(t.dayChangePct).toBe(null);
+    expect(holdingsTotal([])).toEqual({ valueUsd: 0, dayChangeUsd: null, dayChangePct: null });
+  });
+});
+
 describe('livePriceRows', () => {
   const rows = [
     { ticker: 'A', date: '2026-10-12', close: 1, window_start: '2026-10-05' },

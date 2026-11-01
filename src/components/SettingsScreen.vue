@@ -12,8 +12,10 @@
     <section class="card" aria-labelledby="set-account">
       <h2 id="set-account" class="label">{{ t('settings.account') }}</h2>
       <dl class="kv">
-        <dt>{{ t('settings.cabinet') }}</dt>
-        <dd>{{ cabinet.label }}</dd>
+        <template v-if="app.cabinets.length > 1">
+          <dt>{{ t('settings.cabinet') }}</dt>
+          <dd>{{ cabinet.label }}</dd>
+        </template>
         <dt>{{ t('settings.userId') }}</dt>
         <dd class="num">{{ session?.userId ?? '—' }}</dd>
       </dl>
@@ -21,6 +23,16 @@
 
     <section class="card" aria-labelledby="set-display">
       <h2 id="set-display" class="label">{{ t('settings.display') }}</h2>
+      <div class="field">
+        <span id="set-theme" class="toggle__title">{{ t('settings.theme') }}</span>
+        <div class="seg" role="group" aria-labelledby="set-theme">
+          <button
+            v-for="o in THEME_OPTIONS" :key="o.value" type="button" class="seg__btn"
+            :aria-pressed="prefs.theme === o.value ? 'true' : 'false'" :data-test="`theme-${o.value}`"
+            @click="prefs.theme = o.value"
+          >{{ t(o.label) }}</button>
+        </div>
+      </div>
       <label class="toggle">
         <span class="toggle__text">
           <span class="toggle__title">{{ t('settings.hide') }}</span>
@@ -36,7 +48,7 @@
       <p class="card__hint">{{ t('settings.clearCacheHint') }}</p>
       <div class="row">
         <button type="button" class="btn btn--danger" :disabled="clearing" @click="clear">{{ t('settings.clearCache') }}</button>
-        <span class="row__status" role="status">{{ cleared ? t('settings.cleared') : '' }}</span>
+        <span class="row__status" role="status">{{ clearMsg }}</span>
       </div>
     </section>
 
@@ -54,20 +66,28 @@ import { computed, ref } from 'vue'
 import { t } from '../i18n.js'
 import { useApp } from '../composables/useApp.js'
 
+const THEME_OPTIONS = [
+  { value: 'system', label: 'settings.themeSystem' },
+  { value: 'light', label: 'settings.themeLight' },
+  { value: 'dark', label: 'settings.themeDark' },
+]
+
 const app = useApp()
 const { session, prefs, logout } = app
 const cabinet = computed(() => app.cabinetOf(session.value?.cabinetId))
 const version = import.meta.env.VITE_APP_VERSION || 'dev'
 
 const clearing = ref(false)
-const cleared = ref(false)
+const clearMsg = ref('')
 
 async function clear() {
   clearing.value = true
-  cleared.value = false
+  clearMsg.value = ''
   try {
     await app.clearCache()
-    cleared.value = true
+    clearMsg.value = t('settings.cleared')
+  } catch {
+    clearMsg.value = t('settings.clearFailed')
   } finally {
     clearing.value = false
   }
