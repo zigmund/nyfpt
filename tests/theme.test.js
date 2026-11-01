@@ -109,6 +109,14 @@ describe('theme', () => {
     expect(btn('system').attributes('aria-pressed')).toBe('true')
     w.unmount()
   })
+
+  it('Settings has no hide-amounts switch (the eye button on the main screen owns it)', () => {
+    make({})
+    const w = mount(SettingsScreen)
+    expect(w.find('input[role="switch"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('Hide amounts')
+    w.unmount()
+  })
 })
 
 // --- WCAG contrast of the real tokens in app.css ---

@@ -207,8 +207,12 @@ export function createAppState(overrides = {}) {
     const wasLive = live.isLive.value
     live.isLive.value = on && !!liveObj.isLive()
     live.usOpen.value = on && !!liveObj.marketsOpen()?.us
-    // Session over: today's close replaces the partial candle cached during it (spec §9).
-    if (on && wasLive && !live.isLive.value) ensureCurrent()
+    // Session over: today's close replaces the partial candle cached during it (spec §9), and the
+    // position quote snapshot (Holdings Day outside live) takes the final prices.
+    if (on && wasLive && !live.isLive.value) {
+      ensureCurrent()
+      Promise.resolve(repo?.refresh({ force: true, only: ['quotes'] })).catch(() => {})
+    }
     tick.value++
   }
 
@@ -220,11 +224,12 @@ export function createAppState(overrides = {}) {
     return Promise.resolve().then(() => r.ensurePrices(periodOf(prefs))).catch(() => {})
   }
 
-  // TTL-gated REST datasets, then closes; while live, quotes stand in for today's close.
+  // TTL-gated REST datasets, then closes; while live, quotes stand in for today's close and the
+  // position quote snapshot is not refetched (the stream holds full quotes).
   async function scheduledRefresh() {
     const r = repo
     if (!r || expired.value) return
-    try { await r.refresh() } catch { /* repo records its own errors */ }
+    try { await (liveQuotesForCalc() ? r.refresh({ except: ['quotes'] }) : r.refresh()) } catch { /* repo records its own errors */ }
     if (r !== repo || expired.value || liveQuotesForCalc()) return
     await ensureCurrent()
   }

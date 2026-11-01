@@ -9,6 +9,8 @@
 //   markets      {tickers, daily, intraday}  parseHloc rows of the session index + strip tickers
 //                                    (no `tickers`: rows cached before Task 38, LEGACY_STRIP)
 //   sparks       {tickers, intraday}  parseHloc 15-min rows of the positions (holdings sparklines)
+//   quotes       {tickers, rows}      getStockQuotesJson snapshot of the positions ({c, ltp, chg, pcp,
+//                                    pp, ltr}): Holdings Day outside live mode (calc/live quotePrevClose)
 //   candleCover  {ticker: date}       earliest date_from requested per ticker
 // Daily closes live in the `candles` store and are mirrored in memory so coreFor stays sync.
 // Rows of another CACHE_VERSION read as missing (store/db.js) and are purged on the first load.
@@ -21,7 +23,7 @@ import {
 import { periodStart, tradesFrom, inceptionFromCashflows } from '../calc/periods.js'
 import { livePriceRows } from '../calc/live.js'
 import { daySparks } from '../calc/sparks.js'
-import { dailyOffset, dailyThroughSession, hlocMarkets, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
+import { dailyOffset, dailyThroughSession, hlocMarkets, isSessionDay, marketClock, marketClockFor, marketDay } from '../calc/marketTime.js'
 import { candleZone, parseCandles, sessionBounds } from '../calc/position.js'
 import { TTL, BENCHMARKS, MARKET_STRIP } from '../config.js'
 import { BrokerError, SessionExpiredError } from '../api/transport.js'
@@ -29,13 +31,15 @@ import { BrokerError, SessionExpiredError } from '../api/transport.js'
 /** Dataset names: kv rows and state.errors / state.loading keys (one source for components). */
 export const DATASET = Object.freeze({
   clock: 'clock', positions: 'positions', cashflows: 'cashflows', trades: 'trades', markets: 'markets', sparks: 'sparks',
-  candles: 'candles',
+  quotes: 'quotes', candles: 'candles',
 })
 const DATASETS = Object.values(DATASET).filter((n) => n !== DATASET.candles) // kv datasets
 const TTL_OF = {
   clock: TTL.clock, positions: TTL.positions, cashflows: TTL.cashflows, trades: TTL.trades, markets: TTL.markets, sparks: TTL.sparks,
+  quotes: TTL.positionQuotes,
 }
-const AUTHED = new Set(['positions', 'cashflows', 'trades'])
+const AUTHED = new Set(['positions', 'cashflows', 'trades', 'quotes'])
+const QUOTE_FIELDS = ['c', 'ltp', 'chg', 'pcp', 'pp', 'ltr'] // kept from a position quote
 const CLOSES_BEFORE = 6 // closes kept at or before the period start (getHloc count:-6)
 const PAD_DAYS = 10 // first fetch of a ticker starts this many days before the period
 const REFETCH_DAYS = 2 // last stored days re-requested on every top-up
@@ -109,7 +113,7 @@ function historyAdjusted(stored, fresh) {
 
 /** `strip`: tickers of the markets strip cards (setStrip changes them). */
 export function createRepo({ broker, db, now = () => Date.now(), strip: initialStrip = DEFAULT_STRIP }) {
-  const cache = { clock: null, positions: null, cashflows: null, trades: null, markets: null, sparks: null }
+  const cache = { clock: null, positions: null, cashflows: null, trades: null, markets: null, sparks: null, quotes: null }
   const fetchedAt = {}
   const candles = new Map() // ticker -> [{date, close}] asc
   let cover = {}
@@ -237,9 +241,18 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
   // Tickers of the open positions (currency pairs skipped), sorted.
   const positionTickers = () => [...new Set((cache.positions?.rows || [])
     .filter((r) => r.kind === 'position').map((r) => r.ticker))].filter((t) => !String(t).includes('/')).sort()
-  // Cached sparks were fetched for a different set of positions.
-  const sparksOutdated = () => !!cache.positions && !!cache.sparks
-    && cache.sparks.tickers.join(',') !== positionTickers().join(',')
+  // Cached sparks / quotes were fetched for a different set of positions.
+  const outdated = (name) => !!cache.positions && !!cache[name]
+    && cache[name].tickers.join(',') !== positionTickers().join(',')
+
+  // Position quote snapshot as a Map ticker -> quote, the same Map until the next fetch.
+  let quotesMemo = { src: undefined, value: null }
+  function quotesState() {
+    if (quotesMemo.src !== cache.quotes) {
+      quotesMemo = { src: cache.quotes, value: cache.quotes ? new Map(cache.quotes.rows.map((q) => [q.c, q])) : null }
+    }
+    return quotesMemo.value
+  }
 
   // --- position card: per ticker {info, intraday, daily, max} + fetch times, errors, in-flight
   const sec = new Map()
@@ -301,22 +314,24 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     })).then(() => {})
   }
 
-  // Daily / max candles of a card ticker on the index's market, up to the last index session
-  // (dailyThroughSession), memoized per source array and markets cache (no new array per read).
-  function anchoredCandles(e, part, idx) {
+  // Daily / max candles of a card ticker: on the index's market up to the last index session
+  // (dailyThroughSession), elsewhere session days only (isSessionDay: the broker's flat weekend
+  // .EU bars dropped); memoized per source array and markets cache (no new array per read).
+  function sessionCandles(e, part, idx) {
     const src = e?.[part] ?? null
     if (!src) return null
-    const m = e.anchored?.[part]
-    if (m && m.src === src && m.mkts === cache.markets) return m.value
-    const value = dailyThroughSession(src, idx)
-    e.anchored = { ...e.anchored, [part]: { src, mkts: cache.markets, value } }
+    const m = e.cut?.[part]
+    if (m && m.src === src && m.mkts === cache.markets && m.idx === !!idx) return m.value
+    const value = idx ? dailyThroughSession(src, idx) : src.filter((r) => isSessionDay(r.date))
+    e.cut = { ...e.cut, [part]: { src, mkts: cache.markets, idx: !!idx, value } }
     return value
   }
 
   /** Synchronous snapshot of a ticker's card data (null = not loaded). `sessions`: index bars by
    *  date (sessionBounds over SP500.IDX) for tickers of the index's market; `clock`: the ticker
    *  market's clock (marketClockFor); `today`: that market's trading date. `daily` / `max` of
-   *  such tickers end at the last index session (no weekend single-print bar). */
+   *  such tickers end at the last index session (no weekend single-print bar); of other tickers
+   *  they keep session days only (no flat weekend .EU bars). */
   function security(ticker) {
     const e = sec.get(ticker)
     const im = indexMarket()
@@ -327,8 +342,8 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     return {
       info: e?.info ?? null,
       intraday: e?.intraday ?? null,
-      daily: anchored ? anchoredCandles(e, 'daily', idx) : e?.daily ?? null,
-      max: anchored ? anchoredCandles(e, 'max', idx) : e?.max ?? null,
+      daily: sessionCandles(e, 'daily', anchored ? idx : null),
+      max: sessionCandles(e, 'max', anchored ? idx : null),
       sessions: anchored ? sessionBounds(idx) : null,
       clock: mc,
       today: marketDay(mc, now()),
@@ -390,6 +405,7 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       markets: marketsStrip(),
       strip: [...strip], // tickers of the strip cards (live subscribes them)
       sparks: sparksState(), // {ticker: {date, spark}}: last-session 15-min closes
+      quotes: quotesState(), // Map ticker -> REST quote of the positions (Holdings Day outside live)
       closes: candles, // ticker -> [{date, close}] daily closes (period sparks)
       inception: inceptionFromCashflows(cache.cashflows),
       updatedAt: fetchedAt.positions ?? null,
@@ -495,6 +511,17 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
       const a = await hlocTolerant((ts) => broker.hlocIntraday(ts, addDays(t, -6), addDays(t, 1), 15), tickers)
       await learn(a, false)
       await save('sparks', { tickers, intraday: parseHloc({ answer: a }, await intradayClock()).rows })
+    },
+    // Quote snapshot of the positions (one getStockQuotesJson); like sparks, waits for the positions.
+    async quotes() {
+      if (inflight.has('positions')) await inflight.get('positions')
+      const tickers = positionTickers()
+      if (!tickers.length) return
+      const a = await broker.quotes(tickers)
+      const rows = ((a && a.result && Array.isArray(a.result.q)) ? a.result.q : [])
+        .filter((q) => q && q.c)
+        .map((q) => Object.fromEntries(QUOTE_FIELDS.filter((f) => q[f] !== undefined).map((f) => [f, q[f]])))
+      await save('quotes', { tickers, rows })
     },
   }
 
@@ -650,11 +677,12 @@ export function createRepo({ broker, db, now = () => Date.now(), strip: initialS
     return out
   }
 
-  async function refresh({ force = false, only } = {}) {
+  /** TTL-gated (or `force`d) refresh of `only` (default: all kv datasets) minus `except`. */
+  async function refresh({ force = false, only, except = [] } = {}) {
     await loadCache()
-    const names = (only || DATASETS).filter((n) => DATASETS.includes(n))
+    const names = (only || DATASETS).filter((n) => DATASETS.includes(n) && !except.includes(n))
     const due = names.filter((n) => force || fetchedAt[n] == null || now() - fetchedAt[n] >= TTL_OF[n]
-      || (n === 'sparks' && sparksOutdated()) || (n === 'markets' && marketsOutdated()))
+      || ((n === 'sparks' || n === 'quotes') && outdated(n)) || (n === 'markets' && marketsOutdated()))
     await Promise.all(due.map(refreshOne))
   }
 

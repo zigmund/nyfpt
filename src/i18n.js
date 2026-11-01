@@ -48,6 +48,7 @@ const en = {
   'main.err.markets': 'markets',
   'main.err.candles': 'prices',
   'main.err.sparks': 'charts',
+  'main.err.quotes': 'quotes',
   'main.err.other': 'other data',
 
   'mkts.label': 'Markets',
@@ -108,6 +109,7 @@ const en = {
 
   'hold.title': 'Holdings',
   'hold.today': 'Today',
+  'hold.onDate': 'On {date}',
   'hold.cash': 'Cash',
   'hold.col.ticker': 'Symbol',
   'hold.col.chart': 'Chart',
@@ -211,8 +213,6 @@ const en = {
   'settings.themeSystem': 'System',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
-  'settings.hide': 'Hide amounts',
-  'settings.hideHint': 'Shows $*** instead of dollar amounts. Percentages and prices stay visible.',
   'settings.strip': 'Markets strip',
   'settings.stripHint': 'Cards at the top of the main screen, up to {max}.',
   'settings.stripEmpty': 'No cards: the strip is hidden.',

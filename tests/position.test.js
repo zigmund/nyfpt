@@ -176,6 +176,14 @@ describe('Summary', () => {
     expect(w.get('[data-test="p-change"]').classes()).toContain('pos')
   })
 
+  it('header on a day off: previous close = ltp - chg of the security info, not its pp (.EU, Task 42)', () => {
+    setup({ sec: { ...SEC, info: { ...INFO, ltp: 110, chg: 4, pcp: 3.77, pp: 97 } } })
+    const w = mountCard()
+    expect(w.get('[data-test="p-change"]').text()).toBe(`+4.00 (${pct((4 / 106) * 100)})`)
+    // My holdings day gain from the same previous close: 10 x (110 - 106)
+    expect(w.get('[data-test="ph-day"]').text()).toContain(money(40, { sign: true }))
+  })
+
   it('live: price and change follow the quote; "Live" label', async () => {
     const app = setup({ quotes: { 'AAA.US': { c: 'AAA.US', ltp: 95, pp: 100 } } })
     const w = mountCard()
@@ -413,6 +421,18 @@ describe('calc', () => {
     expect(keyStats({})).toMatchObject({ prevClose: null, open: null, low52: null, avgVolume: null, kind: null })
   })
 
+  it('chartRows 1D/5D without any session window: weekend bars are still not a session (Task 42)', () => {
+    const at = (d, h) => ({ ts: TS(d, h), date: d, open: h, high: h, low: h, close: h, vol: 1 })
+    const intraday = [at('2026-10-29', 9), at('2026-10-30', 9), at('2026-10-30', 10), at('2026-10-31', 12), at('2026-11-01', 0)]
+    expect(chartRows('1D', { intraday }, {}).map((r) => r.date)).toEqual(['2026-10-30', '2026-10-30'])
+    expect(new Set(chartRows('5D', { intraday }, {}).map((r) => r.date))).toEqual(new Set(['2026-10-29', '2026-10-30']))
+  })
+
+  it('keyStats: Previous close = ltp - chg when the info has chg (Task 42), else pp', () => {
+    expect(keyStats({ info: { ...INFO, ltp: 110, chg: 4, pp: 97 } }).prevClose).toBe(106)
+    expect(keyStats({ info: { ltp: 0, pp: 0, chg: 0, pcp: 0 } }).prevClose).toBeNull() // index info
+  })
+
   it('keyStats: Open = first regular-session bar of the last session (pre-market skipped)', () => {
     expect(keyStats({ info: INFO, daily: DAILY, intraday: INTRADAY, sessions: SESSIONS, clock: MC, today: '2026-10-31' }).open).toBe(122)
     // no session bounds (KASE and others): the session's own first bar, as on the 1D chart
@@ -586,6 +606,30 @@ describe('data layer', () => {
     expect(repo.security('AAA.US').errors.info).toBe('nope')
     // KASE tickers: no US session filter
     expect(repo.security('KZT.KZ').sessions).toBeNull()
+    db.close()
+  })
+
+  it('repo.security: a .EU ticker\'s weekend daily bars (flat, small volume) are dropped (Task 42)', async () => {
+    const clock = Date.parse('2026-11-01T09:00:00Z') // Sunday
+    const days = ['2026-10-29', '2026-10-30', '2026-10-31', '2026-11-01']
+    const broker = {
+      async marketStatus() { return { result: { markets: { ...STATUS, t: '2026-11-01 12:00:00' } } } },
+      async hlocDaily(ts) {
+        return {
+          hloc: { [ts[0]]: [[12, 9, 10, 11], [13, 10, 11, 12], [12.5, 12.5, 12.5, 12.5], [12.5, 12.5, 12.5, 12.5]] },
+          xSeries: { [ts[0]]: days.map((d) => TS(d) - 3 * 3600) }, // server midnight (UTC+3)
+          vl: { [ts[0]]: [500, 700, 30, 1] },
+          info: { [ts[0]]: { mkt_name: 'EU', mrkt: { p: '10:00:00', o: '11:00:00', c: '21:30:00', dt: 180, tz: 'Europe/London' } } },
+        }
+      },
+    }
+    const db = await openAccountDb('global:1', new IDBFactory())
+    const repo = createRepo({ broker, db, now: () => clock })
+    await repo.loadSecurity('EEE.EU', ['daily', 'max'])
+    const s = repo.security('EEE.EU')
+    expect(s.daily.map((r) => r.date)).toEqual(['2026-10-29', '2026-10-30'])
+    expect(s.max.map((r) => r.date)).toEqual(['2026-10-29', '2026-10-30'])
+    expect(repo.security('EEE.EU').daily).toBe(s.daily) // memoized: no new array per read
     db.close()
   })
 })

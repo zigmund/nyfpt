@@ -1,5 +1,8 @@
 <!-- Holdings with a Day / selected-period switch (prefs.holdingsMode).
-     Day: live day change total + table; price cells flash for 600 ms on a tick, live mode only.
+     Day: day change total + table; price cells flash for 600 ms on a tick, live mode only. Quotes:
+     live ones first, then the repo's REST snapshot (state.quotes), so on a day off the change is the
+     last session's (calc/live quotePrevClose), not the rolled position close_price. Label: "Today"
+     while live, else the last session date (SP500.IDX, as Performance "on Oct 30").
      Period: period P&L total (same numbers as the value card) + positions open at the period end;
      before the period is computed: current positions without period columns.
      Below, in both modes: a collapsible "Closed positions" block (Day: last trading day = 1D core).
@@ -32,7 +35,7 @@
     <template v-if="mode === 'day'">
       <template v-if="rows">
         <p class="hold__total num" data-test="h-total">
-          <span class="hold__total-label">{{ t('hold.today') }}</span>
+          <span class="hold__total-label" data-test="h-total-label">{{ dayLabel }}</span>
           <span class="hold__total-value num-slot" data-test="h-total-value">{{ fMoney(dayTotal.valueUsd, { hide: prefs.hide }) }}</span>
           <span class="num-slot" :class="tone(dayTotal.dayChangeUsd)">{{ fMoney(dayTotal.dayChangeUsd, { hide: prefs.hide, sign: true }) }}</span>
           <span class="num-slot num-slot--pct" :class="tone(dayTotal.dayChangePct)">({{ fPct(dayTotal.dayChangePct) }})</span>
@@ -212,6 +215,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { t } from '../i18n.js'
 import { fMoney, fPct, fPrice, fQty, fWeight, tone, n, PERIOD_LABELS } from '../display.js'
+import { dateShort } from '../format.js'
 import { holdingsRows, holdingsTotal } from '../calc/live.js'
 import { periodSpark } from '../calc/sparks.js'
 import MarketSpark from './MarketSpark.vue'
@@ -284,11 +288,24 @@ function tableSort(name, cols, fallback, valueOf = (r, key) => r[key]) {
   }
 }
 
-// Day: quotes Map is mutated in place; `tick` is the change signal.
+// Day: quotes Map is mutated in place; `tick` is the change signal. Live quote of a ticker first,
+// then the REST snapshot (outside live mode only the snapshot).
 const rows = computed(() => {
   void app.tick.value
   const ps = app.state.value?.rawPs
-  return ps ? holdingsRows(ps, app.liveQuotesForCalc()) : null
+  if (!ps) return null
+  const live = app.liveQuotesForCalc()
+  const snap = app.state.value?.quotes
+  return holdingsRows(ps, { get: (tk) => live?.get(tk) ?? snap?.get?.(tk) })
+})
+// "Today" only while live; otherwise the date of the last US session (the markets strip's
+// SP500.IDX row, the date Performance uses), else the last spark date; "Day" when none is known.
+const dayLabel = computed(() => {
+  if (live.isLive.value) return t('hold.today')
+  const st = app.state.value
+  const sparkDates = Object.values(st?.sparks || {}).map((s) => s?.date).filter(Boolean).sort()
+  const date = (st?.markets || []).find((r) => r.ticker === 'SP500.IDX')?.date || sparkDates.at(-1)
+  return date ? t('hold.onDate', { date: dateShort(date) }) : t('hold.mode.day')
 })
 const total = computed(() => holdingsTotal(rows.value || []))
 // Cash per currency: kind 'cash' rows of the positions (USD value) — the same source as the value

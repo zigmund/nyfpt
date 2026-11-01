@@ -2,6 +2,10 @@
 // Positions, trades and cashflows come from tests/fixtures/synthetic-api.json; daily and
 // intraday candles (with volumes) are generated deterministically so that each ticker's latest
 // close equals its last close in the fixture; getSecurityInfo is synthesized from them. The socket reports market FIX as OPEN and streams quote deltas.
+// Weekends (exchange date Sat/Sun, like the broker on 2026-11-01): every market CLOSE and no ticks;
+// positions roll close_price (.EU / KASE: = mkt_price; .US: the Friday regular close while
+// mkt_price = a post-market trade); quotes keep chg / pcp vs the previous session close but a .EU
+// quote's pp is wrong; .EU tickers get flat Saturday / Sunday bars with volume (15-min and daily).
 // News: synthetic per ticker (see newsList below).
 // tickerFinder: a small synthetic universe (FINDER); UNKNOWN tickers make getHloc fail like the broker.
 // main.js imports this module dynamically under `import.meta.env.DEV`: never in production builds.
@@ -25,6 +29,7 @@ const EXTRA = [
   { i: 'NNTY.US', name: 'Ninety Mock Inc', q: 2, price: 98.1, jump: -0.1834 },
   { i: 'KILO.US', name: 'Kilo Mock Holdings', q: 0.2, price: 1234.56 },
   { i: 'MYRI.US', name: 'Myriad Mock Group Incorporated', q: 0.02, price: 12345.67 },
+  { i: 'EUX.EU', name: 'Euro Mock UCITS ETF', q: 30, price: 64.2 },
 ]
 for (const x of EXTRA) anchors[x.i] = x.price
 const JUMPS = Object.fromEntries(EXTRA.filter((x) => x.jump).map((x) => [x.i, x.jump]))
@@ -55,8 +60,9 @@ const SERVER_MIN = SERVER_OFFSET_S / 60
 const HOURS = {
   FIX: { tz: 'America/New_York', p: 7 * 60 + 10, o: 9 * 60 + 30, post: 16 * 60, c: 20 * 60, bars: 16 * 60 },
   KASE: { tz: 'Asia/Yekaterinburg', p: 11 * 60 + 20, o: 11 * 60 + 30, post: null, c: 22 * 60, bars: 17 * 60 + 30 },
+  EU: { tz: 'Europe/London', p: 7 * 60, o: 8 * 60, post: null, c: 18 * 60 + 30, bars: 16 * 60 + 30 },
 }
-const marketOf = (tk) => (tk.endsWith('.KZ') ? 'KASE' : MARKET)
+const marketOf = (tk) => (tk.endsWith('.KZ') ? 'KASE' : tk.endsWith('.EU') ? 'EU' : MARKET)
 const zoneFmt = new Map()
 /** UTC offset (minutes) of an IANA zone at `ms`. */
 function zoneMin(tz, ms) {
@@ -93,6 +99,30 @@ function lastSession(mkt = MARKET, now = Date.now()) {
   let ms = midnight(iso(exchangeWall(mkt, now)))
   while (!isWeekday(ms)) ms -= DAY
   return ms
+}
+/** The market's exchange date now is a Saturday or Sunday. */
+const weekend = (mkt, now = Date.now()) => !isWeekday(midnight(iso(exchangeWall(mkt, now))))
+const WEEKEND_BAR_MIN = [12 * 60 + 45, 22 * 60] // Saturday .EU bars, exchange wall minutes (as seen live)
+
+// Like the broker (seen live 2026-11-01): a .EU ticker gets flat bars at the Friday close on the
+// weekend after it, with non-zero volume: daily on Saturday and Sunday; 15-min on Saturday
+// 12:45-22:00 and one on Sunday 03:00. Only bars up to now (exchange wall clock).
+function euWeekend(tk, closes, { intraday = false, from = -Infinity, to = Infinity } = {}) {
+  if (marketOf(tk) !== 'EU') return []
+  const nowWall = exchangeWall('EU', Date.now())
+  const out = []
+  for (const [ms, close] of closes) {
+    if (new Date(ms).getUTCDay() !== 5) continue
+    const c = candle(close, close)
+    const at = intraday
+      ? [...Array.from({ length: (WEEKEND_BAR_MIN[1] - WEEKEND_BAR_MIN[0]) / 15 + 1 }, (_, k) => [ms + DAY, WEEKEND_BAR_MIN[0] + k * 15]), [ms + 2 * DAY, 3 * 60]]
+      : [[ms + DAY, 0], [ms + 2 * DAY, 0]]
+    for (const [day, min] of at) {
+      if (day < from || day >= to || day + min * 60e3 > nowWall) continue
+      out.push({ ts: axisMs(day, min), c, v: 1 + Math.floor(rand(`${tk}|wk|${day}|${min}`) * 40) })
+    }
+  }
+  return out
 }
 
 /** [[dateMs, close]] for weekdays in [fromMs, endMs], ending at the ticker's anchor close. */
@@ -148,7 +178,8 @@ function hlocDaily(tickers, dateFrom, count = -6) {
     series[tk] = [
       ...closes.map(([ms, c], i) => ({ ts: axisMs(ms), c: candle(i ? closes[i - 1][1] : c, c) })),
       ...weekendPrint(tk, closes),
-    ]
+      ...euWeekend(tk, closes),
+    ].sort((a, b) => a.ts - b.ts)
   }
   return hlocAnswer(series, 2e6)
 }
@@ -175,30 +206,43 @@ function hlocIntraday(tickers, dateFrom, dateTo, timeframe = 15) {
         last = c
       }
     })
+    series[tk].push(...euWeekend(tk, all, { intraday: true, from, to }))
+    series[tk].sort((a, b) => a.ts - b.ts)
   }
   return hlocAnswer(series, 8e4)
 }
 
 // --- live prices shared by the broker snapshot and the socket deltas
-const prices = new Map() // ticker -> {ltp, pp}
+// ticker -> {day, ltp, pp (true previous close), close (the last regular close)}; a new exchange
+// date starts over. Weekend: .US ltp = a post-market trade after the Friday close.
+const prices = new Map()
 function priceOf(tk) {
-  if (!prices.has(tk)) {
-    const closes = dailyCloses(tk, lastSession(marketOf(tk)) - 7 * DAY)
+  const mkt = marketOf(tk)
+  const day = iso(exchangeWall(mkt, Date.now()))
+  if (prices.get(tk)?.day !== day) {
+    const closes = dailyCloses(tk, lastSession(mkt) - 7 * DAY)
     const last = closes[closes.length - 1][1]
     const prev = closes.length > 1 ? closes[closes.length - 2][1] : last
-    prices.set(tk, { ltp: last, pp: prev })
+    const post = weekend(mkt) && mkt === MARKET ? 1 + (rand(`${tk}|post|${day}`) - 0.5) * 0.01 : 1
+    prices.set(tk, { day, ltp: last * post, pp: prev, close: last })
   }
   return prices.get(tk)
 }
+// The quote's pp field: a .EU quote on a weekend carries a wrong one (seen live 2026-11-01).
+const shownPp = (tk, pp) => (marketOf(tk) === 'EU' && weekend('EU') ? pp * 0.97 : pp)
 function quote(tk) {
   const { ltp, pp } = priceOf(tk)
-  return { c: tk, name: names[tk] || tk, ltr: MARKET, ltp: r2(ltp), pp: r2(pp), chg: r2(ltp - pp), pcp: r2(((ltp - pp) / pp) * 100) }
+  return {
+    c: tk, name: names[tk] || tk, ltr: marketOf(tk), ltp: r2(ltp), pp: r2(shownPp(tk, pp)), chg: r2(ltp - pp), pcp: r2(((ltp - pp) / pp) * 100),
+  }
 }
 function step(tk) {
   const p = priceOf(tk)
   p.ltp *= 1 + (Math.random() - 0.5) * 0.003
   const { c, ltp, chg, pcp } = quote(tk)
-  return { c, ltp, chg, pcp }
+  // Every third delta carries ltp alone (WS deltas send only changed fields; whether chg always
+  // comes with ltp is unverified): calc/live mergeQuote must keep the previous close.
+  return Math.random() < 1 / 3 ? { c, ltp } : { c, ltp, chg, pcp }
 }
 
 const FUNDS = new Set(['SPY.US', 'QQQ.US', 'USO.US', 'GLD.US', 'SLV.US'])
@@ -253,7 +297,7 @@ function securityInfo(tk) {
     c: tk,
     name: names[tk] || FINDER.find((f) => f[0] === tk)?.[1] || tk, // a ticker without a position: its finder name
     ltp: r2(ltp),
-    pp: r2(pp),
+    pp: r2(shownPp(tk, pp)),
     ClosePrice: r2(pp),
     chg: r2(ltp - pp),
     pcp: r2(((ltp - pp) / pp) * 100),
@@ -262,7 +306,7 @@ function securityInfo(tk) {
     vol: volume(tk, lastSession(marketOf(tk), now), 2e6),
     kind: FUNDS.has(tk) ? 7 : 1,
     x_curr: kz ? 'KZT' : 'USD',
-    codesub_nm: kz ? 'KASE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
+    codesub_nm: kz ? 'KASE' : marketOf(tk) === 'EU' ? 'LSE' : FUNDS.has(tk) ? 'ARCA' : 'NASDAQ',
     ltr: marketOf(tk),
     ltt: new Date(exchangeWall(marketOf(tk), now)).toISOString().slice(0, 19), // exchange wall clock
   }
@@ -341,11 +385,13 @@ const statusOf = (mkt) => {
   const { o, c, dt } = mrktOf(mkt)
   return { o, c, dt: String(dt) }
 }
+// Weekdays: FIX and EU OPEN (live mock), KASE CLOSE; weekends: everything CLOSE.
 const MARKETS = () => ({
   t: serverWall(Date.now()),
   m: [
-    { mkt_id: 1, n: MARKET, n2: MARKET, s: 'OPEN', ...statusOf(MARKET) },
+    { mkt_id: 1, n: MARKET, n2: MARKET, s: weekend(MARKET) ? 'CLOSE' : 'OPEN', ...statusOf(MARKET) },
     { mkt_id: 2, n: 'KASE', n2: 'KASE', s: 'CLOSE', ...statusOf('KASE') },
+    { mkt_id: 3, n: 'EU', n2: 'EU', s: weekend('EU') ? 'CLOSE' : 'OPEN', ...statusOf('EU') },
   ],
 })
 
@@ -356,8 +402,11 @@ export function createMockBroker() {
       const a = clone(fixture.getPositionJson)
       a.result.ps.pos.push(...EXTRA.map(({ i, name, q }) => ({ i, name, q })))
       for (const p of a.result.ps.pos) {
-        p.mkt_price = r2(priceOf(p.i).ltp)
-        p.close_price = r2(priceOf(p.i).pp) // previous close: Day % / Day $ outside live mode
+        const px = priceOf(p.i)
+        p.mkt_price = r2(px.ltp)
+        // Weekdays: the previous close. Weekends, like the broker: rolled to mkt_price (.EU, KASE),
+        // the Friday regular close (.US, mkt_price = a post-market trade).
+        p.close_price = r2(!weekend(marketOf(p.i)) ? px.pp : marketOf(p.i) === MARKET ? px.close : px.ltp)
         p.market_value = r2(p.q * p.mkt_price)
         p.bal_price_a = r2(p.mkt_price * (0.85 + rand(`${p.i}|cost`) * 0.25)) // average cost
       }
@@ -443,7 +492,7 @@ export class MockSocket {
   }
 
   tick() {
-    if (!this.tickers.length) return
+    if (!this.tickers.length || MARKETS().m.every((m) => m.s !== 'OPEN')) return // weekend: no trades
     const n = 1 + Math.floor(Math.random() * 3)
     for (let i = 0; i < n; i++) {
       this.emit('quote', step(this.tickers[Math.floor(Math.random() * this.tickers.length)]))

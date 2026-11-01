@@ -263,6 +263,14 @@ describe('search sheet: results', () => {
     expect(rows(w)[0].get('.srow__chg').text()).toBe('+20.00%')
   })
 
+  it('day change of a live quote with chg: ltp - chg, not a wrong pp (Task 42)', async () => {
+    const live = new Map([['GLD.US', { ltp: 300, chg: 50, pp: 280, pcp: 20 }]])
+    const { w } = await openSheet({ findTickers: vi.fn(async () => [GLD]), liveQuotes: live })
+    wrapper = w
+    await type(w, 'g')
+    expect(rows(w)[0].get('.srow__chg').text()).toBe('+20.00%')
+  })
+
   it('an unknown type gets no label; broker text is shown as text', async () => {
     const { w } = await openSheet({ findTickers: vi.fn(async () => [ODD]) })
     wrapper = w

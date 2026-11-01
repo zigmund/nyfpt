@@ -23,6 +23,9 @@ export const TTL = {
   clock: 10 * 60e3, // getMarketStatus snapshot: server offset and market hours
   intraday: 60e3, // position card 15-min candles
   sparks: 5 * 60e3, // holdings sparklines: 15-min candles
+  // Position quote snapshot (Holdings Day outside live): prices stand still then; refetched at once
+  // when live mode ends, and not by the scheduled refresh while live (useApp).
+  positionQuotes: 5 * 60e3,
 }
 // IndexedDB row format. Bump when a stored shape or its parsing changes: rows of another version
 // (or without one: version 1) read as missing, so kv data is refetched at once and daily candles are

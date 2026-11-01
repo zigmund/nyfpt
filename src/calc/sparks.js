@@ -1,5 +1,5 @@
 // Holdings sparklines: pure functions over parseHloc rows and cached daily closes.
-import { barSeconds, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js'
+import { barSeconds, isSessionDay, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js'
 
 const US_ANCHOR = 'SP500.IDX'
 const isUs = (ticker) => /\.US$/.test(String(ticker))
@@ -14,7 +14,8 @@ const mktOf = (list) => (list.find((r) => r.mkt) || {}).mkt || null
  * refreshes faster than the sparks cache), the latest earlier session, flagged `prior: true`
  * (it is not the session that the day change and previous close refer to).
  * Other markets (KASE, EU): their own last date with bars inside the window; without known
- * hours, their own last date unclipped.
+ * hours, their own last date unclipped. In every market a weekend date is no session
+ * (marketTime.isSessionDay): the broker's flat Saturday / Sunday .EU bars never take the spark.
  * @param {{ticker, mkt?, ts, date, close}[]} rows intraday rows of the positions
  * @param {{ticker, mkt?, ts, date, close}[]} anchorRows intraday rows that may include SP500.IDX
  * @param {{offset, markets}|null} clock marketClock
@@ -40,7 +41,7 @@ export function daySparks(rows, anchorRows, clock, today) {
     const win = sessionWindow(anchored ? sessionBounds(idx) : null, marketClockFor(clock, mkt), anchored ? today : undefined, barSeconds(list))
     const inWin = (r) => {
       const b = win && win(r.date)
-      return !b || (r.ts >= b[0] && r.ts <= b[1])
+      return b ? r.ts >= b[0] && r.ts <= b[1] : isSessionDay(r.date)
     }
     const sess = list.filter(inWin)
     const closesOn = (date) => sess.filter((r) => r.date === date).map((r) => r.close)

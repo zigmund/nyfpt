@@ -205,6 +205,15 @@ export function dailyThroughSession(daily, indexRows) {
   return anchor === null || !daily ? daily : daily.filter((r) => r.date <= anchor)
 }
 
+/** A calendar date ('YYYY-MM-DD', exchange date of a bar) can hold a session: Monday to Friday.
+ *  Every market the app shows (US, KASE, EU, AIX) trades on weekdays only; the broker still sends
+ *  .EU bars on Saturday and Sunday (flat price, non-zero volume) and a weekend daily bar of
+ *  NASDAQ.IDX, which are not sessions. Weekday holidays are not known (no verified calendar). */
+export function isSessionDay(date) {
+  const d = new Date(`${String(date).slice(0, 10)}T00:00:00Z`).getUTCDay()
+  return d >= 1 && d <= 5
+}
+
 /** Bar length (seconds) of intraday rows: the smallest step between bars; 0 if unknown. */
 export function barSeconds(rows) {
   const ts = [...new Set((rows || []).map((r) => r.ts).filter(Number.isFinite))].sort((a, b) => a - b)
@@ -216,6 +225,7 @@ export function barSeconds(rows) {
   return best
 }
 
+const NO_SESSION = Object.freeze([Infinity, -Infinity]) // empty window: lo > hi
 const first = (...v) => {
   for (const x of v) if (x !== null && x !== undefined) return x
   return null
@@ -230,6 +240,7 @@ const first = (...v) => {
  * before today are complete; their last index bar caps the day (half days). Last fallbacks when
  * the broker gives no hours: the earliest index bar / latest index bar time of day on complete
  * dates; without an offset the index bars themselves. null = no bounds known (keep all bars).
+ * A weekend date (isSessionDay) has an empty window: no bar is in a session.
  */
 export function sessionWindow(sessions, mc, today, bar = 0) {
   const off = mc && Number.isFinite(mc.offset) ? mc.offset : null
@@ -248,6 +259,7 @@ export function sessionWindow(sessions, mc, today, bar = 0) {
   if (s0 === null && !idx) return null
   const back = bar > 0 ? bar - 1 : 0
   return (date) => {
+    if (!isSessionDay(date)) return NO_SESSION
     const b = idx && idx.get(date)
     const lo = s0 !== null ? axisAt(off, date, s0) - back : b ? b[0] : null
     if (lo === null) return null

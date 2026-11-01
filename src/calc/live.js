@@ -7,11 +7,39 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const posNum = (v) => {
+  const n = num(v);
+  return n !== null && n > 0 ? n : null;
+};
+
+/**
+ * Previous close of a broker quote (getStockQuotesJson, WS `quotes`, getSecurityInfo): ONE rule
+ * for every caller. `chg` is the broker's day change and `pcp` its percent; `pp` is not trusted
+ * first: on a day off a .EU quote carries a `pp` that is not its previous close while chg / pcp
+ * are right (verified 2026-11-01).
+ *   1. ltp - chg (both known, result > 0);
+ *   2. else pp (> 0);
+ *   3. else from pcp: ltp / (1 + pcp / 100);
+ *   4. else null (an index quote of zeros): callers fall back to their snapshot.
+ */
+export const quotePrevClose = (q) => {
+  if (!q) return null;
+  const ltp = num(q.ltp);
+  const chg = num(q.chg);
+  if (ltp !== null && chg !== null && ltp - chg > 0) return ltp - chg;
+  const pp = posNum(q.pp);
+  if (pp !== null) return pp;
+  const pcp = num(q.pcp);
+  if (ltp === null || ltp <= 0 || pcp === null || pcp <= -100) return null;
+  return ltp / (1 + pcp / 100);
+};
+
 /**
  * Day change % of a security: ONE rule for every view (Holdings, the card header, the markets
  * strip, search rows, news tickers). Callers resolve `last` and `prev` field by field, the live
- * quote first (ltp / pp), then their snapshot (security info, position mkt_price / close_price,
- * strip daily closes); `pct` likewise (quote pcp, cached quote, strip change_pct).
+ * quote first (ltp / quotePrevClose), then their snapshot (Holdings: the REST quote snapshot;
+ * security info, position mkt_price / close_price, strip daily closes); `pct` likewise (quote
+ * pcp, cached quote, strip change_pct).
  *   1. last vs prev when both are known and prev > 0 (an index quote may carry pp 0);
  *   2. else the broker's own day change % (`pct`);
  *   3. else null (unknown, not zero).
@@ -23,8 +51,25 @@ export const dayChangePct = ({ last = null, prev = null, pct = null } = {}) => {
   return num(pct);
 };
 
-/** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object. */
-export const mergeQuote = (prev, delta) => ({ ...(prev || {}), ...(delta || {}) });
+/** WS quote: full snapshot first, then deltas with `c` plus changed fields. Returns a new object.
+ *  A delta with `ltp` but no `chg` (not seen, not ruled out) must not move the previous close
+ *  (quotePrevClose = ltp - chg): chg and pcp are re-derived from the old previous close; without
+ *  a usable one the stale chg / pcp are dropped. */
+export const mergeQuote = (prev, delta) => {
+  const out = { ...(prev || {}), ...(delta || {}) };
+  if (!prev || !delta || num(delta.ltp) === null || delta.chg != null) return out;
+  const pl = num(prev.ltp);
+  const pc = num(prev.chg);
+  const base = pl !== null && pc !== null ? pl - pc : null;
+  if (base !== null && base > 0) {
+    out.chg = num(delta.ltp) - base;
+    if (delta.pcp == null) out.pcp = (out.chg / base) * 100;
+  } else {
+    delete out.chg;
+    if (delta.pcp == null) delete out.pcp;
+  }
+  return out;
+};
 
 /** Price multiplier `k` and USD rate `fx` of a raw position (see holdingsRows); usd = USD currval. */
 export const positionFactor = (p, usd = 1) => {
@@ -38,7 +83,10 @@ export const positionFactor = (p, usd = 1) => {
   return { k, fx };
 };
 
-/** Positions of a raw `ps` as rows in USD, with live quotes applied.
+/** Positions of a raw `ps` as rows in USD, with quotes applied (`quotes`: anything with
+ *  get(ticker), e.g. the live quotes Map, the REST quote snapshot or both). Price: the quote's
+ *  ltp (> 0), else mkt_price; previous close: quotePrevClose, else close_price (the broker rolls it
+ *  to mkt_price on days off, so it is only the last fallback).
  *  fx = pos.currval / currval_USD (as in parsePositions).
  *  k: multiplier such that q * mkt_price * k * fx == market_value (USD). Derived from the
  *  position itself when all inputs are non-zero (covers bonds quoted in % of face);
@@ -48,14 +96,13 @@ export const holdingsRows = (ps, quotes) => {
   const usd = num((acc.find((c) => c.curr === 'USD') || {}).currval) || 1;
   const cash = acc.reduce((s, c) => s + (num(c.s) || 0) * (num(c.currval) || 0) / usd, 0);
   const rows = ((ps && ps.pos) || []).map((p) => {
-    const quote = (quotes && quotes.get(p.i)) || {};
+    const quote = (quotes && quotes.get(p.i)) || null;
     const q = num(p.q) || 0;
     const mv = num(p.market_value);
     const { k, fx } = positionFactor(p, usd);
     const mkt = num(p.mkt_price);
-    const price = num(quote.ltp) ?? mkt;
-    const pp = num(quote.pp) ?? num(p.close_price);
-    const prevClose = pp ? pp : null;
+    const price = posNum(quote && quote.ltp) ?? mkt;
+    const prevClose = quotePrevClose(quote) ?? posNum(p.close_price);
     const valueUsd = price === null ? (mv ?? 0) : q * price * k * fx;
     const dayChangeUsd = prevClose === null || price === null ? null : q * (price - prevClose) * k * fx;
     return {
