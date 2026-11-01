@@ -34,7 +34,8 @@ const PS = {
 }
 const INFO = {
   c: 'AAA.US', name: 'Alpha Corporation', ltp: 110, pp: 100, ClosePrice: 108, mintp: 99, maxtp: 112, vol: 1234567,
-  kind: 1, x_curr: 'USD', codesub_nm: 'NASDAQ', ltr: 'FIX', ltt: '2026-10-30T19:58:25', op: 1,
+  // A trade inside the regular session (Task 51: an after-hours ltt makes the header the regular close).
+  kind: 1, x_curr: 'USD', codesub_nm: 'NASDAQ', ltr: 'FIX', ltt: '2026-10-30T15:58:25', op: 1,
 }
 // 300 daily candles: close 50..349, high = close + 2, low = close - 2, open = close - 1, volume 1000 + i.
 const DAILY = Array.from({ length: 300 }, (_, i) => {

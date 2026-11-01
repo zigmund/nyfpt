@@ -180,6 +180,8 @@ const en = {
   'pos.live': 'Live',
   'pos.atClose': 'At close: {at}',
   'pos.asOf': 'As of {at}',
+  'pos.afterHours': 'After hours:',
+  'pos.preMarket': 'Pre-market:',
   'pos.chartLabel': 'Price chart, {period}',
   // header change label per chart period (1D: none, it is the day change)
   'pos.per.5D': 'past week',

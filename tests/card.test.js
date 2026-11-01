@@ -398,3 +398,35 @@ describe('markets strip', () => {
     expect(links[0].attributes('aria-label')).toBe('S&P 500')
   })
 })
+
+// Task 51: US on the regular close; the after-hours / pre-market trade on its own line.
+describe('card price on the US regular close (Task 51)', () => {
+  it('after the close: the header is the regular close vs the previous one, after hours apart', async () => {
+    const after = info('DIA.US', { name: 'Mock Dow ETF', ltp: 41.9, chg: 1.9, pcp: 4.75, pp: 40, ClosePrice: 41.5, ltt: '2026-10-30T19:58:00' })
+    const { w, repo } = await mountApp({ period: '1d', secs: { 'DIA.US': secOf(after) } })
+    expect(w.get('[data-test="p-price"]').text()).toBe('41.50')
+    expect(w.get('[data-test="p-change"]').text()).toBe('+1.50 (+3.75%)')
+    expect(w.get('[data-test="p-ext"]').text()).toContain(t('pos.afterHours'))
+    expect(w.get('[data-test="p-ext-price"]').text()).toBe('41.90')
+    expect(w.get('[data-test="p-ext-change"]').text()).toBe('+0.4000 (+0.96%)') // fPrice: 4 decimals under 1
+    expect(w.get('[data-test="p-ext-at"]').text()).toBe(lastTradeTime('2026-10-30T19:58:00', MC))
+    // "At close" names the regular close (16:00 New York), not the after-hours trade
+    expect(w.get('[data-test="p-asof"]').text()).toBe(t('pos.atClose', { at: lastTradeTime('2026-10-30T16:00:00', MC) }))
+    expect(repo.security).toHaveBeenCalled()
+  })
+
+  it('during the session or on other markets: no extra line', async () => {
+    const { w } = await mountApp()
+    expect(w.find('[data-test="p-ext"]').exists()).toBe(false)
+  })
+
+  it('a daily chart asks the repo for the regular close of its first date', async () => {
+    const ensure = vi.fn(async () => {})
+    const ctx = makeApp({ period: 'YTD' })
+    ctx.repo.ensureRegular = ensure
+    await flushPromises()
+    mount(App, { attachTo: document.body })
+    await flushPromises()
+    expect(ensure).toHaveBeenCalledWith('DIA.US', ['2025-12-31'])
+  })
+})

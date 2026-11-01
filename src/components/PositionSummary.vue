@@ -2,7 +2,9 @@
      price chart with periods, My holdings (held or closed positions only, else no block), Key
      statistics (Task 22 set; a stat without a value is hidden). Broker text only through interpolation.
      Header change (Task 44): 1D — the day change; other periods — the price vs the first point of
-     the chart, with the period label; pointer on the chart — that point's price, change and time. -->
+     the chart, with the period label; pointer on the chart — that point's price, change and time.
+     US (Task 51): the price is the regular close; a trade after the close / before the open is shown
+     on its own line (After hours / Pre-market, against the regular close), as on Yahoo. -->
 <template>
   <div class="psum">
     <p v-if="loadError" class="banner" role="status" data-test="p-error">
@@ -36,6 +38,12 @@
         </template>
         <span v-else-if="pos.closedAt && pos.marketOpen">{{ t('pos.asOf', { at: pos.closedAt }) }}</span>
         <span v-else-if="pos.closedAt">{{ t('pos.atClose', { at: pos.closedAt }) }}</span>
+      </p>
+      <p v-if="pos.ext" class="status phead__ext" data-test="p-ext">
+        <span>{{ t(pos.ext.kind === 'pre' ? 'pos.preMarket' : 'pos.afterHours') }}</span>
+        <span class="num" data-test="p-ext-price">{{ fPrice(pos.ext.price) }}</span>
+        <span class="num" :class="tone(pos.ext.change)" data-test="p-ext-change">{{ fChange(pos.ext.change) }} ({{ fPct(pos.ext.pct) }})</span>
+        <span v-if="pos.extAt" data-test="p-ext-at">{{ pos.extAt }}</span>
       </p>
 
       <!-- One fixed-height area in every state: chart, old chart while a new period loads, skeleton, message. -->
@@ -197,9 +205,18 @@ const rows = computed(() => {
   // keeps the session's bars). Other periods: the chart always ends on the header price
   // (calc/position.withLastPrice), so the header change and the chart end share one sign.
   if (props.period === '1D') return live ? withLastPrice(list, props.pos.price, { day: today, intraday: true }) : list
-  const day = live ? today : tradeDay(props.pos.quote?.ltt || props.pos.info?.ltt)
+  // The price's session date (US regular close: its day, not a later pre-market trade's).
+  const day = props.pos.priceDay || (live ? today : tradeDay(props.pos.quote?.ltt || props.pos.info?.ltt))
   return withLastPrice(list, props.pos.price, { day, intraday: intraday.value })
 })
+// Daily charts start on a regular close too (Task 51): the repo fetches it for the first date once.
+const chartBase = computed(() => {
+  if (intraday.value) return null
+  const s = props.pos.sec
+  const list = chartRows(props.period, s, { today: s.today || localDay(Date.now()) })
+  return list.length > 1 ? list[0].date : null
+})
+watch(chartBase, (d) => { if (d) Promise.resolve(app.ensureRegular?.(ticker.value, [d])).catch(() => {}) }, { immediate: true })
 const base = computed(() => (props.period === '1D' ? props.pos.prevClose : null))
 const chartLoading = computed(() => {
   const src = chartSource(props.period)

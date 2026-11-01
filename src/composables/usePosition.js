@@ -5,7 +5,7 @@ import { computed, onScopeDispose, watch } from 'vue'
 import { useApp } from './useApp.js'
 import { n } from '../display.js'
 import { keyStats, positionHolding } from '../calc/position.js'
-import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
+import { dayChangePct, quotePrice, regularCloses, regularQuote } from '../calc/live.js'
 import { formatLocal, wallToUtc } from '../calc/marketTime.js'
 
 const REFRESH_MS = 60e3
@@ -60,15 +60,26 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     return d && d.length > back ? posN(d[d.length - 1 - back].close) : null
   }
   const infoPrice = computed(() => posN(info.value?.ltp))
-  const price = computed(() => quotePrice(quote.value) ?? infoPrice.value ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
-  // calc/live quotePrevClose (ltp - chg, then pp, then pcp) of the quote, then of the security info.
-  const prevClose = computed(() => quotePrevClose(quote.value) ?? quotePrevClose(info.value) ?? posN(raw.value?.close_price) ?? dailyClose(1))
+  // calc/live regularQuote (Task 51): US on the regular close, sessions named by the card's own
+  // intraday bars; other markets: ltp and quotePrevClose (ltp - chg, then pp, then pcp).
+  const closes = computed(() => regularCloses(sec.value.intraday, sec.value.clock))
+  const regQuote = computed(() => (quote.value ? regularQuote(quote.value, sec.value.clock, closes.value) : null))
+  const regInfo = computed(() => regularQuote(info.value, sec.value.clock, closes.value))
+  const reg = computed(() => regQuote.value || regInfo.value)
+  const price = computed(() => regQuote.value?.price ?? regInfo.value.price ?? posN(raw.value?.mkt_price) ?? dailyClose(0))
+  const prevClose = computed(() => regQuote.value?.prev ?? regInfo.value.prev ?? posN(raw.value?.close_price) ?? dailyClose(1))
+  /** Session date of the price when known (US: the regular close's day; null otherwise). */
+  const priceDay = computed(() => reg.value.day)
+  /** The trade outside the regular session (US): {kind: 'post' | 'pre', price, change, pct, ltt}. */
+  const ext = computed(() => reg.value.ext)
+  const extAt = computed(() => (ext.value ? lastTradeTime(ext.value.ltt, sec.value.clock) : null))
   const change = computed(() => (price.value !== null && prevClose.value !== null ? price.value - prevClose.value : null))
   const changePct = computed(() => dayChangePct({ last: price.value, prev: prevClose.value }))
 
   const holding = computed(() => positionHolding(app.state.value?.rawPs, ticker, { price: price.value, prevClose: prevClose.value }))
   const stats = computed(() => keyStats({
     ticker, info: info.value, daily: sec.value.daily, intraday: sec.value.intraday, sessions: sec.value.sessions, clock: sec.value.clock, today: sec.value.today,
+    prevClose: regInfo.value.prev,
   }))
 
   // A ticker without a position or security info (an index): its strip card label or search name.
@@ -83,8 +94,15 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
     void app.tick.value
     return isLive.value || !!app.marketOpen?.(info.value?.ltr || quote.value?.ltr)
   })
-  /** 'At close' / 'As of' time: last trade time in the user's zone, else the last daily candle's date. */
+  /** 'At close' / 'As of' time: last trade time in the user's zone, else the last daily candle's date.
+   *  US with a trade outside the session: the regular close of the price's day (16:00 New York). */
   const closedAt = computed(() => {
+    const mc = sec.value.clock
+    if (ext.value && priceDay.value && mc && mc.regular != null) {
+      const wall = Date.parse(`${priceDay.value}T00:00:00Z`) / 1000 + mc.regular * 60
+      const at = formatLocal(wallToUtc(wall, mc))
+      if (at) return at
+    }
     // A trade time without a price is not one.
     const at = infoPrice.value === null ? null : lastTradeTime(info.value?.ltt, sec.value.clock)
     if (at) return at
@@ -106,7 +124,7 @@ export function usePosition(ticker, { parts = () => [] } = {}) {
   onScopeDispose(() => clearInterval(timer))
 
   return {
-    ticker, sec, info, raw, quote, isLive, price, prevClose, change, changePct, holding, stats,
+    ticker, sec, info, raw, quote, isLive, price, prevClose, priceDay, ext, extAt, change, changePct, holding, stats,
     name, currency, exchange, kind, marketOpen, closedAt, load,
   }
 }

@@ -1618,6 +1618,7 @@ th[aria-sort="descending"] .ptable__sort::after { content: " ↓"; }
 .phead__name.skel { min-height: 1.4em; width: 12rem; }
 .phead__chg.skel { display: inline-block; width: 6rem; }
 .phead .status { min-height: 1.2em; }
+.phead__ext { flex-wrap: wrap; column-gap: var(--gap); row-gap: 0; }
 .pchart svg { touch-action: pan-y; }
 .pchart__none { height: 100%; display: grid; place-items: center; }
 .pchart__lab { fill: var(--c-muted); font-size: .6875rem; }
