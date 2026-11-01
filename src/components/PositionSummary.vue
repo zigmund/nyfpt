@@ -47,7 +47,7 @@
         data-test="p-chart"
       >
         <div v-if="shown" class="pchart__plot" :class="{ 'is-stale': chartStale }">
-          <PriceChart :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" @hover="hover = $event" />
+          <PriceChart :rows="shown.rows" :base="shown.base" :intraday="shown.intraday" :period="period" @hover="hover = $event" />
         </div>
         <div v-else-if="chartLoading" class="pchart__skel skel" aria-hidden="true" data-test="p-chart-skel" />
         <p v-else class="card__hint pchart__none" data-test="p-chart-none">{{ t('pos.noChart') }}</p>
@@ -152,7 +152,7 @@ import { useApp } from '../composables/useApp.js'
 import { usePeriodCore } from '../composables/usePeriodCore.js'
 import { localDay } from '../calc/marketTime.js'
 import { PERIODS } from '../calc/periods.js'
-import { CHART_PERIOD, chartRows, chartSource, rangePos } from '../calc/position.js'
+import { CHART_PERIOD, chartRows, chartSource, rangePos, tradeDay, withLastPrice } from '../calc/position.js'
 import { whenOf } from '../charts/priceChart.js'
 import { DATASET } from '../data/repo.js'
 import PriceChart from './PriceChart.vue'
@@ -192,12 +192,13 @@ const rows = computed(() => {
   const s = props.pos.sec
   const today = s.today || localDay(Date.now())
   const list = chartRows(props.period, s, { today, sessions: s.sessions, clock: s.clock })
-  // Live: the last bar of today's session follows the quote.
-  const px = props.pos.price
-  if (props.period === '1D' && props.pos.isLive && px != null && list.length && list[list.length - 1].date === today) {
-    list[list.length - 1] = { ...list[list.length - 1], close: px }
-  }
-  return list
+  const live = props.pos.isLive
+  // 1D: only while live, today's last bar follows the quote (outside the session the 1D chart
+  // keeps the session's bars). Other periods: the chart always ends on the header price
+  // (calc/position.withLastPrice), so the header change and the chart end share one sign.
+  if (props.period === '1D') return live ? withLastPrice(list, props.pos.price, { day: today, intraday: true }) : list
+  const day = live ? today : tradeDay(props.pos.quote?.ltt || props.pos.info?.ltt)
+  return withLastPrice(list, props.pos.price, { day, intraday: intraday.value })
 })
 const base = computed(() => (props.period === '1D' ? props.pos.prevClose : null))
 const chartLoading = computed(() => {
@@ -225,15 +226,16 @@ const posNum = (v) => {
   const x = n(v)
   return x !== null && x > 0 ? x : null
 }
+const drawable = (list) => (list || []).filter((r) => Number.isFinite(r.close))
 /** Base of a period: the first drawable point of its chart (the chart's waterline); unknown -> null. */
 const firstClose = (list) => {
-  const pts = (list || []).filter((r) => Number.isFinite(r.close))
+  const pts = drawable(list)
   return pts.length > 1 ? posNum(pts[0].close) : null
 }
 /** What the drawn chart measures against: the previous close on 1D, else its first point. */
 const baseOf = (d) => (d.period === '1D' ? posNum(d.base) : firstClose(d.rows))
 const changeOf = (px, b) => {
-  const x = n(px)
+  const x = posNum(px) // a zero price / close is no price: a dash, never -100%
   return x !== null && b !== null ? { kind: 'value', change: x - b, pct: (x / b - 1) * 100 } : { kind: 'dash' }
 }
 const periodName = (p) => (p === '1D' ? '' : t(`pos.per.${p}`))
@@ -247,8 +249,10 @@ const periodChg = computed(() => {
   }
   const label = periodName(props.period)
   if (loadingPrice || (chartLoading.value && rows.value.length <= 1)) return { kind: 'skel', label }
+  // The chart's last point (= the header price, see rows) against its first: the chart end's sign.
   const b = firstClose(rows.value)
-  return { ...(b === null ? { kind: 'dash' } : changeOf(props.pos.price, b)), label }
+  const pts = drawable(rows.value)
+  return { ...(b === null ? { kind: 'dash' } : changeOf(pts[pts.length - 1].close, b)), label }
 })
 const chg = computed(() => {
   const r = hover.value
