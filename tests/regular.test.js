@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import { holdingsRows, livePriceRows, regularCloses, regularQuote, tradePhase } from '../src/calc/live.js'
 import { axisAt } from '../src/calc/marketTime.js'
-import { computeCore, parsePositions } from '../src/calc/portfolio.js'
+import { computeCore, computeMarkets, parsePositions } from '../src/calc/portfolio.js'
 
 const OFF = 10800 // broker server at UTC+3: axis + 3 h = exchange wall clock
 // US market clock in exchange wall minutes: pre-open 07:10, open 09:30, regular close 16:00, extended 20:00.
@@ -190,5 +190,26 @@ describe('Performance on regular closes (computeCore `regular`)', () => {
     expect(res.summary.qqq).toBeCloseTo((495 / 500 - 1) * 100, 2) // no regular close: the daily one
     // without regular closes: the daily (extended-hours) closes as before
     expect(computeCore(positions, [], [], daily).summary.day_pnl).toBeCloseTo(10 * 4 + 4 * -3, 2)
+  })
+})
+
+describe('markets strip outside live: US cards on regular closes', () => {
+  it('last and prev are the regular closes of the last two sessions; the spark stays in the session', () => {
+    const clock = { offset: OFF, markets: { FIX: { p: 430, o: 570, c: 1200, post: 960, dt: 0 } } }
+    const tag = (t, rows) => rows.map((r) => ({ ...r, ticker: t, mkt: 'FIX' }))
+    const day = (d, reg, ext) => tag('ETF.US', bars(d, '09:30', '19:45', (i, m) => (m < 945 ? reg - 1 : m === 945 ? reg : ext)))
+    const intraday = [
+      ...tag('SP500.IDX', bars('2026-10-29', '09:30', '15:45', () => 5000)),
+      ...tag('SP500.IDX', bars('2026-10-30', '09:30', '15:45', () => 5010)),
+      ...day('2026-10-29', 100, 103), ...day('2026-10-30', 104, 101),
+    ]
+    // daily candles close on the last extended-hours trade
+    const daily = [['2026-10-29', 103], ['2026-10-30', 101]].flatMap(([date, close]) => [
+      { ticker: 'ETF.US', mkt: 'FIX', ts: axisAt(OFF, date, 0), date, close },
+      { ticker: 'SP500.IDX', mkt: 'FIX', ts: axisAt(OFF, date, 0), date, close: 5000 },
+    ])
+    const r = computeMarkets(daily, intraday, clock, '2026-11-01', ['ETF.US'])[0]
+    expect(r).toMatchObject({ date: '2026-10-30', last: 104, prev: 100, change_pct: 4 })
+    expect(r.spark.at(-1)).toBe(104) // up to the regular close
   })
 })

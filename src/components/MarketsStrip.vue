@@ -46,7 +46,7 @@ import { dateShort } from '../format.js'
 import { fPct, fPrice, tone, n } from '../display.js'
 import { positionPath, useApp } from '../composables/useApp.js'
 import MarketSpark from './MarketSpark.vue'
-import { dayChangePct, quotePrevClose, quotePrice } from '../calc/live.js'
+import { dayChangePct, quotePrice, regularQuote } from '../calc/live.js'
 
 const app = useApp()
 const { state, tick, live } = app
@@ -70,9 +70,11 @@ const cards = computed(() => {
     // The quote counts only in session and with a price: closed, the daily closes hold the session close.
     const sq = quotes?.get?.(m.ticker) || null
     const q = sq && quotePrice(sq) !== null && app.isLiveFor?.(m.ticker) ? sq : null
-    const last = quotePrice(q) ?? n(r?.last)
+    // US: the regular price (app.regularQuote, Task 51), the after-hours trade left out
+    const rq = q ? (app.regularQuote ? app.regularQuote(m.ticker, q) : regularQuote(q, null)) : null
+    const last = rq?.price ?? n(r?.last)
     // calc/live dayChangePct: price vs previous close (quote, else the strip's daily closes), else pcp
-    const change = dayChangePct({ last, prev: quotePrevClose(q) ?? n(r?.prev), pct: n(q?.pcp) ?? n(r?.change_pct) })
+    const change = dayChangePct({ last, prev: rq?.prev ?? n(r?.prev), pct: rq?.pct ?? n(r?.change_pct) })
     return {
       ...m,
       title: m.note ? `${m.label} ${m.note}` : m.label, // label and note as two words

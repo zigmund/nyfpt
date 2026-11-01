@@ -59,6 +59,7 @@ export const dayChangePct = ({ last = null, prev = null, pct = null } = {}) => {
 // A quote value names the same session as a bar close when within this share of it: the closing
 // auction differs from the last trade before 16:00 by cents (verified 2026-11-01: 0.01-0.04%).
 const REGULAR_MATCH = 0.005
+const MAX_BAR_S = 3600 // regularCloses: intraday bars up to an hour (15 / 60 min); longer steps are not judged
 const NO_CLOSES = new Map()
 
 /** Day and wall minute of a broker `ltt` ('YYYY-MM-DDTHH:mm[:ss]', exchange wall clock); null if
@@ -87,7 +88,7 @@ export const tradePhase = (q, mc) => {
  * last bar that ends by the regular close (bar start + bar length <= mc.regular) and ends after
  * the open (a pre-market-only day has none). Any timeframe (15 or 60 minutes). Only complete
  * sessions: some bar of the date ends at or after the regular close (a running session has no
- * close yet). Weekdays only; the bar length must be known (two bars at least). Empty without a
+ * close yet). Weekdays only; the bar length must be known (two bars at least, an hour at most). Empty without a
  * regular close (markets other than US). Map date -> close. Half days (13:00 close) are not
  * known: their close is the last trade before 16:00.
  */
@@ -95,7 +96,7 @@ export const regularCloses = (rows, mc) => {
   const out = new Map()
   if (!rows || !rows.length || !mc || !Number.isFinite(mc.offset) || mc.open == null || mc.regular == null) return out
   const bar = barSeconds(rows)
-  if (!bar) return out
+  if (!bar || bar > MAX_BAR_S) return out
   const best = new Map()
   const done = new Set()
   for (const r of rows) {

@@ -3,7 +3,7 @@
 // Не зависят от браузера и от среды дашборда (dash.*).
 
 import { axisDate, barSeconds, dailyThroughSession, isSessionDay, marketClockFor, sessionBounds, sessionWindow } from './marketTime.js';
-import { positionFactor } from './live.js';
+import { positionFactor, regularCloses } from './live.js';
 
 const J = (a) => (typeof a === 'string' ? JSON.parse(a) : a);
 const brokerError = (a) => { if (a && (a.error || a.errMsg)) throw new Error(String(a.errMsg || a.error)); };
@@ -160,7 +160,8 @@ export const computeCore = (positions, trades, cashflows, prices, regular = null
     };
   };
 
-/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей.
+/** Полоса рынков. Вход — rows из parseHloc для дневных и 15-минутных свечей. Последнее и
+ *  предыдущее закрытие US — закрытия основной сессии по 15-минутным свечам (Task 51).
  *  clock/today (marketTime): спарклайн — бары внутри окна сессии рынка тикера (от pre-open брокера
  *  до регулярного закрытия; дни индекса своего рынка ограничены его барами). Без clock — окно
  *  по барам SP500.IDX за этот день.
@@ -185,6 +186,9 @@ export const computeMarkets = (mkt_daily, mkt_intraday, clock, today, order) => 
         if (sess.length) { lo = sess[0].ts; hi = sess[sess.length - 1].ts; }
       }
       const spark = bars.filter((r) => r.date === last.date && r.ts >= lo && r.ts <= hi).map((r) => r.close);
-      return { ticker: t, date: last.date, last: last.close, prev: prev.close, change_pct: r2((last.close / prev.close - 1) * 100), spark };
+      // US: the regular closes of the two sessions (Task 51), else the daily closes.
+      const reg = clock ? regularCloses(bars, marketClockFor(clock, mkt)) : null;
+      const lc = (reg && reg.get(last.date)) ?? last.close, pc = (reg && reg.get(prev.date)) ?? prev.close;
+      return { ticker: t, date: last.date, last: lc, prev: pc, change_pct: r2((lc / pc - 1) * 100), spark };
     });
   };

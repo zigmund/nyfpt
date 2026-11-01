@@ -1,7 +1,8 @@
 <!-- Holdings with a Day / selected-period switch (prefs.holdingsMode).
      Day: day change total + table; price cells flash for 600 ms on a tick, live mode only. Quotes:
      live ones first, then the repo's REST snapshot (state.quotes), so on a day off the change is the
-     last session's (calc/live quotePrevClose), not the rolled position close_price. Label: "Today"
+     last session's (calc/live quotePrevClose), not the rolled position close_price; US on the
+     regular close (app.regularQuote, Task 51): after-hours trades are not in the day. Label: "Today"
      while live, else the last session date (SP500.IDX, as Performance "on Oct 30").
      Period: period P&L total (same numbers as the value card) + positions open at the period end;
      before the period is computed: current positions without period columns.
@@ -296,7 +297,7 @@ const rows = computed(() => {
   if (!ps) return null
   const live = app.liveQuotesForCalc()
   const snap = app.state.value?.quotes
-  return holdingsRows(ps, { get: (tk) => live?.get(tk) ?? snap?.get?.(tk) })
+  return holdingsRows(ps, { get: (tk) => live?.get(tk) ?? snap?.get?.(tk) }, app.regularQuote && ((tk, q) => app.regularQuote(tk, q)))
 })
 // "Today" only while live; otherwise the date of the last US session (the markets strip's
 // SP500.IDX row, the date Performance uses), else the last spark date; "Day" when none is known.
