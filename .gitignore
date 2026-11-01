@@ -12,8 +12,22 @@ GEMINI.md
 .aider*
 .codex/
 
+# Handoff archive and real personal account data (repo is public)
+portfolio-dashboard-handoff.zip
+portfolio-dashboard-handoff/
+
+# Local Kubernetes manifests
+deploy/
+
 # OS / editors
 .DS_Store
 .idea/
 .vscode/
 *.swp
+
+# Agent specs and plans (AI instructions)
+docs/superpowers/
+
+# Node (runs only in containers)
+node_modules/
+dist/
